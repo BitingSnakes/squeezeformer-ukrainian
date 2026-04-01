@@ -1,4 +1,5 @@
 import math
+import sys
 from pathlib import Path
 
 import polars as pl
@@ -22,6 +23,7 @@ from squeezeformer_pytorch.data import (
     MaxFramesBatchSampler,
     SpecAugment,
     WaveformAugment,
+    create_dataloader,
     iter_cv22_corpus_texts,
     iter_cv22_records,
     load_cv22_corpus_texts,
@@ -447,6 +449,41 @@ def test_feature_cache_is_used_when_waveform_augment_is_effectively_disabled(
 
     assert load_calls == 1
     assert torch.equal(first_item["features"], second_item["features"])
+
+
+def test_create_dataloader_uses_fork_context_on_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyTokenizer:
+        def encode(self, text: str) -> list[int]:
+            return [len(text)]
+
+    captured: dict[str, object] = {}
+
+    class FakeDataLoader:
+        def __init__(self, dataset, *args, **kwargs) -> None:
+            captured["dataset"] = dataset
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr("squeezeformer_pytorch.data.materialize_record_metadata", lambda *args, **kwargs: args[0])
+    monkeypatch.setattr("squeezeformer_pytorch.data.DataLoader", FakeDataLoader)
+
+    dataset = CV22ASRDataset(
+        records=[CVRecord("dummy.wav", None, "це тест", "utt0", estimated_frames=2)],
+        tokenizer=DummyTokenizer(),
+        featurizer=AudioFeaturizer(),
+    )
+    create_dataloader(
+        dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=2,
+        prefetch_factor=1,
+    )
+
+    kwargs = captured["kwargs"]
+    if sys.platform.startswith("linux"):
+        assert kwargs["multiprocessing_context"].get_start_method() == "fork"
+    else:
+        assert "multiprocessing_context" not in kwargs
 
 
 def test_muon_optimizer_partition_uses_encoder_hidden_weights() -> None:

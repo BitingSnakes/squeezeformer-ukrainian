@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import io
+import multiprocessing as mp
 import re
+import sys
 import wave
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -925,6 +927,8 @@ def create_dataloader(
     }
     if num_workers > 0:
         dataloader_kwargs["prefetch_factor"] = prefetch_factor
+        if sys.platform.startswith("linux"):
+            dataloader_kwargs["multiprocessing_context"] = mp.get_context("fork")
     if adaptive_batch_unit is not None and adaptive_batch_budget is not None:
         batch_sampler = AdaptiveBatchSampler(
             dataset.records,
