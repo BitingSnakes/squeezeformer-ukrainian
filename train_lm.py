@@ -84,7 +84,7 @@ def main() -> None:
             repo_id=args.dataset_repo,
             token=args.hf_token,
             cache_dir=args.cache_dir,
-            allow_patterns=["**/*.tsv", "**/*.parquet"],
+            allow_patterns=["*.tsv", "*.parquet", "**/*.tsv", "**/*.parquet"],
         )
         texts, counter = count_texts(
             iter_cv22_corpus_texts(

@@ -1,6 +1,7 @@
 import math
 from pathlib import Path
 
+import polars as pl
 import torch
 
 from squeezeformer_pytorch import (
@@ -17,6 +18,7 @@ from squeezeformer_pytorch.data import (
     CVRecord,
     MaxFramesBatchSampler,
     SpecAugment,
+    iter_cv22_corpus_texts,
     load_cv22_corpus_texts,
     load_cv22_records,
     transcript_is_usable,
@@ -144,6 +146,17 @@ def test_load_cv22_corpus_texts_normalizes_and_deduplicates(tmp_path: Path) -> N
     assert texts == ["це тест", "це тест", "мовна модель"]
     deduped = load_cv22_corpus_texts(tmp_path, deduplicate=True)
     assert deduped == ["це тест", "мовна модель"]
+
+
+def test_iter_cv22_corpus_texts_reads_root_level_parquet(tmp_path: Path) -> None:
+    pl.DataFrame(
+        {
+            "path": ["a.wav", "b.wav"],
+            "sentence": [" Це   Тест ", "Мовна   Модель"],
+        }
+    ).write_parquet(tmp_path / "train.parquet")
+    texts = list(iter_cv22_corpus_texts(tmp_path))
+    assert texts == ["це тест", "мовна модель"]
 
 
 def test_load_cv22_records_works_without_speaker_id_field(tmp_path: Path) -> None:
