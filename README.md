@@ -15,6 +15,7 @@ This repository contains a standalone PyTorch implementation of the Squeezeforme
 - [export_cv22_corpus.py](/workspace/export_cv22_corpus.py): export normalized cv22 transcripts as an LM corpus
 - [evaluate.py](/workspace/evaluate.py): evaluation entrypoint
 - [benchmark.py](/workspace/benchmark.py): synthetic throughput, memory, and decode-speed benchmark
+- [hparam_tuner.py](/workspace/hparam_tuner.py): estimate hardware-sensitive `train.py` values and emit a ready command
 - [tests](/workspace/tests): architecture and training utility checks
 
 ## Architecture Fidelity
@@ -218,6 +219,7 @@ Notes:
 - checkpoint resume with optimizer, scheduler, scaler, EMA, and global step state
 - greedy or beam-search validation decoding
 - LM scorer hook for beam search
+- hardware-sensitive hyperparameter estimation through `hparam_tuner.py`
 - optional training-time fit of a concrete shallow-fusion n-gram LM
 - hardest and random decoded example logging in `trackio`
 - WER/CER metrics broken out by utterance-length bucket
@@ -260,6 +262,66 @@ HF_TOKEN=... uv run python train.py \
   --epochs 1 \
   --max-train-samples 64 \
   --max-val-samples 16
+```
+
+Estimate hardware-sensitive values for the fuller training command:
+
+```bash
+uv run python hparam_tuner.py \
+  --variant sm \
+  --optimizer muon \
+  --tokenizer sentencepiece \
+  --spm-vocab-size 128 \
+  --device cpu \
+  --dtype bfloat16 \
+  --feature-cache-dir artifacts/feature_cache \
+  --speed-perturb-prob 0.5 \
+  --noise-prob 0.2 \
+  --reverb-prob 0.1 \
+  --decode-strategy beam \
+  --beam-size 8 \
+  --output-dir artifacts/cv22-sm \
+  --epochs 10 \
+  --emit-format both
+```
+
+`hparam_tuner.py` keeps the user-selected settings and estimates the knobs most likely to
+depend on hardware or runtime pressure:
+
+- `--batch-size`
+- `--max-batch-frames`
+- `--gradient-accumulation-steps`
+- `--num-workers`
+- `--metadata-workers`
+- `--prefetch-factor`
+- `--beam-size` for CPU beam-search runs
+
+Example CPU estimate for the command below:
+
+```bash
+uv run python train.py \
+  --variant sm \
+  --optimizer muon \
+  --tokenizer sentencepiece \
+  --spm-vocab-size 128 \
+  --device cpu \
+  --dtype bfloat16 \
+  --gradient-accumulation-steps 4 \
+  --feature-cache-dir artifacts/feature_cache \
+  --max-batch-frames 13500 \
+  --speed-perturb-prob 0.5 \
+  --noise-prob 0.2 \
+  --reverb-prob 0.1 \
+  --decode-strategy beam \
+  --beam-size 4 \
+  --output-dir artifacts/cv22-sm \
+  --batch-size 9 \
+  --epochs 10 \
+  --num-workers 8 \
+  --metadata-workers 8 \
+  --prefetch-factor 2 \
+  --no-pin-memory \
+  --persistent-workers
 ```
 
 More complete run with caching, bucketing, and beam-search validation:
