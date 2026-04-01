@@ -568,6 +568,15 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=False,
     )
+    parser.add_argument(
+        "--attention-backend",
+        default="flash",
+        choices=["relative", "flash"],
+        help=(
+            "Attention implementation. 'flash' uses PyTorch scaled_dot_product_attention, "
+            "which dispatches to FlashAttention kernels on supported CUDA setups."
+        ),
+    )
     parser.add_argument("--block-pattern", default="M,s,C,s")
     parser.add_argument("--preemphasis", type=float, default=0.97)
     parser.add_argument(
@@ -1111,6 +1120,7 @@ def main() -> None:
             deepcopy(encoder_config),
             block_pattern=_resolve_block_pattern(args.block_pattern),
             activation_checkpointing=args.activation_checkpointing,
+            attention_backend=args.attention_backend,
         )
     model = SqueezeformerCTC(encoder_config=encoder_config, vocab_size=tokenizer.vocab_size)
     if distributed and requested_device.type == "cuda":

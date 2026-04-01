@@ -72,6 +72,23 @@ def test_variant_forward_shapes() -> None:
 
 
 @torch.no_grad()
+def test_flash_attention_backend_forward_shapes() -> None:
+    lengths = torch.tensor([160, 123], dtype=torch.int64)
+    features = torch.randn(2, int(lengths.max().item()), 80)
+    model = build_squeezeformer_encoder("xs", attention_backend="flash")
+    model.eval()
+
+    outputs, output_lengths = model(features, lengths)
+
+    assert outputs.shape == (2, int(output_lengths.max().item()), model.config.d_model)
+    assert torch.equal(
+        output_lengths,
+        torch.tensor([expected_subsampled_length(160), expected_subsampled_length(123)]),
+    )
+    assert torch.isfinite(outputs).all()
+
+
+@torch.no_grad()
 def test_temporal_unet_recovers_subsampled_resolution() -> None:
     model = build_squeezeformer_encoder("sm")
     model.eval()

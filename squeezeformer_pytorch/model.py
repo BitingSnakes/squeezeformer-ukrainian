@@ -123,6 +123,52 @@ class RelPositionMultiHeadAttention(nn.Module):
         return self.out_proj(context)
 
 
+class FlashMultiHeadAttention(nn.Module):
+    """PyTorch SDPA-backed MHA.
+
+    On supported CUDA shapes/dtypes, scaled_dot_product_attention dispatches to
+    FlashAttention kernels automatically.
+    """
+
+    def __init__(self, dim: int, num_heads: int, dropout: float = 0.0) -> None:
+        super().__init__()
+        if dim % num_heads != 0:
+            raise ValueError(f"dim={dim} must be divisible by num_heads={num_heads}")
+        self.dim = dim
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+
+        self.query = nn.Linear(dim, dim)
+        self.key = nn.Linear(dim, dim)
+        self.value = nn.Linear(dim, dim)
+        self.out_proj = nn.Linear(dim, dim)
+        self.dropout_p = dropout
+
+    def _shape(self, x: Tensor) -> Tensor:
+        batch, time, _ = x.shape
+        return x.view(batch, time, self.num_heads, self.head_dim).transpose(1, 2)
+
+    @staticmethod
+    def _to_sdpa_mask(mask: Tensor) -> Tensor:
+        return mask.unsqueeze(1)
+
+    def forward(self, x: Tensor, mask: Tensor | None = None) -> Tensor:
+        query = self._shape(self.query(x))
+        key = self._shape(self.key(x))
+        value = self._shape(self.value(x))
+        attn_mask = self._to_sdpa_mask(mask) if mask is not None else None
+        context = F.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            attn_mask=attn_mask,
+            dropout_p=self.dropout_p if self.training else 0.0,
+            is_causal=False,
+        )
+        context = context.transpose(1, 2).contiguous().view(x.size(0), x.size(1), self.dim)
+        return self.out_proj(context)
+
+
 class FeedForwardModule(nn.Module):
     def __init__(
         self,
@@ -161,18 +207,36 @@ class AttentionModule(nn.Module):
         num_heads: int,
         dropout: float = 0.1,
         adaptive_scale: bool = True,
+        attention_backend: str = "relative",
     ) -> None:
         super().__init__()
         self.input_transform: nn.Module = (
             ScaleBiasLayer(dim) if adaptive_scale else nn.LayerNorm(dim)
         )
-        self.attn = RelPositionMultiHeadAttention(dim=dim, num_heads=num_heads, dropout=dropout)
+        if attention_backend == "relative":
+            self.attn: nn.Module = RelPositionMultiHeadAttention(
+                dim=dim,
+                num_heads=num_heads,
+                dropout=dropout,
+            )
+        elif attention_backend == "flash":
+            self.attn = FlashMultiHeadAttention(
+                dim=dim,
+                num_heads=num_heads,
+                dropout=dropout,
+            )
+        else:
+            raise ValueError(f"Unsupported attention backend: {attention_backend}")
+        self.attention_backend = attention_backend
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: Tensor, pos: Tensor, mask: Tensor | None = None) -> Tensor:
         residual = x
         x = self.input_transform(x)
-        x = self.attn(x, pos=pos, mask=mask)
+        if self.attention_backend == "relative":
+            x = self.attn(x, pos=pos, mask=mask)
+        else:
+            x = self.attn(x, mask=mask)
         x = self.dropout(x)
         return residual + x
 
@@ -234,13 +298,21 @@ class ConvolutionModule(nn.Module):
 
 
 class MHSAFFModule(nn.Module):
-    def __init__(self, dim: int, num_heads: int, ff_expansion_factor: int, dropout: float) -> None:
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        ff_expansion_factor: int,
+        dropout: float,
+        attention_backend: str,
+    ) -> None:
         super().__init__()
         self.attn = AttentionModule(
             dim=dim,
             num_heads=num_heads,
             dropout=dropout,
             adaptive_scale=True,
+            attention_backend=attention_backend,
         )
         self.mid_norm = nn.LayerNorm(dim)
         self.ff = FeedForwardModule(
@@ -304,6 +376,7 @@ class SqueezeformerBlock(nn.Module):
         conv_expansion_factor: int,
         dropout: float,
         block_pattern: tuple[str, ...],
+        attention_backend: str,
         drop_path_rate: float = 0.0,
     ) -> None:
         super().__init__()
@@ -318,6 +391,7 @@ class SqueezeformerBlock(nn.Module):
                         num_heads=num_heads,
                         ff_expansion_factor=ff_expansion_factor,
                         dropout=dropout,
+                        attention_backend=attention_backend,
                     )
                 )
             elif token == "C":
@@ -449,6 +523,7 @@ class SqueezeformerConfig:
     stochastic_depth_rate: float = 0.0
     time_reduce_idx: tuple[int, ...] = (7,)
     time_recover_idx: tuple[int, ...] = (15,)
+    attention_backend: str = "relative"
 
 
 VARIANT_CONFIGS: dict[str, SqueezeformerConfig] = {
@@ -549,6 +624,7 @@ class SqueezeformerEncoder(nn.Module):
                     conv_expansion_factor=config.conv_expansion_factor,
                     dropout=config.dropout,
                     block_pattern=config.block_pattern,
+                    attention_backend=config.attention_backend,
                     drop_path_rate=(
                         config.stochastic_depth_rate * layer_index / max(1, config.num_layers - 1)
                     ),
@@ -605,7 +681,7 @@ class SqueezeformerEncoder(nn.Module):
 
 def build_squeezeformer_encoder(
     variant: str = "sm",
-    **overrides: int | float | tuple[int, ...] | bool,
+    **overrides: int | float | tuple[int, ...] | bool | str,
 ) -> SqueezeformerEncoder:
     config = replace(squeezeformer_variant(variant), **overrides)
     return SqueezeformerEncoder(config)
