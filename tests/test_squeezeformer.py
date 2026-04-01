@@ -346,6 +346,19 @@ def test_ema_decay_warmup_increases_toward_target() -> None:
     assert observed[-1] == 0.9
 
 
+def test_ema_update_normalizes_shadow_dtype_before_math() -> None:
+    model = torch.nn.Linear(4, 4)
+    ema = ExponentialMovingAverage(model, decay=0.9)
+    ema.shadow = {name: tensor.to(torch.float64) for name, tensor in ema.shadow.items()}
+
+    ema.update(model)
+    backup = ema.apply_to(model)
+
+    assert backup
+    for name, parameter in model.named_parameters():
+        assert ema.shadow[name].dtype == parameter.dtype
+
+
 def test_speaker_metrics_mark_missing_speaker_ids_unavailable() -> None:
     metrics = speaker_level_metrics(
         speaker_ids=[None, None],

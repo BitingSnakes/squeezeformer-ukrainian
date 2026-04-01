@@ -263,13 +263,21 @@ class ExponentialMovingAverage:
             if parameter.requires_grad
         }
 
+    def _shadow_for(self, name: str, parameter: Tensor) -> Tensor:
+        shadow = self.shadow[name]
+        if shadow.device != parameter.device or shadow.dtype != parameter.dtype:
+            shadow = shadow.to(device=parameter.device, dtype=parameter.dtype)
+            self.shadow[name] = shadow
+        return shadow
+
     def update(self, model: nn.Module) -> None:
         self.num_updates += 1
         decay = self.current_decay()
         with torch.no_grad():
             for name, parameter in model.named_parameters():
                 if name in self.shadow:
-                    self.shadow[name].mul_(decay).add_(parameter.detach(), alpha=1 - decay)
+                    shadow = self._shadow_for(name, parameter)
+                    shadow.mul_(decay).add_(parameter.detach(), alpha=1 - decay)
 
     def current_decay(self) -> float:
         if self.warmup_steps <= 0:
@@ -296,9 +304,7 @@ class ExponentialMovingAverage:
         for name, parameter in model.named_parameters():
             if name in self.shadow:
                 backup[name] = parameter.detach().clone()
-                parameter.data.copy_(
-                    self.shadow[name].to(device=parameter.device, dtype=parameter.dtype)
-                )
+                parameter.data.copy_(self._shadow_for(name, parameter))
         return backup
 
     @staticmethod
