@@ -87,9 +87,6 @@ def extract_record_features(
     featurizer_kwargs: dict[str, object],
     overwrite: bool,
 ) -> str:
-    torch.set_num_threads(1)
-    if hasattr(torch, "set_num_interop_threads"):
-        torch.set_num_interop_threads(1)
     featurizer = AudioFeaturizer(**featurizer_kwargs)
     cache_path = feature_cache_path(split_cache_dir, record.utterance_id, featurizer)
     if cache_path is None:
@@ -126,6 +123,9 @@ def iter_completed_futures(executor: ThreadPoolExecutor, records, num_workers: i
 
 def main() -> None:
     args = parse_args()
+    torch.set_num_threads(1)
+    if hasattr(torch, "set_num_interop_threads"):
+        torch.set_num_interop_threads(1)
     dataset_root = download_cv22_dataset(
         repo_id=args.dataset_repo,
         token=args.hf_token,
