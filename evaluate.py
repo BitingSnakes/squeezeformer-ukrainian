@@ -23,7 +23,14 @@ from squeezeformer_pytorch.data import (
     prevalidate_records,
 )
 from squeezeformer_pytorch.model import SqueezeformerConfig
-from train import DecodeStrategy, DTypeChoice, _validate_device_argument, evaluate
+from train import (
+    DecodeStrategy,
+    DTypeChoice,
+    _validate_device_argument,
+    _validate_device_ready,
+    evaluate,
+    resolve_device,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,11 +104,8 @@ def main() -> None:
     encoder_config = SqueezeformerConfig(**checkpoint["encoder_config"])
     model = SqueezeformerCTC(encoder_config=encoder_config, vocab_size=tokenizer.vocab_size)
     model.load_state_dict(checkpoint["model_state_dict"])
-    device = torch.device(args.device)
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise ValueError(
-            "CUDA was requested with --device, but torch.cuda.is_available() is false."
-        )
+    device = resolve_device(args.device)
+    _validate_device_ready(device)
     model.to(device)
     model.eval()
 

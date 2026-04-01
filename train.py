@@ -5,6 +5,7 @@ import json
 import os
 import random
 from collections import defaultdict
+from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import asdict, replace
 from enum import StrEnum
@@ -40,6 +41,11 @@ from squeezeformer_pytorch.lm import NGramLanguageModel
 from squeezeformer_pytorch.metrics import char_error_rate, word_error_rate
 from squeezeformer_pytorch.model import SqueezeformerConfig, squeezeformer_variant
 
+try:
+    import torch_xla.core.xla_model as xm
+except ImportError:
+    xm = None
+
 
 def _checkpoint_name(epoch: int, val_wer: float) -> str:
     return f"checkpoint_epoch={epoch:04d}_valwer={val_wer:.6f}.pt"
@@ -71,12 +77,65 @@ class AdaptiveBatchUnit(StrEnum):
     TOKENS = "tokens"
 
 
+def _parse_xla_device_argument(device: str) -> int | None:
+    normalized = device.strip().lower()
+    if normalized in {"xla", "tpu"}:
+        return None
+    for prefix in ("xla:", "tpu:"):
+        if normalized.startswith(prefix):
+            suffix = normalized[len(prefix) :]
+            if suffix.isdigit():
+                return int(suffix)
+            break
+    raise argparse.ArgumentTypeError(
+        f"Invalid device '{device}': TPU devices must be 'xla', 'xla:N', 'tpu', or 'tpu:N'."
+    )
+
+
+def _is_xla_device_argument(device: str) -> bool:
+    normalized = device.strip().lower()
+    return normalized == "xla" or normalized == "tpu" or normalized.startswith(
+        ("xla:", "tpu:")
+    )
+
+
 def _validate_device_argument(device: str) -> str:
+    if _is_xla_device_argument(device):
+        _parse_xla_device_argument(device)
+        return device
     try:
         torch.device(device)
     except (RuntimeError, ValueError) as error:
         raise argparse.ArgumentTypeError(f"Invalid device '{device}': {error}") from error
     return device
+
+
+def _require_xla_runtime() -> None:
+    if xm is None:
+        raise RuntimeError(
+            "TPU/XLA support requires torch_xla. Install a matching torch_xla build and rerun."
+        )
+
+
+def resolve_device(device: str) -> torch.device:
+    if _is_xla_device_argument(device):
+        _require_xla_runtime()
+        index = _parse_xla_device_argument(device)
+        return xm.xla_device(n=index)
+    return torch.device(device)
+
+
+def _validate_device_ready(device: torch.device) -> None:
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise ValueError(
+            "CUDA was requested with --device, but torch.cuda.is_available() is false."
+        )
+    if device.type == "xla":
+        _require_xla_runtime()
+
+
+def _is_xla_device(device: torch.device) -> bool:
+    return device.type == "xla"
 
 
 def _variant_defaults(variant: str) -> SchedulerDefaults:
@@ -251,10 +310,18 @@ def _resolve_autocast_dtype(dtype: DTypeChoice) -> torch.dtype | None:
 def _autocast_context(device: torch.device, dtype: DTypeChoice):
     autocast_dtype = _resolve_autocast_dtype(dtype)
     if autocast_dtype is None:
-        return torch.autocast(device_type=device.type, enabled=False)
+        return nullcontext()
     if device.type == "cpu" and autocast_dtype == torch.float16:
         raise ValueError("float16 autocast is not supported on CPU. Use bfloat16 or float32.")
+    if device.type == "xla" and autocast_dtype == torch.float16:
+        raise ValueError("float16 autocast is not supported on TPU/XLA. Use bfloat16 or float32.")
     return torch.autocast(device_type=device.type, dtype=autocast_dtype)
+
+
+def _mark_xla_step(device: torch.device) -> None:
+    if _is_xla_device(device):
+        _require_xla_runtime()
+        xm.mark_step()
 
 
 def _update_top_checkpoints(
@@ -718,6 +785,7 @@ def evaluate(
                     lm_weight=lm_weight,
                 )
             )
+            _mark_xla_step(device)
 
     metrics = {
         "loss": total_loss / max(1, total_batches),
@@ -849,11 +917,10 @@ def main() -> None:
         raise ValueError("--distributed expects a torchrun-style environment with WORLD_SIZE > 1.")
     rank = int(os.environ.get("RANK", "0"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-    requested_device = torch.device(args.device)
-    if requested_device.type == "cuda" and not torch.cuda.is_available():
-        raise ValueError(
-            "CUDA was requested with --device, but torch.cuda.is_available() is false."
-        )
+    requested_device = resolve_device(args.device)
+    _validate_device_ready(requested_device)
+    if distributed and _is_xla_device(requested_device):
+        raise ValueError("TPU/XLA training does not support torchrun-style distributed mode here.")
     is_main_process = rank == 0
     if distributed:
         backend = "nccl" if torch.cuda.is_available() else "gloo"
@@ -861,6 +928,8 @@ def main() -> None:
             dist.init_process_group(backend=backend)
     if distributed and args.compile:
         raise ValueError("--compile is not currently supported together with distributed training.")
+    if _is_xla_device(requested_device) and args.compile:
+        raise ValueError("--compile is not currently supported on TPU/XLA.")
     torch.manual_seed(args.seed)
     output_dir = Path(args.output_dir)
     if is_main_process:
@@ -1153,8 +1222,12 @@ def main() -> None:
                     )
                 else:
                     grad_norm = 0.0
-                for optimizer in optimizers:
-                    scaler.step(optimizer)
+                if _is_xla_device(device):
+                    for optimizer in optimizers:
+                        xm.optimizer_step(optimizer, barrier=False)
+                else:
+                    for optimizer in optimizers:
+                        scaler.step(optimizer)
                 scaler.update()
                 for optimizer in optimizers:
                     optimizer.zero_grad(set_to_none=True)
@@ -1163,6 +1236,7 @@ def main() -> None:
                 global_step += 1
                 if ema is not None:
                     ema.update(model)
+                _mark_xla_step(device)
 
                 if is_main_process and global_step % args.log_every == 0:
                     learning_rates = {

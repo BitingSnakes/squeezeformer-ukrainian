@@ -2,6 +2,7 @@ import math
 from pathlib import Path
 
 import polars as pl
+import pytest
 import torch
 
 from squeezeformer_pytorch import (
@@ -27,9 +28,11 @@ from squeezeformer_pytorch.data import (
 from train import (
     ExponentialMovingAverage,
     OptimizerChoice,
+    _validate_device_argument,
     _variant_defaults,
     build_optimizer,
     build_paper_scheduler,
+    resolve_device,
     speaker_level_metrics,
 )
 
@@ -135,6 +138,20 @@ def test_ngram_lm_prefers_seen_extension(tmp_path: Path) -> None:
     lm.save(save_path)
     loaded = NGramLanguageModel.load(save_path)
     assert loaded.score_text("abba") > loaded.score_text("abza")
+
+
+def test_validate_device_argument_accepts_xla_aliases() -> None:
+    assert _validate_device_argument("xla") == "xla"
+    assert _validate_device_argument("xla:0") == "xla:0"
+    assert _validate_device_argument("tpu:1") == "tpu:1"
+
+
+def test_resolve_device_requires_torch_xla_for_xla_alias() -> None:
+    try:
+        import torch_xla.core.xla_model  # noqa: F401
+    except ImportError:
+        with pytest.raises(RuntimeError, match="torch_xla"):
+            resolve_device("xla")
 
 
 def test_lm_scorer_factory_spec_loads_saved_model(tmp_path: Path) -> None:
