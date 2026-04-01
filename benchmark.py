@@ -7,7 +7,13 @@ import time
 import torch
 
 from squeezeformer_pytorch import SqueezeformerCTC, squeezeformer_variant, tokenizer_from_dict
-from train import DecodeStrategy, DTypeChoice, _autocast_context, decode_batch
+from train import (
+    DecodeStrategy,
+    DTypeChoice,
+    _autocast_context,
+    _validate_device_argument,
+    decode_batch,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,7 +40,12 @@ def parse_args() -> argparse.Namespace:
         choices=list(DTypeChoice),
         default=DTypeChoice.BFLOAT16,
     )
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--device",
+        type=_validate_device_argument,
+        required=True,
+        help="Execution device, for example 'cpu', 'cuda', or 'cuda:0'.",
+    )
     return parser.parse_args()
 
 
@@ -50,7 +61,7 @@ class _DummyTokenizer:
 
 def _load_model(args: argparse.Namespace) -> tuple[SqueezeformerCTC, object]:
     if args.checkpoint:
-        checkpoint = torch.load(args.checkpoint, map_location="cpu")
+        checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
         tokenizer = tokenizer_from_dict(checkpoint["tokenizer"])
         config = squeezeformer_variant(args.variant)
         if "encoder_config" in checkpoint:
@@ -73,6 +84,10 @@ def _synchronize(device: torch.device) -> None:
 def main() -> None:
     args = parse_args()
     device = torch.device(args.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise ValueError(
+            "CUDA was requested with --device, but torch.cuda.is_available() is false."
+        )
     model, tokenizer = _load_model(args)
     model.to(device)
     model.eval()

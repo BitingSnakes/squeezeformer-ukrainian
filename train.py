@@ -71,6 +71,14 @@ class AdaptiveBatchUnit(StrEnum):
     TOKENS = "tokens"
 
 
+def _validate_device_argument(device: str) -> str:
+    try:
+        torch.device(device)
+    except (RuntimeError, ValueError) as error:
+        raise argparse.ArgumentTypeError(f"Invalid device '{device}': {error}") from error
+    return device
+
+
 def _variant_defaults(variant: str) -> SchedulerDefaults:
     if variant in {"xs", "s", "sm"}:
         return SchedulerDefaults(peak_lr=2e-3, num_time_masks=5)
@@ -300,7 +308,7 @@ def _average_topk_checkpoints(output_dir: Path) -> Path | None:
     template_checkpoint: dict[str, object] | None = None
     for item in metadata:
         checkpoint_path = output_dir / "checkpoints_topk" / str(item["path"])
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         state_dict = checkpoint["model_state_dict"]
         if averaged_state is None:
             averaged_state = {
@@ -428,7 +436,12 @@ def parse_args() -> argparse.Namespace:
         default=False,
     )
     parser.add_argument("--prevalidate-workers", type=int, default=4)
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--device",
+        type=_validate_device_argument,
+        required=True,
+        help="Execution device, for example 'cpu', 'cuda', or 'cuda:0'.",
+    )
     parser.add_argument(
         "--optimizer",
         type=OptimizerChoice,
@@ -836,6 +849,11 @@ def main() -> None:
         raise ValueError("--distributed expects a torchrun-style environment with WORLD_SIZE > 1.")
     rank = int(os.environ.get("RANK", "0"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    requested_device = torch.device(args.device)
+    if requested_device.type == "cuda" and not torch.cuda.is_available():
+        raise ValueError(
+            "CUDA was requested with --device, but torch.cuda.is_available() is false."
+        )
     is_main_process = rank == 0
     if distributed:
         backend = "nccl" if torch.cuda.is_available() else "gloo"
@@ -889,7 +907,9 @@ def main() -> None:
             encoding="utf-8",
         )
 
-    checkpoint = torch.load(args.resume, map_location="cpu") if args.resume else None
+    checkpoint = (
+        torch.load(args.resume, map_location="cpu", weights_only=False) if args.resume else None
+    )
     if checkpoint is not None:
         tokenizer = tokenizer_from_dict(checkpoint["tokenizer"])
     elif args.tokenizer == "sentencepiece":
@@ -1002,10 +1022,15 @@ def main() -> None:
             activation_checkpointing=args.activation_checkpointing,
         )
     model = SqueezeformerCTC(encoder_config=encoder_config, vocab_size=tokenizer.vocab_size)
-    if distributed and torch.cuda.is_available():
+    if distributed and requested_device.type == "cuda":
+        if requested_device.index not in {None, local_rank}:
+            raise ValueError(
+                f"--device {args.device} conflicts with LOCAL_RANK={local_rank}. "
+                "Use --device cuda or the matching cuda:<local_rank>."
+            )
         device = torch.device(f"cuda:{local_rank}")
     else:
-        device = torch.device(args.device)
+        device = requested_device
     model.to(device)
     if checkpoint is not None:
         model.load_state_dict(checkpoint["model_state_dict"])

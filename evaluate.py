@@ -23,7 +23,7 @@ from squeezeformer_pytorch.data import (
     prevalidate_records,
 )
 from squeezeformer_pytorch.model import SqueezeformerConfig
-from train import DecodeStrategy, DTypeChoice, evaluate
+from train import DecodeStrategy, DTypeChoice, _validate_device_argument, evaluate
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,7 +62,12 @@ def parse_args() -> argparse.Namespace:
         default=False,
     )
     parser.add_argument("--prevalidate-workers", type=int, default=4)
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--device",
+        type=_validate_device_argument,
+        required=True,
+        help="Execution device, for example 'cpu', 'cuda', or 'cuda:0'.",
+    )
     parser.add_argument(
         "--dtype",
         type=DTypeChoice,
@@ -87,12 +92,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    checkpoint = torch.load(args.checkpoint, map_location="cpu")
+    checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     tokenizer = tokenizer_from_dict(checkpoint["tokenizer"])
     encoder_config = SqueezeformerConfig(**checkpoint["encoder_config"])
     model = SqueezeformerCTC(encoder_config=encoder_config, vocab_size=tokenizer.vocab_size)
     model.load_state_dict(checkpoint["model_state_dict"])
     device = torch.device(args.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise ValueError(
+            "CUDA was requested with --device, but torch.cuda.is_available() is false."
+        )
     model.to(device)
     model.eval()
 
