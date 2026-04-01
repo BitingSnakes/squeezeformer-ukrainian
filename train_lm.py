@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Iterable
 
+from tqdm.auto import tqdm
+
 from squeezeformer_pytorch.data import (
     iter_cv22_corpus_texts,
     iter_cv22_corpus_texts_from_repo,
@@ -58,13 +60,22 @@ def iter_corpus_lines(path: Path) -> Iterable[str]:
                 yield normalized
 
 
-def count_texts(texts: Iterable[str]) -> tuple[Iterable[str], dict[str, int]]:
+def count_texts(
+    texts: Iterable[str],
+    progress_description: str,
+    total: int | None = None,
+) -> tuple[Iterable[str], dict[str, int]]:
     counter = {"lines": 0}
+    progress = tqdm(desc=progress_description, total=total, unit="line")
 
     def iterator() -> Iterable[str]:
-        for text in texts:
-            counter["lines"] += 1
-            yield text
+        try:
+            for text in texts:
+                counter["lines"] += 1
+                progress.update()
+                yield text
+        finally:
+            progress.close()
 
     return iterator(), counter
 
@@ -76,7 +87,10 @@ def main() -> None:
 
     if args.corpus is not None:
         corpus_path = Path(args.corpus)
-        texts, counter = count_texts(iter_corpus_lines(corpus_path))
+        texts, counter = count_texts(
+            iter_corpus_lines(corpus_path),
+            progress_description="Reading corpus",
+        )
         input_source = str(corpus_path)
         input_type = "corpus"
     else:
@@ -87,7 +101,9 @@ def main() -> None:
                     dataset_root=dataset_path,
                     deduplicate=args.deduplicate,
                     max_samples=args.max_samples,
-                )
+                ),
+                progress_description="Reading dataset",
+                total=args.max_samples,
             )
             input_source = str(dataset_path.resolve())
             input_type = "dataset"
@@ -98,7 +114,9 @@ def main() -> None:
                     token=args.hf_token,
                     deduplicate=args.deduplicate,
                     max_samples=args.max_samples,
-                )
+                ),
+                progress_description="Streaming dataset",
+                total=args.max_samples,
             )
             input_source = args.dataset_repo
             input_type = "dataset_repo"
