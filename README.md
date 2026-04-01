@@ -40,6 +40,7 @@ Core runtime dependencies:
 - `torch`
 - `torchaudio`
 - `polars`
+- `jiwer`
 - `sentencepiece`
 - `huggingface_hub`
 - `trackio`
@@ -56,7 +57,7 @@ Install dependencies:
 
 ```bash
 uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-uv pip install polars sentencepiece huggingface_hub trackio pytest ruff
+uv pip install polars jiwer sentencepiece huggingface_hub trackio pytest ruff
 ```
 
 ## Dataset Access

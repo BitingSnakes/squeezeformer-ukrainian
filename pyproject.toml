@@ -5,6 +5,7 @@ description = "PyTorch implementation of the Squeezeformer encoder"
 requires-python = ">=3.14"
 dependencies = [
     "huggingface_hub>=0.34.0",
+    "jiwer>=4.0.0",
     "polars>=1.30.0",
     "sentencepiece>=0.2.0",
     "trackio>=0.20.2",
