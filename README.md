@@ -10,7 +10,7 @@ This repository contains a standalone PyTorch implementation of the Squeezeforme
 - [data.py](/workspace/squeezeformer_pytorch/data.py): dataset download, Polars manifest loading, transcript normalization, featurization, caching, bucketing
 - [metrics.py](/workspace/squeezeformer_pytorch/metrics.py): CER and WER through `jiwer`
 - [train.py](/workspace/train.py): training entrypoint
-- [train_lm.py](/workspace/train_lm.py): train a shallow-fusion n-gram LM from newline-delimited text
+- [train_lm.py](/workspace/train_lm.py): train a shallow-fusion n-gram LM from a text corpus or dataset transcripts
 - [export_cv22_corpus.py](/workspace/export_cv22_corpus.py): export normalized cv22 transcripts as an LM corpus
 - [evaluate.py](/workspace/evaluate.py): evaluation entrypoint
 - [benchmark.py](/workspace/benchmark.py): synthetic throughput, memory, and decode-speed benchmark
@@ -349,6 +349,17 @@ Train it from a standalone text corpus:
 uv run python train_lm.py \
   --corpus data/lm_corpus.txt \
   --output artifacts/shallow_fusion_lm.json \
+  --order 3 \
+  --alpha 0.1
+```
+
+Or train it directly from a Hugging Face/local dataset by using the transcript field as text input:
+
+```bash
+HF_TOKEN=... uv run python train_lm.py \
+  --dataset-repo speech-uk/cv22 \
+  --output artifacts/shallow_fusion_lm.json \
+  --deduplicate \
   --order 3 \
   --alpha 0.1
 ```
