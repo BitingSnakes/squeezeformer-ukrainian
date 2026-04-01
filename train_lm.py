@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Iterable
 
 from squeezeformer_pytorch.data import (
-    download_cv22_dataset,
     iter_cv22_corpus_texts,
+    iter_cv22_corpus_texts_from_repo,
 )
 from squeezeformer_pytorch.lm import NGramLanguageModel
 
@@ -80,21 +80,28 @@ def main() -> None:
         input_source = str(corpus_path)
         input_type = "corpus"
     else:
-        dataset_root = download_cv22_dataset(
-            repo_id=args.dataset_repo,
-            token=args.hf_token,
-            cache_dir=args.cache_dir,
-            allow_patterns=["*.tsv", "*.parquet", "**/*.tsv", "**/*.parquet"],
-        )
-        texts, counter = count_texts(
-            iter_cv22_corpus_texts(
-                dataset_root=dataset_root,
-                deduplicate=args.deduplicate,
-                max_samples=args.max_samples,
+        dataset_path = Path(args.dataset_repo)
+        if dataset_path.exists():
+            texts, counter = count_texts(
+                iter_cv22_corpus_texts(
+                    dataset_root=dataset_path,
+                    deduplicate=args.deduplicate,
+                    max_samples=args.max_samples,
+                )
             )
-        )
-        input_source = str(dataset_root)
-        input_type = "dataset"
+            input_source = str(dataset_path.resolve())
+            input_type = "dataset"
+        else:
+            texts, counter = count_texts(
+                iter_cv22_corpus_texts_from_repo(
+                    repo_id=args.dataset_repo,
+                    token=args.hf_token,
+                    deduplicate=args.deduplicate,
+                    max_samples=args.max_samples,
+                )
+            )
+            input_source = args.dataset_repo
+            input_type = "dataset_repo"
     try:
         lm = NGramLanguageModel.train(texts, order=args.order, alpha=args.alpha)
     except ValueError as error:

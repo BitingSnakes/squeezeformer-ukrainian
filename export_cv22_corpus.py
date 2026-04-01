@@ -6,8 +6,8 @@ import os
 from pathlib import Path
 
 from squeezeformer_pytorch.data import (
-    download_cv22_dataset,
     iter_cv22_corpus_texts,
+    iter_cv22_corpus_texts_from_repo,
 )
 
 
@@ -33,22 +33,28 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    dataset_root = download_cv22_dataset(
-        repo_id=args.dataset_repo,
-        token=args.hf_token,
-        cache_dir=args.cache_dir,
-        allow_patterns=["*.tsv", "*.parquet", "**/*.tsv", "**/*.parquet"],
-    )
+    dataset_path = Path(args.dataset_repo)
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     line_count = 0
     with output_path.open("w", encoding="utf-8") as handle:
-        for text in iter_cv22_corpus_texts(
-            dataset_root=dataset_root,
-            deduplicate=args.deduplicate,
-            max_samples=args.max_samples,
-        ):
+        if dataset_path.exists():
+            texts = iter_cv22_corpus_texts(
+                dataset_root=dataset_path,
+                deduplicate=args.deduplicate,
+                max_samples=args.max_samples,
+            )
+            dataset_source = str(dataset_path.resolve())
+        else:
+            texts = iter_cv22_corpus_texts_from_repo(
+                repo_id=args.dataset_repo,
+                token=args.hf_token,
+                deduplicate=args.deduplicate,
+                max_samples=args.max_samples,
+            )
+            dataset_source = args.dataset_repo
+        for text in texts:
             handle.write(text)
             handle.write("\n")
             line_count += 1
@@ -56,7 +62,7 @@ def main() -> None:
         raise RuntimeError("No usable transcripts were found in the dataset manifests.")
 
     summary = {
-        "dataset_root": str(dataset_root),
+        "dataset_root": dataset_source,
         "output": str(output_path),
         "lines": line_count,
         "deduplicate": args.deduplicate,

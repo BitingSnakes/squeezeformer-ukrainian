@@ -12,14 +12,14 @@ from typing import Any, Iterable
 import polars as pl
 import torch
 import torchaudio
-from huggingface_hub import snapshot_download
+from huggingface_hub import list_repo_files, snapshot_download
 from torch import Tensor
 from torch.nn import functional as F
 from torch.utils.data import BatchSampler, DataLoader, Dataset
 
 from .asr import Tokenizer
 
-TRANSCRIPT_COLUMNS = ("sentence", "transcript", "text", "normalized_text")
+TRANSCRIPT_COLUMNS = ("sentence", "transcript", "transcription", "text", "normalized_text")
 AUDIO_COLUMNS = ("path", "audio")
 
 
@@ -259,6 +259,18 @@ def _collect_manifest_frames(dataset_root: Path) -> list[pl.LazyFrame]:
     return manifest_frames
 
 
+def _hf_storage_options(token: str | None) -> dict[str, str]:
+    return {"token": token} if token else {}
+
+
+def _select_transcript_column(columns: Iterable[str]) -> str | None:
+    available = set(columns)
+    for column in TRANSCRIPT_COLUMNS:
+        if column in available:
+            return column
+    return None
+
+
 def _iter_manifest_paths(dataset_root: Path) -> Iterable[Path]:
     tsv_files = sorted(dataset_root.rglob("*.tsv"))
     if tsv_files:
@@ -398,7 +410,6 @@ def download_cv22_dataset(
         repo_type="dataset",
         token=token,
         cache_dir=cache_dir,
-        resume_download=not force_download,
         allow_patterns=allow_patterns,
     )
     return Path(local_path)
@@ -489,6 +500,56 @@ def load_cv22_corpus_texts(
     if not texts:
         raise RuntimeError("No usable transcripts were found in the dataset manifests.")
     return texts
+
+
+def iter_cv22_corpus_texts_from_repo(
+    repo_id: str,
+    token: str | None,
+    deduplicate: bool = False,
+    max_samples: int | None = None,
+) -> Iterable[str]:
+    seen: set[str] = set()
+    yielded = 0
+    storage_options = _hf_storage_options(token)
+    for repo_path in sorted(list_repo_files(repo_id, repo_type="dataset", token=token)):
+        if repo_path.endswith(".parquet"):
+            lazy_frame = pl.scan_parquet(
+                f"hf://datasets/{repo_id}/{repo_path}",
+                storage_options=storage_options,
+            )
+            transcript_column = _select_transcript_column(lazy_frame.collect_schema().names())
+            if transcript_column is None:
+                continue
+            frame = lazy_frame.select(pl.col(transcript_column)).collect()
+            rows = ({transcript_column: value} for value in frame[transcript_column].to_list())
+        elif repo_path.endswith(".tsv"):
+            lazy_frame = pl.scan_csv(
+                f"hf://datasets/{repo_id}/{repo_path}",
+                separator="\t",
+                infer_schema_length=1000,
+                storage_options=storage_options,
+            )
+            transcript_column = _select_transcript_column(lazy_frame.collect_schema().names())
+            if transcript_column is None:
+                continue
+            frame = lazy_frame.select(pl.col(transcript_column)).collect()
+            rows = ({transcript_column: value} for value in frame[transcript_column].to_list())
+        else:
+            continue
+
+        for row in rows:
+            try:
+                transcript = _extract_transcript(row)
+            except KeyError:
+                continue
+            if deduplicate:
+                if transcript in seen:
+                    continue
+                seen.add(transcript)
+            yield transcript
+            yielded += 1
+            if max_samples is not None and yielded >= max_samples:
+                return
 
 
 def iter_cv22_corpus_texts(
