@@ -13,7 +13,12 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from .model import SqueezeformerConfig, SqueezeformerEncoder
+from .model import (
+    SqueezeformerConfig,
+    SqueezeformerEncoder,
+    apply_linear_with_fp8_padding,
+    make_linear,
+)
 
 
 class Tokenizer:
@@ -197,15 +202,28 @@ def load_tokenizer(path: str | Path) -> Tokenizer:
 
 
 class SqueezeformerCTC(nn.Module):
-    def __init__(self, encoder_config: SqueezeformerConfig, vocab_size: int) -> None:
+    def __init__(
+        self,
+        encoder_config: SqueezeformerConfig,
+        vocab_size: int,
+        use_transformer_engine: bool = False,
+    ) -> None:
         super().__init__()
         self.encoder_config = encoder_config
-        self.encoder = SqueezeformerEncoder(encoder_config)
-        self.classifier = nn.Linear(encoder_config.d_model, vocab_size)
+        self.use_transformer_engine = use_transformer_engine
+        self.encoder = SqueezeformerEncoder(
+            encoder_config,
+            use_transformer_engine=use_transformer_engine,
+        )
+        self.classifier = make_linear(
+            encoder_config.d_model,
+            vocab_size,
+            use_transformer_engine=use_transformer_engine,
+        )
 
     def forward(self, features: Tensor, feature_lengths: Tensor) -> tuple[Tensor, Tensor]:
         encoded, output_lengths = self.encoder(features, feature_lengths)
-        logits = self.classifier(encoded)
+        logits = apply_linear_with_fp8_padding(self.classifier, encoded)
         return logits, output_lengths
 
     def log_probs(self, features: Tensor, feature_lengths: Tensor) -> tuple[Tensor, Tensor]:

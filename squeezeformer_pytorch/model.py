@@ -8,6 +8,14 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint as activation_checkpoint
 
+try:
+    import transformer_engine.pytorch as te
+except ImportError:
+    te = None
+
+
+FP8_SHAPE_ALIGNMENT = 16
+
 
 def _subsample_length(
     lengths: Tensor,
@@ -35,6 +43,78 @@ def _make_pad_mask(lengths: Tensor, max_length: int | None = None) -> Tensor:
 def _make_attn_mask(lengths: Tensor, max_length: int) -> Tensor:
     pad_mask = _make_pad_mask(lengths, max_length=max_length)
     return pad_mask.unsqueeze(1) & pad_mask.unsqueeze(2)
+
+
+def transformer_engine_available() -> bool:
+    return te is not None
+
+
+def _is_fp8_compatible_linear_shape(in_features: int, out_features: int) -> bool:
+    return (
+        in_features % FP8_SHAPE_ALIGNMENT == 0 and out_features % FP8_SHAPE_ALIGNMENT == 0
+    )
+
+
+def _pad_tensor_along_dim(x: Tensor, dim: int, target_size: int) -> Tensor:
+    if x.size(dim) >= target_size:
+        return x
+    pad_shape = list(x.shape)
+    pad_shape[dim] = target_size - x.size(dim)
+    return torch.cat([x, x.new_zeros(pad_shape)], dim=dim)
+
+
+def _pad_mask_to_length(mask: Tensor | None, target_length: int) -> Tensor | None:
+    if mask is None or mask.size(-1) >= target_length:
+        return mask
+    pad_shape = list(mask.shape)
+    pad_shape[-1] = target_length - mask.size(-1)
+    return torch.cat([mask, mask.new_zeros(pad_shape, dtype=mask.dtype)], dim=-1)
+
+
+def _pad_attn_mask_to_length(mask: Tensor | None, target_length: int) -> Tensor | None:
+    if mask is None or mask.size(-1) >= target_length:
+        return mask
+    pad_amount = target_length - mask.size(-1)
+    pad_dims = [0, pad_amount, 0, pad_amount]
+    return F.pad(mask, pad_dims, value=False)
+
+
+def _padded_sequence_length(length: int) -> int:
+    return math.ceil(length / FP8_SHAPE_ALIGNMENT) * FP8_SHAPE_ALIGNMENT
+
+
+def make_linear(
+    in_features: int,
+    out_features: int,
+    *,
+    bias: bool = True,
+    use_transformer_engine: bool = False,
+) -> nn.Module:
+    if use_transformer_engine and te is not None and _is_fp8_compatible_linear_shape(
+        in_features, out_features
+    ):
+        return te.Linear(in_features, out_features, bias=bias)
+    return nn.Linear(in_features, out_features, bias=bias)
+
+
+def make_layer_norm(dim: int, *, use_transformer_engine: bool = False) -> nn.Module:
+    if use_transformer_engine and te is not None:
+        return te.LayerNorm(dim)
+    return nn.LayerNorm(dim)
+
+
+def apply_linear_with_fp8_padding(module: nn.Module, x: Tensor) -> Tensor:
+    if te is None or not isinstance(module, te.Linear) or x.dim() < 2:
+        return module(x)
+
+    original_shape = x.shape
+    flat = x.reshape(-1, original_shape[-1])
+    padded_rows = _padded_sequence_length(flat.size(0))
+    if padded_rows != flat.size(0):
+        flat = _pad_tensor_along_dim(flat, dim=0, target_size=padded_rows)
+    flat = module(flat)
+    flat = flat[: math.prod(original_shape[:-1])]
+    return flat.reshape(*original_shape[:-1], flat.size(-1))
 
 
 class ScaleBiasLayer(nn.Module):
@@ -68,7 +148,13 @@ class RelativePositionalEncoding(nn.Module):
 
 
 class RelPositionMultiHeadAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int, dropout: float = 0.0) -> None:
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        dropout: float = 0.0,
+        use_transformer_engine: bool = False,
+    ) -> None:
         super().__init__()
         if dim % num_heads != 0:
             raise ValueError(f"dim={dim} must be divisible by num_heads={num_heads}")
@@ -76,11 +162,16 @@ class RelPositionMultiHeadAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
 
-        self.query = nn.Linear(dim, dim)
-        self.key = nn.Linear(dim, dim)
-        self.value = nn.Linear(dim, dim)
-        self.pos_proj = nn.Linear(dim, dim, bias=False)
-        self.out_proj = nn.Linear(dim, dim)
+        self.query = make_linear(dim, dim, use_transformer_engine=use_transformer_engine)
+        self.key = make_linear(dim, dim, use_transformer_engine=use_transformer_engine)
+        self.value = make_linear(dim, dim, use_transformer_engine=use_transformer_engine)
+        self.pos_proj = make_linear(
+            dim,
+            dim,
+            bias=False,
+            use_transformer_engine=use_transformer_engine,
+        )
+        self.out_proj = make_linear(dim, dim, use_transformer_engine=use_transformer_engine)
         self.pos_bias_u = nn.Parameter(torch.zeros(num_heads, self.head_dim))
         self.pos_bias_v = nn.Parameter(torch.zeros(num_heads, self.head_dim))
         self.dropout = nn.Dropout(dropout)
@@ -99,10 +190,10 @@ class RelPositionMultiHeadAttention(nn.Module):
         return x
 
     def forward(self, x: Tensor, pos: Tensor, mask: Tensor | None = None) -> Tensor:
-        query = self._shape(self.query(x))
-        key = self._shape(self.key(x))
-        value = self._shape(self.value(x))
-        pos_proj = self._shape(self.pos_proj(pos))
+        query = self._shape(apply_linear_with_fp8_padding(self.query, x))
+        key = self._shape(apply_linear_with_fp8_padding(self.key, x))
+        value = self._shape(apply_linear_with_fp8_padding(self.value, x))
+        pos_proj = self._shape(apply_linear_with_fp8_padding(self.pos_proj, pos))
 
         query_u = query + self.pos_bias_u.unsqueeze(0).unsqueeze(2)
         query_v = query + self.pos_bias_v.unsqueeze(0).unsqueeze(2)
@@ -120,7 +211,7 @@ class RelPositionMultiHeadAttention(nn.Module):
         attn = self.dropout(attn)
         context = torch.matmul(attn, value)
         context = context.transpose(1, 2).contiguous().view(x.size(0), x.size(1), self.dim)
-        return self.out_proj(context)
+        return apply_linear_with_fp8_padding(self.out_proj, context)
 
 
 class FlashMultiHeadAttention(nn.Module):
@@ -130,7 +221,13 @@ class FlashMultiHeadAttention(nn.Module):
     FlashAttention kernels automatically.
     """
 
-    def __init__(self, dim: int, num_heads: int, dropout: float = 0.0) -> None:
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        dropout: float = 0.0,
+        use_transformer_engine: bool = False,
+    ) -> None:
         super().__init__()
         if dim % num_heads != 0:
             raise ValueError(f"dim={dim} must be divisible by num_heads={num_heads}")
@@ -138,10 +235,10 @@ class FlashMultiHeadAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
 
-        self.query = nn.Linear(dim, dim)
-        self.key = nn.Linear(dim, dim)
-        self.value = nn.Linear(dim, dim)
-        self.out_proj = nn.Linear(dim, dim)
+        self.query = make_linear(dim, dim, use_transformer_engine=use_transformer_engine)
+        self.key = make_linear(dim, dim, use_transformer_engine=use_transformer_engine)
+        self.value = make_linear(dim, dim, use_transformer_engine=use_transformer_engine)
+        self.out_proj = make_linear(dim, dim, use_transformer_engine=use_transformer_engine)
         self.dropout_p = dropout
 
     def _shape(self, x: Tensor) -> Tensor:
@@ -153,9 +250,9 @@ class FlashMultiHeadAttention(nn.Module):
         return mask.unsqueeze(1)
 
     def forward(self, x: Tensor, mask: Tensor | None = None) -> Tensor:
-        query = self._shape(self.query(x))
-        key = self._shape(self.key(x))
-        value = self._shape(self.value(x))
+        query = self._shape(apply_linear_with_fp8_padding(self.query, x))
+        key = self._shape(apply_linear_with_fp8_padding(self.key, x))
+        value = self._shape(apply_linear_with_fp8_padding(self.value, x))
         attn_mask = self._to_sdpa_mask(mask) if mask is not None else None
         context = F.scaled_dot_product_attention(
             query,
@@ -166,7 +263,7 @@ class FlashMultiHeadAttention(nn.Module):
             is_causal=False,
         )
         context = context.transpose(1, 2).contiguous().view(x.size(0), x.size(1), self.dim)
-        return self.out_proj(context)
+        return apply_linear_with_fp8_padding(self.out_proj, context)
 
 
 class FeedForwardModule(nn.Module):
@@ -177,25 +274,36 @@ class FeedForwardModule(nn.Module):
         dropout: float = 0.1,
         residual_factor: float = 1.0,
         adaptive_scale: bool = True,
+        use_transformer_engine: bool = False,
     ) -> None:
         super().__init__()
         self.input_transform: nn.Module = (
-            ScaleBiasLayer(dim) if adaptive_scale else nn.LayerNorm(dim)
+            ScaleBiasLayer(dim)
+            if adaptive_scale
+            else make_layer_norm(dim, use_transformer_engine=use_transformer_engine)
         )
-        self.linear1 = nn.Linear(dim, expansion_factor * dim)
+        self.linear1 = make_linear(
+            dim,
+            expansion_factor * dim,
+            use_transformer_engine=use_transformer_engine,
+        )
         self.activation = nn.SiLU()
         self.dropout1 = nn.Dropout(dropout)
-        self.linear2 = nn.Linear(expansion_factor * dim, dim)
+        self.linear2 = make_linear(
+            expansion_factor * dim,
+            dim,
+            use_transformer_engine=use_transformer_engine,
+        )
         self.dropout2 = nn.Dropout(dropout)
         self.residual_factor = residual_factor
 
     def forward(self, x: Tensor) -> Tensor:
         residual = x
         x = self.input_transform(x)
-        x = self.linear1(x)
+        x = apply_linear_with_fp8_padding(self.linear1, x)
         x = self.activation(x)
         x = self.dropout1(x)
-        x = self.linear2(x)
+        x = apply_linear_with_fp8_padding(self.linear2, x)
         x = self.dropout2(x)
         return residual + self.residual_factor * x
 
@@ -208,22 +316,27 @@ class AttentionModule(nn.Module):
         dropout: float = 0.1,
         adaptive_scale: bool = True,
         attention_backend: str = "relative",
+        use_transformer_engine: bool = False,
     ) -> None:
         super().__init__()
         self.input_transform: nn.Module = (
-            ScaleBiasLayer(dim) if adaptive_scale else nn.LayerNorm(dim)
+            ScaleBiasLayer(dim)
+            if adaptive_scale
+            else make_layer_norm(dim, use_transformer_engine=use_transformer_engine)
         )
         if attention_backend == "relative":
             self.attn: nn.Module = RelPositionMultiHeadAttention(
                 dim=dim,
                 num_heads=num_heads,
                 dropout=dropout,
+                use_transformer_engine=use_transformer_engine,
             )
         elif attention_backend == "flash":
             self.attn = FlashMultiHeadAttention(
                 dim=dim,
                 num_heads=num_heads,
                 dropout=dropout,
+                use_transformer_engine=use_transformer_engine,
             )
         else:
             raise ValueError(f"Unsupported attention backend: {attention_backend}")
@@ -250,13 +363,16 @@ class ConvolutionModule(nn.Module):
         dropout: float = 0.1,
         use_glu: bool = False,
         adaptive_scale: bool = True,
+        use_transformer_engine: bool = False,
     ) -> None:
         super().__init__()
         if kernel_size % 2 == 0:
             raise ValueError("kernel_size must be odd for same-length depthwise convolution")
         hidden_dim = dim * expansion_factor
         self.input_transform: nn.Module = (
-            ScaleBiasLayer(dim) if adaptive_scale else nn.LayerNorm(dim)
+            ScaleBiasLayer(dim)
+            if adaptive_scale
+            else make_layer_norm(dim, use_transformer_engine=use_transformer_engine)
         )
         self.pointwise_in = nn.Conv1d(dim, hidden_dim, kernel_size=1)
         self.use_glu = use_glu
@@ -305,6 +421,7 @@ class MHSAFFModule(nn.Module):
         ff_expansion_factor: int,
         dropout: float,
         attention_backend: str,
+        use_transformer_engine: bool = False,
     ) -> None:
         super().__init__()
         self.attn = AttentionModule(
@@ -313,16 +430,18 @@ class MHSAFFModule(nn.Module):
             dropout=dropout,
             adaptive_scale=True,
             attention_backend=attention_backend,
+            use_transformer_engine=use_transformer_engine,
         )
-        self.mid_norm = nn.LayerNorm(dim)
+        self.mid_norm = make_layer_norm(dim, use_transformer_engine=use_transformer_engine)
         self.ff = FeedForwardModule(
             dim=dim,
             expansion_factor=ff_expansion_factor,
             dropout=dropout,
             residual_factor=1.0,
             adaptive_scale=True,
+            use_transformer_engine=use_transformer_engine,
         )
-        self.out_norm = nn.LayerNorm(dim)
+        self.out_norm = make_layer_norm(dim, use_transformer_engine=use_transformer_engine)
 
     def forward(self, x: Tensor, pos: Tensor, attn_mask: Tensor | None) -> Tensor:
         x = self.attn(x, pos=pos, mask=attn_mask)
@@ -339,6 +458,7 @@ class ConvFFModule(nn.Module):
         conv_expansion_factor: int,
         ff_expansion_factor: int,
         dropout: float,
+        use_transformer_engine: bool = False,
     ) -> None:
         super().__init__()
         self.conv = ConvolutionModule(
@@ -348,16 +468,18 @@ class ConvFFModule(nn.Module):
             dropout=dropout,
             use_glu=False,
             adaptive_scale=True,
+            use_transformer_engine=use_transformer_engine,
         )
-        self.mid_norm = nn.LayerNorm(dim)
+        self.mid_norm = make_layer_norm(dim, use_transformer_engine=use_transformer_engine)
         self.ff = FeedForwardModule(
             dim=dim,
             expansion_factor=ff_expansion_factor,
             dropout=dropout,
             residual_factor=1.0,
             adaptive_scale=True,
+            use_transformer_engine=use_transformer_engine,
         )
-        self.out_norm = nn.LayerNorm(dim)
+        self.out_norm = make_layer_norm(dim, use_transformer_engine=use_transformer_engine)
 
     def forward(self, x: Tensor, pad_mask: Tensor | None) -> Tensor:
         x = self.conv(x, pad_mask=pad_mask)
@@ -378,6 +500,7 @@ class SqueezeformerBlock(nn.Module):
         block_pattern: tuple[str, ...],
         attention_backend: str,
         drop_path_rate: float = 0.0,
+        use_transformer_engine: bool = False,
     ) -> None:
         super().__init__()
         self.block_pattern = block_pattern
@@ -392,6 +515,7 @@ class SqueezeformerBlock(nn.Module):
                         ff_expansion_factor=ff_expansion_factor,
                         dropout=dropout,
                         attention_backend=attention_backend,
+                        use_transformer_engine=use_transformer_engine,
                     )
                 )
             elif token == "C":
@@ -402,6 +526,7 @@ class SqueezeformerBlock(nn.Module):
                         conv_expansion_factor=conv_expansion_factor,
                         ff_expansion_factor=ff_expansion_factor,
                         dropout=dropout,
+                        use_transformer_engine=use_transformer_engine,
                     )
                 )
             elif token == "s":
@@ -490,9 +615,14 @@ class TimeReductionLayer(nn.Module):
 
 
 class TimeRecoveryLayer(nn.Module):
-    def __init__(self, dim: int, stride: int = 2) -> None:
+    def __init__(
+        self,
+        dim: int,
+        stride: int = 2,
+        use_transformer_engine: bool = False,
+    ) -> None:
         super().__init__()
-        self.proj = nn.Linear(dim, dim)
+        self.proj = make_linear(dim, dim, use_transformer_engine=use_transformer_engine)
         self.stride = stride
 
     def forward(self, x: Tensor, skip: Tensor) -> Tensor:
@@ -503,7 +633,7 @@ class TimeRecoveryLayer(nn.Module):
             x = F.pad(x, (0, 0, 0, pad_length), mode="replicate")
         else:
             x = x[:, :target_length, :]
-        return self.proj(x) + skip
+        return apply_linear_with_fp8_padding(self.proj, x) + skip
 
 
 @dataclass(frozen=True)
@@ -590,16 +720,24 @@ class SqueezeformerEncoder(nn.Module):
     modules, and a single temporal downsample/upsample pair.
     """
 
-    def __init__(self, config: SqueezeformerConfig) -> None:
+    def __init__(self, config: SqueezeformerConfig, use_transformer_engine: bool = False) -> None:
         super().__init__()
         self.config = config
+        self.use_transformer_engine = use_transformer_engine
         self.subsampling = Conv2dSubsampling(
             in_features=config.input_features,
             channels=config.d_model,
             depthwise_separable=config.depthwise_subsampling,
         )
-        self.input_projection = nn.Linear(self.subsampling.output_dim, config.d_model)
-        self.input_norm = nn.LayerNorm(config.d_model)
+        self.input_projection = make_linear(
+            self.subsampling.output_dim,
+            config.d_model,
+            use_transformer_engine=use_transformer_engine,
+        )
+        self.input_norm = make_layer_norm(
+            config.d_model,
+            use_transformer_engine=use_transformer_engine,
+        )
         self.dropout = nn.Dropout(config.dropout)
         self.positional_encoding = RelativePositionalEncoding(config.d_model)
         self.time_reduce = nn.ModuleDict(
@@ -612,7 +750,13 @@ class SqueezeformerEncoder(nn.Module):
             }
         )
         self.time_recover = nn.ModuleDict(
-            {str(i): TimeRecoveryLayer(config.d_model) for i in config.time_recover_idx}
+            {
+                str(i): TimeRecoveryLayer(
+                    config.d_model,
+                    use_transformer_engine=use_transformer_engine,
+                )
+                for i in config.time_recover_idx
+            }
         )
         self.blocks = nn.ModuleList(
             [
@@ -628,6 +772,7 @@ class SqueezeformerEncoder(nn.Module):
                     drop_path_rate=(
                         config.stochastic_depth_rate * layer_index / max(1, config.num_layers - 1)
                     ),
+                    use_transformer_engine=use_transformer_engine,
                 )
                 for layer_index in range(config.num_layers)
             ]
@@ -641,7 +786,7 @@ class SqueezeformerEncoder(nn.Module):
 
         x = self.subsampling(features)
         lengths = _subsample_length(lengths)
-        x = self.input_projection(x)
+        x = apply_linear_with_fp8_padding(self.input_projection, x)
         x = x * math.sqrt(self.config.d_model)
         x = self.dropout(x)
         x = self.input_norm(x)
@@ -661,9 +806,22 @@ class SqueezeformerEncoder(nn.Module):
                 x = self.time_recover[str(layer_index)](x, skip_x)
                 lengths = skip_lengths
 
-            pos = self.positional_encoding(x)
-            attn_mask = _make_attn_mask(lengths, max_length=x.size(1))
-            pad_mask = _make_pad_mask(lengths, max_length=x.size(1))
+            if self.use_transformer_engine:
+                padded_time = _padded_sequence_length(x.size(1))
+                x = _pad_tensor_along_dim(x, dim=1, target_size=padded_time)
+                pos = self.positional_encoding(x)
+                attn_mask = _pad_attn_mask_to_length(
+                    _make_attn_mask(lengths, max_length=x.size(1)),
+                    target_length=padded_time,
+                )
+                pad_mask = _pad_mask_to_length(
+                    _make_pad_mask(lengths, max_length=x.size(1)),
+                    target_length=padded_time,
+                )
+            else:
+                pos = self.positional_encoding(x)
+                attn_mask = _make_attn_mask(lengths, max_length=x.size(1))
+                pad_mask = _make_pad_mask(lengths, max_length=x.size(1))
             if self.config.activation_checkpointing and self.training:
                 x = activation_checkpoint(
                     lambda a, b, c, d: block(a, pos=b, attn_mask=c, pad_mask=d),
@@ -675,6 +833,7 @@ class SqueezeformerEncoder(nn.Module):
                 )
             else:
                 x = block(x, pos=pos, attn_mask=attn_mask, pad_mask=pad_mask)
+            x = x[:, : int(lengths.max().item()), :]
 
         return x, lengths
 
@@ -683,5 +842,6 @@ def build_squeezeformer_encoder(
     variant: str = "sm",
     **overrides: int | float | tuple[int, ...] | bool | str,
 ) -> SqueezeformerEncoder:
+    use_transformer_engine = bool(overrides.pop("use_transformer_engine", False))
     config = replace(squeezeformer_variant(variant), **overrides)
-    return SqueezeformerEncoder(config)
+    return SqueezeformerEncoder(config, use_transformer_engine=use_transformer_engine)

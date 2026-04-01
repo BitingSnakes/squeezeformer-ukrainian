@@ -31,9 +31,12 @@ from squeezeformer_pytorch.data import (
     transcript_is_usable,
 )
 from train import (
+    DTypeChoice,
     ExponentialMovingAverage,
     OptimizerChoice,
+    _build_fp8_recipe,
     _validate_device_argument,
+    _validate_fp8_runtime,
     _variant_defaults,
     build_optimizer,
     build_paper_scheduler,
@@ -76,6 +79,27 @@ def test_flash_attention_backend_forward_shapes() -> None:
     lengths = torch.tensor([160, 123], dtype=torch.int64)
     features = torch.randn(2, int(lengths.max().item()), 80)
     model = build_squeezeformer_encoder("xs", attention_backend="flash")
+    model.eval()
+
+    outputs, output_lengths = model(features, lengths)
+
+    assert outputs.shape == (2, int(output_lengths.max().item()), model.config.d_model)
+    assert torch.equal(
+        output_lengths,
+        torch.tensor([expected_subsampled_length(160), expected_subsampled_length(123)]),
+    )
+    assert torch.isfinite(outputs).all()
+
+
+@torch.no_grad()
+def test_transformer_engine_padding_path_preserves_shapes_without_te_runtime() -> None:
+    lengths = torch.tensor([160, 123], dtype=torch.int64)
+    features = torch.randn(2, int(lengths.max().item()), 80)
+    model = build_squeezeformer_encoder(
+        "xs",
+        attention_backend="flash",
+        use_transformer_engine=True,
+    )
     model.eval()
 
     outputs, output_lengths = model(features, lengths)
@@ -175,6 +199,58 @@ def test_resolve_device_requires_torch_xla_for_xla_alias() -> None:
     except ImportError:
         with pytest.raises(RuntimeError, match="torch_xla"):
             resolve_device("xla")
+
+
+def test_validate_fp8_runtime_rejects_non_cuda_device() -> None:
+    with pytest.raises(ValueError, match="CUDA"):
+        _validate_fp8_runtime(torch.device("cpu"), squeezeformer_variant("xs"))
+
+
+def test_validate_fp8_runtime_rejects_incompatible_hidden_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeTE:
+        @staticmethod
+        def is_fp8_available() -> tuple[bool, str | None]:
+            return True, None
+
+    monkeypatch.setattr("train.te", _FakeTE())
+    monkeypatch.setattr("train.transformer_engine_available", lambda: True)
+
+    with pytest.raises(ValueError, match="divisible by 16"):
+        _validate_fp8_runtime(torch.device("cuda"), squeezeformer_variant("s"))
+
+
+def test_build_fp8_recipe_uses_requested_recipe_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeFormat:
+        HYBRID = "hybrid-format"
+        E4M3 = "e4m3-format"
+
+    class _FakeDelayedScaling:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    monkeypatch.setattr("train.Format", _FakeFormat)
+    monkeypatch.setattr("train.DelayedScaling", _FakeDelayedScaling)
+
+    args = type(
+        "Args",
+        (),
+        {
+            "dtype": DTypeChoice.FP8,
+            "fp8_format": "e4m3",
+            "fp8_amax_history_len": 8,
+            "fp8_amax_compute_algo": "most_recent",
+        },
+    )()
+    recipe = _build_fp8_recipe(args)
+
+    assert isinstance(recipe, _FakeDelayedScaling)
+    assert recipe.kwargs == {
+        "fp8_format": _FakeFormat.E4M3,
+        "amax_history_len": 8,
+        "amax_compute_algo": "most_recent",
+    }
 
 
 def test_lm_scorer_factory_spec_loads_saved_model(tmp_path: Path) -> None:

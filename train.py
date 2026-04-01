@@ -7,7 +7,7 @@ import os
 import random
 import sys
 from collections import defaultdict
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from copy import deepcopy
 from dataclasses import asdict, replace
 from enum import StrEnum
@@ -41,12 +41,25 @@ from squeezeformer_pytorch.data import (
 )
 from squeezeformer_pytorch.lm import NGramLanguageModel
 from squeezeformer_pytorch.metrics import char_error_rate, word_error_rate
-from squeezeformer_pytorch.model import SqueezeformerConfig, squeezeformer_variant
+from squeezeformer_pytorch.model import (
+    FP8_SHAPE_ALIGNMENT,
+    SqueezeformerConfig,
+    squeezeformer_variant,
+    transformer_engine_available,
+)
 
 try:
     import torch_xla.core.xla_model as xm
 except ImportError:
     xm = None
+
+try:
+    import transformer_engine.pytorch as te
+    from transformer_engine.common.recipe import DelayedScaling, Format
+except ImportError:
+    te = None
+    DelayedScaling = None
+    Format = None
 
 
 def _checkpoint_name(epoch: int, val_wer: float) -> str:
@@ -62,6 +75,7 @@ class DTypeChoice(StrEnum):
     FLOAT32 = "float32"
     FLOAT16 = "float16"
     BFLOAT16 = "bfloat16"
+    FP8 = "fp8"
 
 
 class OptimizerChoice(StrEnum):
@@ -323,10 +337,77 @@ def _resolve_autocast_dtype(dtype: DTypeChoice) -> torch.dtype | None:
         return torch.float16
     if dtype == DTypeChoice.BFLOAT16:
         return torch.bfloat16
+    if dtype == DTypeChoice.FP8:
+        return torch.bfloat16
     raise ValueError(f"Unsupported dtype: {dtype}")
 
 
-def _autocast_context(device: torch.device, dtype: DTypeChoice):
+def _resolve_fp8_format(name: str):
+    if Format is None:
+        raise RuntimeError("transformer-engine is required for FP8 training.")
+    normalized = name.strip().lower()
+    if normalized == "hybrid":
+        return Format.HYBRID
+    if normalized == "e4m3":
+        return Format.E4M3
+    raise ValueError(f"Unsupported FP8 format: {name}")
+
+
+def _build_fp8_recipe(args: argparse.Namespace):
+    if args.dtype != DTypeChoice.FP8:
+        return None
+    if DelayedScaling is None:
+        raise RuntimeError("transformer-engine is required for FP8 training.")
+    return DelayedScaling(
+        fp8_format=_resolve_fp8_format(args.fp8_format),
+        amax_history_len=args.fp8_amax_history_len,
+        amax_compute_algo=args.fp8_amax_compute_algo,
+    )
+
+
+def _validate_fp8_runtime(
+    device: torch.device,
+    encoder_config: SqueezeformerConfig,
+) -> None:
+    if device.type != "cuda":
+        raise ValueError("FP8 training requires a CUDA device.")
+    if not transformer_engine_available() or te is None:
+        raise RuntimeError(
+            "FP8 training requires transformer-engine. Install the package and CUDA extension."
+        )
+    if encoder_config.d_model % FP8_SHAPE_ALIGNMENT != 0:
+        raise ValueError(
+            "FP8 training requires d_model to be divisible by "
+            f"{FP8_SHAPE_ALIGNMENT}; choose variant xs, sm, ml, or l."
+        )
+    if hasattr(te, "is_fp8_available"):
+        availability = te.is_fp8_available()
+        if isinstance(availability, tuple):
+            is_available, reason = availability
+        else:
+            is_available, reason = bool(availability), None
+        if not is_available:
+            suffix = f" {reason}" if reason else ""
+            raise RuntimeError(
+                f"Transformer Engine reports FP8 is unavailable on this runtime.{suffix}"
+            )
+
+
+def _autocast_context(
+    device: torch.device,
+    dtype: DTypeChoice,
+    *,
+    fp8_recipe=None,
+):
+    if dtype == DTypeChoice.FP8:
+        if device.type != "cuda":
+            raise ValueError("FP8 autocast is only supported on CUDA.")
+        if te is None:
+            raise RuntimeError("transformer-engine is required for FP8 autocast.")
+        stack = ExitStack()
+        stack.enter_context(torch.autocast(device_type=device.type, dtype=torch.bfloat16))
+        stack.enter_context(te.autocast(enabled=True, recipe=fp8_recipe))
+        return stack
     autocast_dtype = _resolve_autocast_dtype(dtype)
     if autocast_dtype is None:
         return nullcontext()
@@ -537,6 +618,17 @@ def parse_args() -> argparse.Namespace:
         type=DTypeChoice,
         choices=list(DTypeChoice),
         default=DTypeChoice.BFLOAT16,
+    )
+    parser.add_argument(
+        "--fp8-format",
+        default="hybrid",
+        choices=["hybrid", "e4m3"],
+    )
+    parser.add_argument("--fp8-amax-history-len", type=int, default=16)
+    parser.add_argument(
+        "--fp8-amax-compute-algo",
+        default="max",
+        choices=["max", "most_recent"],
     )
     parser.add_argument("--trackio-project", default="squeezeformer-cv22")
     parser.add_argument("--trackio-space-id", default=None)
@@ -771,6 +863,7 @@ def evaluate(
     tokenizer: Tokenizer,
     device: torch.device,
     dtype: DTypeChoice,
+    fp8_recipe=None,
     decode_strategy: DecodeStrategy = DecodeStrategy.GREEDY,
     beam_size: int = 8,
     lm_scorer=None,
@@ -792,7 +885,7 @@ def evaluate(
             targets = batch["targets"].to(device)
             target_lengths = batch["target_lengths"].to(device)
 
-            with _autocast_context(device, dtype):
+            with _autocast_context(device, dtype, fp8_recipe=fp8_recipe):
                 log_probs, output_lengths = model.log_probs(features, feature_lengths)
                 loss = criterion(log_probs.transpose(0, 1), targets, output_lengths, target_lengths)
             total_loss += float(loss.item())
@@ -1128,7 +1221,7 @@ def main() -> None:
             activation_checkpointing=args.activation_checkpointing,
             attention_backend=args.attention_backend,
         )
-    model = SqueezeformerCTC(encoder_config=encoder_config, vocab_size=tokenizer.vocab_size)
+    fp8_recipe = _build_fp8_recipe(args)
     if distributed and requested_device.type == "cuda":
         if requested_device.index not in {None, local_rank}:
             raise ValueError(
@@ -1138,6 +1231,13 @@ def main() -> None:
         device = torch.device(f"cuda:{local_rank}")
     else:
         device = requested_device
+    if args.dtype == DTypeChoice.FP8:
+        _validate_fp8_runtime(device, encoder_config)
+    model = SqueezeformerCTC(
+        encoder_config=encoder_config,
+        vocab_size=tokenizer.vocab_size,
+        use_transformer_engine=args.dtype == DTypeChoice.FP8,
+    )
     model.to(device)
     if checkpoint is not None:
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -1250,7 +1350,7 @@ def main() -> None:
             targets = batch["targets"].to(device)
             target_lengths = batch["target_lengths"].to(device)
 
-            with _autocast_context(device, args.dtype):
+            with _autocast_context(device, args.dtype, fp8_recipe=fp8_recipe):
                 log_probs, output_lengths = forward_model.log_probs(features, feature_lengths)
                 loss = criterion(log_probs.transpose(0, 1), targets, output_lengths, target_lengths)
             running_loss += float(loss.item())
@@ -1323,6 +1423,7 @@ def main() -> None:
                 tokenizer,
                 device,
                 args.dtype,
+                fp8_recipe=fp8_recipe,
                 decode_strategy=args.decode_strategy,
                 beam_size=args.beam_size,
                 lm_scorer=lm_scorer,
@@ -1393,7 +1494,11 @@ def main() -> None:
             )
             averaged_path = _average_topk_checkpoints(output_dir)
             logger.info(
-                "epoch %s complete train_loss=%.4f val_loss=%.4f val_cer=%.4f val_wer=%.4f best_val_wer=%.4f report=%s latest=%s best=%s averaged=%s",
+                (
+                    "epoch %s complete train_loss=%.4f val_loss=%.4f val_cer=%.4f "
+                    "val_wer=%.4f best_val_wer=%.4f report=%s latest=%s best=%s "
+                    "averaged=%s"
+                ),
                 epoch,
                 train_loss,
                 float(val_metrics["loss"]),
