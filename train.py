@@ -4,6 +4,8 @@ import argparse
 import json
 import os
 import random
+import logging
+import sys
 from collections import defaultdict
 from contextlib import nullcontext
 from copy import deepcopy
@@ -75,6 +77,19 @@ class DecodeStrategy(StrEnum):
 class AdaptiveBatchUnit(StrEnum):
     FRAMES = "frames"
     TOKENS = "tokens"
+
+
+def _configure_console_logger(rank: int, is_main_process: bool) -> logging.Logger:
+    logger = logging.getLogger("train")
+    logger.setLevel(logging.INFO if is_main_process else logging.WARNING)
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s | %(levelname)s | rank=%(rank)s | %(message)s")
+        )
+        logger.addHandler(handler)
+    logger.propagate = False
+    return logging.LoggerAdapter(logger, {"rank": rank})
 
 
 def _parse_xla_device_argument(device: str) -> int | None:
@@ -922,6 +937,7 @@ def main() -> None:
     if distributed and _is_xla_device(requested_device):
         raise ValueError("TPU/XLA training does not support torchrun-style distributed mode here.")
     is_main_process = rank == 0
+    logger = _configure_console_logger(rank=rank, is_main_process=is_main_process)
     if distributed:
         backend = "nccl" if torch.cuda.is_available() else "gloo"
         if not dist.is_initialized():
@@ -934,6 +950,14 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     if is_main_process:
         output_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        "starting training variant=%s device=%s distributed=%s world_size=%s output_dir=%s",
+        args.variant,
+        requested_device,
+        distributed,
+        world_size,
+        output_dir,
+    )
     variant_defaults = _variant_defaults(args.variant)
     lm_scorer = load_lm_scorer(args.lm_scorer)
 
@@ -974,6 +998,12 @@ def main() -> None:
         (output_dir / "split_audit.json").write_text(
             json.dumps(split_audit, indent=2),
             encoding="utf-8",
+        )
+        logger.info(
+            "loaded dataset train_samples=%s val_samples=%s speaker_balance_ratio=%.3f",
+            len(train_records),
+            len(val_records),
+            float(split_audit["speaker_balance_ratio"]),
         )
 
     checkpoint = (
@@ -1174,6 +1204,13 @@ def main() -> None:
         start_epoch = int(checkpoint.get("epoch", 0)) + 1
         global_step = int(checkpoint.get("global_step", 0))
         best_val_wer = float(checkpoint.get("best_val_wer", float("inf")))
+        logger.info(
+            "resumed from %s starting_epoch=%s global_step=%s best_val_wer=%.4f",
+            args.resume,
+            start_epoch,
+            global_step,
+            best_val_wer,
+        )
 
     if is_main_process:
         trackio.init(
@@ -1194,6 +1231,7 @@ def main() -> None:
         )
 
     for epoch in range(start_epoch, args.epochs + 1):
+        logger.info("epoch %s/%s started", epoch, args.epochs)
         forward_model.train()
         running_loss = 0.0
         for optimizer in optimizers:
@@ -1243,6 +1281,18 @@ def main() -> None:
                         f"learning_rate_{name}": optimizer.param_groups[0]["lr"]
                         for name, optimizer in zip(optimizer_names, optimizers, strict=True)
                     }
+                    logger.info(
+                        "epoch=%s step=%s/%s global_step=%s train_loss=%.4f grad_norm=%.4f %s",
+                        epoch,
+                        batch_index,
+                        len(train_loader),
+                        global_step,
+                        float(loss.item()),
+                        grad_norm,
+                        " ".join(
+                            f"{name}={value:.6g}" for name, value in learning_rates.items()
+                        ),
+                    )
                     trackio.log(
                         {
                             "epoch": epoch,
@@ -1257,6 +1307,7 @@ def main() -> None:
         train_loss = running_loss / max(1, len(train_loader))
         if is_main_process:
             ema_backup = ema.apply_to(model) if ema is not None else None
+            logger.info("epoch %s training complete train_loss=%.4f, starting validation", epoch, train_loss)
             validation = evaluate(
                 model,
                 val_loader,
@@ -1332,7 +1383,20 @@ def main() -> None:
                 val_wer=val_metrics["wer"],
                 keep_top_k=args.keep_top_k,
             )
-            _average_topk_checkpoints(output_dir)
+            averaged_path = _average_topk_checkpoints(output_dir)
+            logger.info(
+                "epoch %s complete train_loss=%.4f val_loss=%.4f val_cer=%.4f val_wer=%.4f best_val_wer=%.4f report=%s latest=%s best=%s averaged=%s",
+                epoch,
+                train_loss,
+                float(val_metrics["loss"]),
+                float(val_metrics["cer"]),
+                float(val_metrics["wer"]),
+                best_val_wer,
+                report_path,
+                latest_path,
+                output_dir / "checkpoint_best.pt",
+                averaged_path if averaged_path is not None else "n/a",
+            )
         if distributed:
             dist.barrier()
 
@@ -1352,6 +1416,12 @@ def main() -> None:
             encoding="utf-8",
         )
         trackio.finish()
+        logger.info(
+            "training finished epochs=%s best_val_wer=%.4f summary=%s",
+            args.epochs,
+            best_val_wer,
+            output_dir / "train_summary.json",
+        )
     if distributed and dist.is_initialized():
         dist.barrier()
         dist.destroy_process_group()
