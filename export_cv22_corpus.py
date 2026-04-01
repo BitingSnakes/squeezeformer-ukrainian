@@ -7,7 +7,7 @@ from pathlib import Path
 
 from squeezeformer_pytorch.data import (
     download_cv22_dataset,
-    load_cv22_corpus_texts,
+    iter_cv22_corpus_texts,
 )
 
 
@@ -37,21 +37,28 @@ def main() -> None:
         repo_id=args.dataset_repo,
         token=args.hf_token,
         cache_dir=args.cache_dir,
-    )
-    texts = load_cv22_corpus_texts(
-        dataset_root=dataset_root,
-        deduplicate=args.deduplicate,
-        max_samples=args.max_samples,
+        allow_patterns=["**/*.tsv", "**/*.parquet"],
     )
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text("\n".join(texts) + "\n", encoding="utf-8")
+    line_count = 0
+    with output_path.open("w", encoding="utf-8") as handle:
+        for text in iter_cv22_corpus_texts(
+            dataset_root=dataset_root,
+            deduplicate=args.deduplicate,
+            max_samples=args.max_samples,
+        ):
+            handle.write(text)
+            handle.write("\n")
+            line_count += 1
+    if line_count == 0:
+        raise RuntimeError("No usable transcripts were found in the dataset manifests.")
 
     summary = {
         "dataset_root": str(dataset_root),
         "output": str(output_path),
-        "lines": len(texts),
+        "lines": line_count,
         "deduplicate": args.deduplicate,
         "max_samples": args.max_samples,
         "next_step": f"uv run python train_lm.py --corpus {output_path}",

@@ -63,6 +63,11 @@ export HF_TOKEN=your_huggingface_token
 
 The loader downloads the dataset snapshot with `huggingface_hub.snapshot_download()` and reads TSV or Parquet manifests with `polars`.
 
+For transcript-only workflows such as [train_lm.py](/workspace/train_lm.py) and
+[export_cv22_corpus.py](/workspace/export_cv22_corpus.py), the repo now downloads only
+manifest files and streams transcript rows instead of materializing the full corpus in RAM.
+That keeps LM/corpus preparation usable even when the underlying dataset is tens of GB.
+
 For local development and smoke tests, `--dataset-repo` can also point at a local directory that contains Common Voice-style manifests and audio files.
 
 Important: the dataset itself exposes only a source train split. This repo creates deterministic internal `train`, `validation`, and `test` splits from that source data. When real speaker metadata such as `client_id` or `speaker_id` is available, the split is speaker-aware. When the dataset does not expose speaker identity, the pipeline falls back to utterance-level hashing so training still works, and the split audit marks speaker identity as unavailable.

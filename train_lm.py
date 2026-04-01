@@ -4,8 +4,12 @@ import argparse
 import json
 import os
 from pathlib import Path
+from typing import Iterable
 
-from squeezeformer_pytorch.data import download_cv22_dataset, load_cv22_corpus_texts
+from squeezeformer_pytorch.data import (
+    download_cv22_dataset,
+    iter_cv22_corpus_texts,
+)
 from squeezeformer_pytorch.lm import NGramLanguageModel
 
 
@@ -46,12 +50,23 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def read_corpus(path: Path) -> list[str]:
-    lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
-    texts = [line for line in lines if line]
-    if not texts:
-        raise ValueError(f"corpus '{path}' does not contain any non-empty lines")
-    return texts
+def iter_corpus_lines(path: Path) -> Iterable[str]:
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            normalized = line.strip()
+            if normalized:
+                yield normalized
+
+
+def count_texts(texts: Iterable[str]) -> tuple[Iterable[str], dict[str, int]]:
+    counter = {"lines": 0}
+
+    def iterator() -> Iterable[str]:
+        for text in texts:
+            counter["lines"] += 1
+            yield text
+
+    return iterator(), counter
 
 
 def main() -> None:
@@ -61,7 +76,7 @@ def main() -> None:
 
     if args.corpus is not None:
         corpus_path = Path(args.corpus)
-        texts = read_corpus(corpus_path)
+        texts, counter = count_texts(iter_corpus_lines(corpus_path))
         input_source = str(corpus_path)
         input_type = "corpus"
     else:
@@ -69,22 +84,32 @@ def main() -> None:
             repo_id=args.dataset_repo,
             token=args.hf_token,
             cache_dir=args.cache_dir,
+            allow_patterns=["**/*.tsv", "**/*.parquet"],
         )
-        texts = load_cv22_corpus_texts(
-            dataset_root=dataset_root,
-            deduplicate=args.deduplicate,
-            max_samples=args.max_samples,
+        texts, counter = count_texts(
+            iter_cv22_corpus_texts(
+                dataset_root=dataset_root,
+                deduplicate=args.deduplicate,
+                max_samples=args.max_samples,
+            )
         )
         input_source = str(dataset_root)
         input_type = "dataset"
-    lm = NGramLanguageModel.train(texts, order=args.order, alpha=args.alpha)
+    try:
+        lm = NGramLanguageModel.train(texts, order=args.order, alpha=args.alpha)
+    except ValueError as error:
+        if counter["lines"] == 0:
+            raise ValueError(
+                f"{input_type} '{input_source}' does not contain any non-empty lines"
+            ) from error
+        raise
     lm.save(output_path)
 
     summary: dict[str, object] = {
         "input_type": input_type,
         "input_source": input_source,
         "output": str(output_path),
-        "lines": len(texts),
+        "lines": counter["lines"],
         "order": lm.order,
         "alpha": lm.alpha,
         "vocabulary_size": len(lm.vocabulary),

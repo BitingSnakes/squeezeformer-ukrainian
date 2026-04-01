@@ -7,7 +7,7 @@ import wave
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import polars as pl
 import torch
@@ -259,6 +259,37 @@ def _collect_manifest_frames(dataset_root: Path) -> list[pl.LazyFrame]:
     return manifest_frames
 
 
+def _iter_manifest_paths(dataset_root: Path) -> Iterable[Path]:
+    tsv_files = sorted(dataset_root.rglob("*.tsv"))
+    if tsv_files:
+        return tsv_files
+    return sorted(dataset_root.rglob("*.parquet"))
+
+
+def iter_manifest_rows(dataset_root: Path, batch_size: int = 8192) -> Iterable[dict[str, Any]]:
+    manifest_paths = list(_iter_manifest_paths(dataset_root))
+    if not manifest_paths:
+        raise FileNotFoundError(f"No TSV or Parquet manifest files found under {dataset_root}.")
+
+    for path in manifest_paths:
+        if path.suffix == ".tsv":
+            reader = pl.read_csv_batched(
+                path,
+                separator="\t",
+                infer_schema_length=1000,
+                batch_size=batch_size,
+            )
+            while True:
+                batches = reader.next_batches(1)
+                if not batches:
+                    break
+                yield from batches[0].iter_rows(named=True)
+            continue
+
+        # Process Parquet files one at a time to avoid concatenating all manifests into memory.
+        yield from pl.read_parquet(path).iter_rows(named=True)
+
+
 def _extract_transcript(row: dict[str, Any]) -> str:
     for column in TRANSCRIPT_COLUMNS:
         value = row.get(column)
@@ -357,6 +388,7 @@ def download_cv22_dataset(
     token: str | None,
     cache_dir: str | None = None,
     force_download: bool = False,
+    allow_patterns: list[str] | None = None,
 ) -> Path:
     local_path = Path(repo_id)
     if local_path.exists():
@@ -367,6 +399,7 @@ def download_cv22_dataset(
         token=token,
         cache_dir=cache_dir,
         resume_download=not force_download,
+        allow_patterns=allow_patterns,
     )
     return Path(local_path)
 
@@ -382,13 +415,8 @@ def load_cv22_records(
     max_transcript_chars: int = 400,
     max_symbol_ratio: float = 0.5,
 ) -> list[CVRecord]:
-    frames = _collect_manifest_frames(dataset_root)
-    if not frames:
-        raise FileNotFoundError(f"No TSV or Parquet manifest files found under {dataset_root}.")
-
-    frame = pl.concat(frames, how="diagonal_relaxed").collect()
     records: list[CVRecord] = []
-    for row in frame.iter_rows(named=True):
+    for row in iter_manifest_rows(dataset_root):
         try:
             transcript = _extract_transcript(row)
             audio_path, audio_bytes = _resolve_audio(row, dataset_root=dataset_root)
@@ -451,14 +479,26 @@ def load_cv22_corpus_texts(
     deduplicate: bool = False,
     max_samples: int | None = None,
 ) -> list[str]:
-    frames = _collect_manifest_frames(dataset_root)
-    if not frames:
-        raise FileNotFoundError(f"No TSV or Parquet manifest files found under {dataset_root}.")
+    texts = list(
+        iter_cv22_corpus_texts(
+            dataset_root=dataset_root,
+            deduplicate=deduplicate,
+            max_samples=max_samples,
+        )
+    )
+    if not texts:
+        raise RuntimeError("No usable transcripts were found in the dataset manifests.")
+    return texts
 
-    frame = pl.concat(frames, how="diagonal_relaxed").collect()
-    texts: list[str] = []
+
+def iter_cv22_corpus_texts(
+    dataset_root: Path,
+    deduplicate: bool = False,
+    max_samples: int | None = None,
+) -> Iterable[str]:
     seen: set[str] = set()
-    for row in frame.iter_rows(named=True):
+    yielded = 0
+    for row in iter_manifest_rows(dataset_root):
         try:
             transcript = _extract_transcript(row)
         except KeyError:
@@ -467,13 +507,10 @@ def load_cv22_corpus_texts(
             if transcript in seen:
                 continue
             seen.add(transcript)
-        texts.append(transcript)
-        if max_samples is not None and len(texts) >= max_samples:
+        yield transcript
+        yielded += 1
+        if max_samples is not None and yielded >= max_samples:
             break
-
-    if not texts:
-        raise RuntimeError("No usable transcripts were found in the dataset manifests.")
-    return texts
 
 
 class CV22ASRDataset(Dataset[dict[str, Any]]):
