@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import json
 import os
 from pathlib import Path
@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-workers",
         type=int,
-        default=min(32, (os.cpu_count() or 1)),
+        default=min(8, (os.cpu_count() or 1)),
         help="Number of worker threads to use for audio loading and feature extraction.",
     )
     parser.add_argument(
@@ -87,6 +87,9 @@ def extract_record_features(
     featurizer_kwargs: dict[str, object],
     overwrite: bool,
 ) -> str:
+    torch.set_num_threads(1)
+    if hasattr(torch, "set_num_interop_threads"):
+        torch.set_num_interop_threads(1)
     featurizer = AudioFeaturizer(**featurizer_kwargs)
     cache_path = feature_cache_path(split_cache_dir, record.utterance_id, featurizer)
     if cache_path is None:
@@ -97,6 +100,28 @@ def extract_record_features(
     features = featurizer(waveform, sample_rate)
     torch.save(features, cache_path)
     return "written"
+
+
+def iter_completed_futures(executor: ThreadPoolExecutor, records, num_workers: int, submit_task):
+    record_iter = iter(records)
+    pending = set()
+    max_pending = max(num_workers * 2, 1)
+
+    while len(pending) < max_pending:
+        try:
+            pending.add(executor.submit(submit_task, next(record_iter)))
+        except StopIteration:
+            break
+
+    while pending:
+        done, pending = wait(pending, return_when=FIRST_COMPLETED)
+        for future in done:
+            yield future
+        while len(pending) < max_pending:
+            try:
+                pending.add(executor.submit(submit_task, next(record_iter)))
+            except StopIteration:
+                break
 
 
 def main() -> None:
@@ -146,11 +171,6 @@ def main() -> None:
         records = prevalidate_records(list(records), num_workers=args.prevalidate_workers)
         if not records:
             raise RuntimeError("Audio prevalidation removed every sample from the selected split.")
-    elif not isinstance(records, list):
-        records = list(records)
-
-    if not records:
-        raise RuntimeError("No records were selected for feature extraction.")
 
     counters = {"processed": 0, "written": 0, "cache_hits": 0}
     progress = tqdm(desc=f"Extracting {args.split} features", total=args.max_samples, unit="utt")
@@ -167,7 +187,9 @@ def main() -> None:
     num_workers = max(1, args.num_workers)
     try:
         if num_workers == 1:
+            saw_record = False
             for record in records:
+                saw_record = True
                 status = extract_record_features(
                     record=record,
                     split_cache_dir=split_cache_dir,
@@ -178,24 +200,28 @@ def main() -> None:
                 counters["cache_hits"] += int(status == "cache_hit")
                 counters["written"] += int(status == "written")
                 progress.update()
+            if not saw_record:
+                raise RuntimeError("No records were selected for feature extraction.")
         else:
             with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                futures = [
-                    executor.submit(
-                        extract_record_features,
+                def submit_task(record):
+                    return extract_record_features(
                         record,
                         split_cache_dir,
                         featurizer_kwargs,
                         args.overwrite,
                     )
-                    for record in records
-                ]
-                for future in as_completed(futures):
+
+                saw_record = False
+                for future in iter_completed_futures(executor, records, num_workers, submit_task):
+                    saw_record = True
                     status = future.result()
                     counters["processed"] += 1
                     counters["cache_hits"] += int(status == "cache_hit")
                     counters["written"] += int(status == "written")
                     progress.update()
+                if not saw_record:
+                    raise RuntimeError("No records were selected for feature extraction.")
     finally:
         progress.close()
 
