@@ -433,6 +433,10 @@ def _mark_xla_step(device: torch.device) -> None:
         xm.mark_step()
 
 
+def _state_dict_shape_map(state_dict: dict[str, Tensor]) -> dict[str, tuple[int, ...]]:
+    return {key: tuple(value.shape) for key, value in state_dict.items()}
+
+
 def _update_top_checkpoints(
     output_dir: Path,
     checkpoint: dict[str, object],
@@ -448,6 +452,25 @@ def _update_top_checkpoints(
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     else:
         metadata = []
+
+    current_shapes = _state_dict_shape_map(checkpoint["model_state_dict"])
+    compatible_metadata: list[dict[str, object]] = []
+    for item in metadata:
+        checkpoint_path = topk_dir / str(item["path"])
+        if not checkpoint_path.exists():
+            continue
+        saved_checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        saved_shapes = _state_dict_shape_map(saved_checkpoint["model_state_dict"])
+        if saved_shapes != current_shapes:
+            logging.getLogger("train").warning(
+                "Removing incompatible top-k checkpoint %s because parameter shapes do not match the current checkpoint.",
+                checkpoint_path,
+                extra={"rank": 0},
+            )
+            checkpoint_path.unlink()
+            continue
+        compatible_metadata.append(item)
+    metadata = compatible_metadata
 
     filename = _checkpoint_name(epoch=epoch, val_wer=val_wer)
     checkpoint_path = topk_dir / filename
@@ -494,10 +517,10 @@ def _average_topk_checkpoints(output_dir: Path) -> Path | None:
                 for key, value in state_dict.items()
             }
             template_checkpoint = checkpoint
-            template_shapes = {key: tuple(value.shape) for key, value in state_dict.items()}
+            template_shapes = _state_dict_shape_map(state_dict)
             included_metadata.append(item)
         else:
-            current_shapes = {key: tuple(value.shape) for key, value in state_dict.items()}
+            current_shapes = _state_dict_shape_map(state_dict)
             if current_shapes != template_shapes:
                 logging.getLogger("train").warning(
                     "Skipping checkpoint %s during top-k averaging because parameter shapes do not match the template checkpoint.",

@@ -41,6 +41,7 @@ from train import (
     _average_topk_checkpoints,
     _build_fp8_recipe,
     _configure_console_logger,
+    _update_top_checkpoints,
     _validate_device_argument,
     _validate_fp8_runtime,
     _variant_defaults,
@@ -411,6 +412,41 @@ def test_average_topk_checkpoints_logs_shape_mismatch_without_rank_error(
     output = capsys.readouterr().out
     assert "Skipping checkpoint" in output
     assert "rank=0" in output
+
+
+def test_update_top_checkpoints_removes_incompatible_existing_entries(tmp_path: Path) -> None:
+    topk_dir = tmp_path / "checkpoints_topk"
+    topk_dir.mkdir()
+    metadata = [
+        {"epoch": 7, "val_wer": 1.0, "path": "old.pt"},
+    ]
+    (topk_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    save_checkpoint(
+        {
+            "model_state_dict": {"weight": torch.zeros(3, 3)},
+            "tokenizer": {"type": "character", "symbols": ["а"]},
+            "encoder_config": asdict(squeezeformer_variant("xs")),
+        },
+        topk_dir / "old.pt",
+    )
+
+    _update_top_checkpoints(
+        output_dir=tmp_path,
+        checkpoint={
+            "model_state_dict": {"weight": torch.zeros(2, 2)},
+            "tokenizer": {"type": "character", "symbols": ["а"]},
+            "encoder_config": asdict(squeezeformer_variant("xs")),
+        },
+        epoch=8,
+        val_wer=0.9,
+        keep_top_k=2,
+    )
+
+    saved_metadata = json.loads((topk_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert saved_metadata == [
+        {"epoch": 8, "val_wer": 0.9, "path": "checkpoint_epoch=0008_valwer=0.900000.pt"}
+    ]
+    assert not (topk_dir / "old.pt").exists()
 
 
 def test_iter_cv22_records_streams_split_selection(tmp_path: Path) -> None:
