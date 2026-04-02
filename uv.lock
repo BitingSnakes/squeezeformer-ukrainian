@@ -1409,6 +1409,7 @@ name = "squeezeformer-pytorch"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "gradio" },
     { name = "huggingface-hub" },
     { name = "jiwer" },
     { name = "nvidia-npp" },
@@ -1430,6 +1431,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "gradio", specifier = ">=5.38.0" },
     { name = "huggingface-hub", specifier = ">=0.34.0" },
     { name = "jiwer", specifier = ">=4.0.0" },
     { name = "nvidia-npp", specifier = ">=13.1.0.44" },

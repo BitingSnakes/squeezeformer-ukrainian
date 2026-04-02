@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "PyTorch implementation of the Squeezeformer encoder"
 requires-python = ">=3.14"
 dependencies = [
+    "gradio>=5.38.0",
     "huggingface-hub>=0.34.0",
     "jiwer>=4.0.0",
     "nvidia-npp>=13.1.0.44",
