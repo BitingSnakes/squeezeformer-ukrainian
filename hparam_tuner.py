@@ -62,30 +62,7 @@ class TrainingEstimate:
     compile_support_reason: str | None
 
 
-def _parse_xla_device_argument(device: str) -> int | None:
-    normalized = device.strip().lower()
-    if normalized in {"xla", "tpu"}:
-        return None
-    for prefix in ("xla:", "tpu:"):
-        if normalized.startswith(prefix):
-            suffix = normalized[len(prefix) :]
-            if suffix.isdigit():
-                return int(suffix)
-            break
-    raise argparse.ArgumentTypeError(
-        f"Invalid device '{device}': TPU devices must be 'xla', 'xla:N', 'tpu', or 'tpu:N'."
-    )
-
-
-def _is_xla_device_argument(device: str) -> bool:
-    normalized = device.strip().lower()
-    return normalized == "xla" or normalized == "tpu" or normalized.startswith(("xla:", "tpu:"))
-
-
 def _validate_device_argument(device: str) -> str:
-    if _is_xla_device_argument(device):
-        _parse_xla_device_argument(device)
-        return device
     try:
         torch.device(device)
     except (RuntimeError, ValueError) as error:
@@ -149,34 +126,15 @@ def _cpu_memory_gb() -> float | None:
     try:
         page_size = os.sysconf("SC_PAGE_SIZE")
         page_count = os.sysconf("SC_PHYS_PAGES")
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return None
     if not isinstance(page_size, int) or not isinstance(page_count, int):
         return None
     return (page_size * page_count) / float(1024**3)
 
 
-def _xla_memory_gb_hint() -> float | None:
-    accelerator = os.environ.get("TPU_ACCELERATOR_TYPE", "").lower()
-    if accelerator.startswith(("v5litepod", "v5p")):
-        return 96.0
-    if accelerator.startswith(("v4", "v3")):
-        return 32.0
-    if accelerator.startswith(("v2", "v5lite")):
-        return 16.0
-    return None
-
-
 def probe_device(device: str) -> DeviceProfile:
     cpu_count = os.cpu_count() or 1
-    if _is_xla_device_argument(device):
-        return DeviceProfile(
-            device=device,
-            device_type="xla",
-            memory_gb=_xla_memory_gb_hint(),
-            cpu_count=cpu_count,
-        )
-
     resolved = torch.device(device)
     if resolved.type == "cuda":
         if not torch.cuda.is_available():
@@ -204,13 +162,6 @@ def probe_device(device: str) -> DeviceProfile:
             memory_gb=_cpu_memory_gb(),
             cpu_count=cpu_count,
         )
-    if resolved.type == "xla":
-        return DeviceProfile(
-            device=str(resolved),
-            device_type="xla",
-            memory_gb=_xla_memory_gb_hint(),
-            cpu_count=cpu_count,
-        )
     raise ValueError(f"Unsupported device type for tuning: {resolved.type}")
 
 
@@ -227,8 +178,6 @@ def _round_to_multiple(value: float, multiple: int) -> int:
 
 
 def _fp8_support_status(device: str, variant: str) -> tuple[bool, str | None]:
-    if _is_xla_device_argument(device):
-        return False, "FP8 requires a CUDA device."
     resolved = torch.device(device)
     if resolved.type != "cuda":
         return False, "FP8 requires a CUDA device."
@@ -254,8 +203,6 @@ def _fp8_support_status(device: str, variant: str) -> tuple[bool, str | None]:
 
 
 def _compile_support_status(device: str) -> tuple[bool, str | None]:
-    if _is_xla_device_argument(device):
-        return False, "--compile is not currently supported on TPU/XLA."
     return True, None
 
 
@@ -265,7 +212,7 @@ def _resolve_training_dtype(args: argparse.Namespace) -> tuple[str, bool, str | 
     if requested_dtype == "auto":
         if fp8_supported:
             return "fp8", fp8_supported, fp8_reason
-        if not _is_xla_device_argument(args.device) and torch.device(args.device).type == "cuda":
+        if torch.device(args.device).type == "cuda":
             if torch.cuda.is_bf16_supported():
                 return "bfloat16", fp8_supported, fp8_reason
             return "float16", fp8_supported, fp8_reason
@@ -297,9 +244,7 @@ def estimate_training_hparams(args: argparse.Namespace) -> TrainingEstimate:
         0.75 if args.decode_strategy == "beam" and profile.device_type != "cuda" else 1.0
     )
 
-    memory_gb = profile.memory_gb or (
-        16.0 if profile.device_type == "cpu" else 32.0 if profile.device_type == "xla" else 8.0
-    )
+    memory_gb = profile.memory_gb or (16.0 if profile.device_type == "cpu" else 8.0)
     if profile.device_type == "cpu":
         memory_factor = math.sqrt(max(memory_gb, 4.0) / 16.0)
         frame_budget = (
@@ -337,25 +282,6 @@ def estimate_training_hparams(args: argparse.Namespace) -> TrainingEstimate:
         num_workers = min(8, max(2, profile.cpu_count // 2))
         metadata_workers = min(8, max(2, profile.cpu_count // 2))
         pin_memory = True
-    elif profile.device_type == "xla":
-        memory_factor = max(memory_gb, 16.0) / 32.0
-        frame_budget = (
-            args.base_max_batch_frames
-            * 1.5
-            * memory_factor
-            * dtype_factor
-            * augmentation_factor
-            / variant_factor
-        )
-        max_batch_frames = min(192000, max(12000, _round_to_multiple(frame_budget, 2000)))
-        target_effective_frames = max(
-            args.base_max_batch_frames * args.base_gradient_accumulation_steps * 3,
-            144000,
-        )
-        batch_cap = 64
-        num_workers = min(8, max(2, profile.cpu_count // 2))
-        metadata_workers = min(8, max(2, profile.cpu_count // 2))
-        pin_memory = False
     else:
         memory_factor = math.sqrt(max(memory_gb, 8.0) / 16.0)
         frame_budget = (
@@ -384,8 +310,6 @@ def estimate_training_hparams(args: argparse.Namespace) -> TrainingEstimate:
     if args.decode_strategy == "beam":
         if profile.device_type == "cpu":
             beam_size = min(args.beam_size, 4 if args.variant in {"sm", "m", "ml", "l"} else 6)
-        elif profile.device_type == "xla":
-            beam_size = min(args.beam_size, 6)
         else:
             beam_size = args.beam_size
     else:

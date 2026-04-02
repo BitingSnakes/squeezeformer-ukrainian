@@ -65,21 +65,6 @@ def test_build_train_command_includes_estimated_knobs() -> None:
     assert "--compile" in command
 
 
-def test_estimate_training_hparams_xla_smoke() -> None:
-    args = _base_args(device="xla")
-
-    estimate = estimate_training_hparams(args)
-
-    assert estimate.batch_size >= 1
-    assert estimate.max_batch_frames >= 12000
-    assert estimate.gradient_accumulation_steps >= 1
-    assert estimate.num_workers >= 2
-    assert estimate.metadata_workers >= 2
-    assert estimate.prefetch_factor == 2
-    assert estimate.beam_size <= 6
-    assert estimate.estimated_effective_frames >= estimate.max_batch_frames
-
-
 def test_larger_variant_reduces_frame_budget(monkeypatch) -> None:
     args_sm = _base_args(variant="sm")
     args_l = _base_args(variant="l")

@@ -55,11 +55,6 @@ from squeezeformer_pytorch.runtime_types import (
 )
 
 try:
-    import torch_xla.core.xla_model as xm
-except ImportError:
-    xm = None
-
-try:
     import transformer_engine.pytorch as te
     from transformer_engine.common.recipe import DelayedScaling, Format
 except (ImportError, OSError):
@@ -115,30 +110,7 @@ def _configure_console_logger(rank: int, is_main_process: bool) -> logging.Logge
     return logging.LoggerAdapter(logger, {"rank": rank})
 
 
-def _parse_xla_device_argument(device: str) -> int | None:
-    normalized = device.strip().lower()
-    if normalized in {"xla", "tpu"}:
-        return None
-    for prefix in ("xla:", "tpu:"):
-        if normalized.startswith(prefix):
-            suffix = normalized[len(prefix) :]
-            if suffix.isdigit():
-                return int(suffix)
-            break
-    raise argparse.ArgumentTypeError(
-        f"Invalid device '{device}': TPU devices must be 'xla', 'xla:N', 'tpu', or 'tpu:N'."
-    )
-
-
-def _is_xla_device_argument(device: str) -> bool:
-    normalized = device.strip().lower()
-    return normalized == "xla" or normalized == "tpu" or normalized.startswith(("xla:", "tpu:"))
-
-
 def _validate_device_argument(device: str) -> str:
-    if _is_xla_device_argument(device):
-        _parse_xla_device_argument(device)
-        return device
     try:
         torch.device(device)
     except (RuntimeError, ValueError) as error:
@@ -146,18 +118,7 @@ def _validate_device_argument(device: str) -> str:
     return device
 
 
-def _require_xla_runtime() -> None:
-    if xm is None:
-        raise RuntimeError(
-            "TPU/XLA support requires torch_xla. Install a matching torch_xla build and rerun."
-        )
-
-
 def resolve_device(device: str) -> torch.device:
-    if _is_xla_device_argument(device):
-        _require_xla_runtime()
-        index = _parse_xla_device_argument(device)
-        return xm.xla_device(n=index)
     return torch.device(device)
 
 
@@ -166,12 +127,6 @@ def _validate_device_ready(device: torch.device) -> None:
         raise ValueError(
             "CUDA was requested with --device, but torch.cuda.is_available() is false."
         )
-    if device.type == "xla":
-        _require_xla_runtime()
-
-
-def _is_xla_device(device: torch.device) -> bool:
-    return device.type == "xla"
 
 
 def _variant_defaults(variant: str) -> SchedulerDefaults:
@@ -540,15 +495,7 @@ def _autocast_context(
         return nullcontext()
     if device.type == "cpu" and autocast_dtype == torch.float16:
         raise ValueError("float16 autocast is not supported on CPU. Use bfloat16 or float32.")
-    if device.type == "xla" and autocast_dtype == torch.float16:
-        raise ValueError("float16 autocast is not supported on TPU/XLA. Use bfloat16 or float32.")
     return torch.autocast(device_type=device.type, dtype=autocast_dtype)
-
-
-def _mark_xla_step(device: torch.device) -> None:
-    if _is_xla_device(device):
-        _require_xla_runtime()
-        xm.mark_step()
 
 
 def _state_dict_shape_map(state_dict: dict[str, Tensor]) -> dict[str, tuple[int, ...]]:
@@ -1092,8 +1039,6 @@ def evaluate(
                     lm_weight=lm_weight,
                 )
             )
-            _mark_xla_step(device)
-
     metrics = {
         "loss": total_loss / max(1, total_batches),
         "cer": char_error_rate(references, hypotheses),
@@ -1222,8 +1167,6 @@ def main() -> None:
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     requested_device = resolve_device(args.device)
     _validate_device_ready(requested_device)
-    if distributed and _is_xla_device(requested_device):
-        raise ValueError("TPU/XLA training does not support torchrun-style distributed mode here.")
     is_main_process = rank == 0
     logger = _configure_console_logger(rank=rank, is_main_process=is_main_process)
     if distributed:
@@ -1232,8 +1175,6 @@ def main() -> None:
             dist.init_process_group(backend=backend)
     if distributed and args.compile:
         raise ValueError("--compile is not currently supported together with distributed training.")
-    if _is_xla_device(requested_device) and args.compile:
-        raise ValueError("--compile is not currently supported on TPU/XLA.")
     torch.manual_seed(args.seed)
     output_dir = Path(args.output_dir)
     if is_main_process:
@@ -1625,12 +1566,8 @@ def main() -> None:
                     )
                 else:
                     grad_norm = 0.0
-                if _is_xla_device(device):
-                    for optimizer in optimizers:
-                        xm.optimizer_step(optimizer, barrier=False)
-                else:
-                    for optimizer in optimizers:
-                        scaler.step(optimizer)
+                for optimizer in optimizers:
+                    scaler.step(optimizer)
                 scaler.update()
                 for optimizer in optimizers:
                     optimizer.zero_grad(set_to_none=True)
@@ -1639,7 +1576,6 @@ def main() -> None:
                 global_step += 1
                 if ema is not None:
                     ema.update(model)
-                _mark_xla_step(device)
 
                 if is_main_process and global_step % args.log_every == 0:
                     learning_rates = {

@@ -50,28 +50,6 @@ uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 uv pip install polars jiwer sentencepiece huggingface_hub trackio pytest ruff
 ```
 
-TPU setup:
-
-```bash
-uv venv .venv
-source .venv/bin/activate
-
-# Install PyTorch, TorchAudio, and Torch/XLA builds that match your TPU runtime.
-uv pip install torch torchaudio torch_xla
-
-# Install the project dependencies.
-uv pip install -e .
-uv pip install pytest ruff
-```
-
-For TPU runs, install a `torch_xla` build that matches your `torch` version and runtime, then
-pass `--device xla` or `--device xla:N` to `train.py` or `evaluate.py`. The current TPU path is
-single-process only; the existing `torchrun` distributed path remains CUDA/CPU-oriented.
-
-On managed TPU environments such as Colab or Kaggle, prefer creating the `uv` environment after
-the TPU runtime is already attached. If the runtime preinstalls `torch`, `torch_xla`, or related
-TPU packages, keep those versions aligned when installing into `.venv`.
-
 ## Dataset Access
 
 The scripts use `speech-uk/cv22`:
@@ -318,10 +296,6 @@ depend on hardware or runtime pressure:
 - `--prefetch-factor`
 - `--beam-size` for CPU beam-search runs
 
-`hparam_tuner.py` also accepts `--device xla` for TPU-oriented estimates. That path uses
-conservative TPU heuristics instead of live HBM probing, so treat the output as a starting
-point and adjust `--max-batch-frames` or accumulation if your runtime still OOMs.
-
 Example CPU estimate for the command below:
 
 ```bash
@@ -427,16 +401,6 @@ HF_TOKEN=... uv run python evaluate.py \
   --dtype bfloat16 \
   --decode-strategy beam \
   --beam-size 8
-```
-
-Evaluate on TPU:
-
-```bash
-HF_TOKEN=... uv run python evaluate.py \
-  --checkpoint artifacts/cv22-sm/checkpoint_best.pt \
-  --split test \
-  --device xla \
-  --dtype bfloat16
 ```
 
 Benchmark:

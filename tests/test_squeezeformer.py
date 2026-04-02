@@ -345,18 +345,13 @@ def test_ngram_lm_prefers_seen_extension(tmp_path: Path) -> None:
     assert loaded.score_text("abba") > loaded.score_text("abza")
 
 
-def test_validate_device_argument_accepts_xla_aliases() -> None:
-    assert _validate_device_argument("xla") == "xla"
-    assert _validate_device_argument("xla:0") == "xla:0"
-    assert _validate_device_argument("tpu:1") == "tpu:1"
+def test_validate_device_argument_accepts_standard_torch_devices() -> None:
+    assert _validate_device_argument("cpu") == "cpu"
+    assert _validate_device_argument("cuda:0") == "cuda:0"
 
 
-def test_resolve_device_requires_torch_xla_for_xla_alias() -> None:
-    try:
-        import torch_xla.core.xla_model  # noqa: F401
-    except ImportError:
-        with pytest.raises(RuntimeError, match="torch_xla"):
-            resolve_device("xla")
+def test_resolve_device_uses_torch_device() -> None:
+    assert resolve_device("cpu") == torch.device("cpu")
 
 
 def test_validate_fp8_runtime_rejects_non_cuda_device() -> None:
