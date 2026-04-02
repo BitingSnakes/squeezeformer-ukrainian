@@ -692,6 +692,15 @@ def _aed_cross_entropy_loss(
     return loss / normalizer
 
 
+def _compute_grad_norm(parameters, norm_type: float = 2.0) -> Tensor:
+    grads = [parameter.grad.detach() for parameter in parameters if parameter.grad is not None]
+    if not grads:
+        return torch.tensor(0.0)
+    device = grads[0].device
+    per_param_norms = torch.stack([torch.norm(grad, p=norm_type).to(device=device) for grad in grads])
+    return torch.norm(per_param_norms, p=norm_type)
+
+
 def build_paper_scheduler(
     optimizer: torch.optim.Optimizer,
     steps_per_epoch: int,
@@ -2262,14 +2271,11 @@ def main() -> None:
                 train_loader
             )
             if should_step:
+                for optimizer in optimizers:
+                    scaler.unscale_(optimizer)
+                grad_norm = float(_compute_grad_norm(model.parameters()).item())
                 if args.grad_clip_norm > 0:
-                    for optimizer in optimizers:
-                        scaler.unscale_(optimizer)
-                    grad_norm = float(
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
-                    )
-                else:
-                    grad_norm = 0.0
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
                 for optimizer in optimizers:
                     scaler.step(optimizer)
                 scaler.update()
