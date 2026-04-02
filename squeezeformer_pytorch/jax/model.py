@@ -44,6 +44,12 @@ class ScaleBiasLayer(nn.Module):
         return x * scale + bias
 
 
+class IdentityLayer(nn.Module):
+    @nn.compact
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        return x
+
+
 class RelativePositionalEncoding(nn.Module):
     dim: int
     max_length: int = 5000
@@ -436,7 +442,7 @@ class SqueezeformerBlock(nn.Module):
                     )
                 )
             elif token == "s":
-                layers.append(nn.Identity())
+                layers.append(IdentityLayer())
             else:
                 raise ValueError(f"Unsupported block token: {token}")
         self.layers = tuple(layers)
