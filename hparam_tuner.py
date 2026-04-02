@@ -11,16 +11,17 @@ import torch
 from squeezeformer_pytorch.model import FP8_SHAPE_ALIGNMENT, transformer_engine_available
 from squeezeformer_pytorch.asr import SqueezeformerCTC
 from squeezeformer_pytorch.model import squeezeformer_variant
+from squeezeformer_pytorch.runtime_types import DecodeStrategy, DTypeChoice, OptimizerChoice
 
 try:
     import transformer_engine.pytorch as te
 except (ImportError, OSError):
     te = None
 
-DTYPE_CHOICES = ("auto", "float32", "float16", "bfloat16", "fp8")
-OPTIMIZER_CHOICES = ("muon", "adamw")
+DTYPE_CHOICES = ("auto",) + tuple(choice.value for choice in DTypeChoice)
+OPTIMIZER_CHOICES = tuple(choice.value for choice in OptimizerChoice)
 TOKENIZER_CHOICES = ("sentencepiece", "character")
-DECODE_STRATEGY_CHOICES = ("greedy", "beam")
+DECODE_STRATEGY_CHOICES = tuple(choice.value for choice in DecodeStrategy)
 VARIANT_CHOICES = ("xs", "s", "sm", "m", "ml", "l")
 
 
@@ -52,8 +53,41 @@ class TrainingEstimate:
     target_effective_frames: int
     estimated_effective_frames: int
     resolved_dtype: str
+    resolved_compile: bool
     fp8_supported: bool
     fp8_support_reason: str | None
+    compile_support_reason: str | None
+
+
+def _parse_xla_device_argument(device: str) -> int | None:
+    normalized = device.strip().lower()
+    if normalized in {"xla", "tpu"}:
+        return None
+    for prefix in ("xla:", "tpu:"):
+        if normalized.startswith(prefix):
+            suffix = normalized[len(prefix) :]
+            if suffix.isdigit():
+                return int(suffix)
+            break
+    raise argparse.ArgumentTypeError(
+        f"Invalid device '{device}': TPU devices must be 'xla', 'xla:N', 'tpu', or 'tpu:N'."
+    )
+
+
+def _is_xla_device_argument(device: str) -> bool:
+    normalized = device.strip().lower()
+    return normalized == "xla" or normalized == "tpu" or normalized.startswith(("xla:", "tpu:"))
+
+
+def _validate_device_argument(device: str) -> str:
+    if _is_xla_device_argument(device):
+        _parse_xla_device_argument(device)
+        return device
+    try:
+        torch.device(device)
+    except (RuntimeError, ValueError) as error:
+        raise argparse.ArgumentTypeError(f"Invalid device '{device}': {error}") from error
+    return device
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,13 +99,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optimizer", default="muon", choices=OPTIMIZER_CHOICES)
     parser.add_argument("--tokenizer", default="sentencepiece", choices=TOKENIZER_CHOICES)
     parser.add_argument("--spm-vocab-size", type=int, default=128)
-    parser.add_argument("--device", required=True)
+    parser.add_argument("--device", type=_validate_device_argument, required=True)
     parser.add_argument("--dtype", default="auto", choices=DTYPE_CHOICES)
-    parser.add_argument("--feature-cache-dir", default="artifacts/feature_cache")
+    parser.add_argument("--feature-cache-dir", default=None)
     parser.add_argument(
         "--compile",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
     )
     parser.add_argument("--speed-perturb-prob", type=float, default=0.0)
     parser.add_argument("--noise-prob", type=float, default=0.0)
@@ -131,8 +165,16 @@ def _xla_memory_gb_hint() -> float | None:
 
 
 def probe_device(device: str) -> DeviceProfile:
-    resolved = torch.device(device)
     cpu_count = os.cpu_count() or 1
+    if _is_xla_device_argument(device):
+        return DeviceProfile(
+            device=device,
+            device_type="xla",
+            memory_gb=_xla_memory_gb_hint(),
+            cpu_count=cpu_count,
+        )
+
+    resolved = torch.device(device)
     if resolved.type == "cuda":
         if not torch.cuda.is_available():
             raise ValueError("CUDA was requested, but torch.cuda.is_available() is false.")
@@ -182,6 +224,8 @@ def _round_to_multiple(value: float, multiple: int) -> int:
 
 
 def _fp8_support_status(device: str, variant: str) -> tuple[bool, str | None]:
+    if _is_xla_device_argument(device):
+        return False, "FP8 requires a CUDA device."
     resolved = torch.device(device)
     if resolved.type != "cuda":
         return False, "FP8 requires a CUDA device."
@@ -206,13 +250,19 @@ def _fp8_support_status(device: str, variant: str) -> tuple[bool, str | None]:
     return True, None
 
 
+def _compile_support_status(device: str) -> tuple[bool, str | None]:
+    if _is_xla_device_argument(device):
+        return False, "--compile is not currently supported on TPU/XLA."
+    return True, None
+
+
 def _resolve_training_dtype(args: argparse.Namespace) -> tuple[str, bool, str | None]:
     fp8_supported, fp8_reason = _fp8_support_status(args.device, args.variant)
     requested_dtype = args.dtype
     if requested_dtype == "auto":
         if fp8_supported:
             return "fp8", fp8_supported, fp8_reason
-        if torch.device(args.device).type == "cuda":
+        if not _is_xla_device_argument(args.device) and torch.device(args.device).type == "cuda":
             if torch.cuda.is_bf16_supported():
                 return "bfloat16", fp8_supported, fp8_reason
             return "float16", fp8_supported, fp8_reason
@@ -226,6 +276,8 @@ def _resolve_training_dtype(args: argparse.Namespace) -> tuple[str, bool, str | 
 def estimate_training_hparams(args: argparse.Namespace) -> TrainingEstimate:
     profile = probe_device(args.device)
     resolved_dtype, fp8_supported, fp8_support_reason = _resolve_training_dtype(args)
+    compile_supported, compile_support_reason = _compile_support_status(args.device)
+    resolved_compile = args.compile and compile_supported
     vocab_size = args.spm_vocab_size if args.tokenizer == "sentencepiece" else 256
     model_parameters = count_model_parameters(args.variant, vocab_size=vocab_size)
     model_parameters_millions = model_parameters / 1_000_000.0
@@ -355,23 +407,24 @@ def estimate_training_hparams(args: argparse.Namespace) -> TrainingEstimate:
         target_effective_frames=target_effective_frames,
         estimated_effective_frames=max_batch_frames * gradient_accumulation_steps,
         resolved_dtype=resolved_dtype,
+        resolved_compile=resolved_compile,
         fp8_supported=fp8_supported,
         fp8_support_reason=fp8_support_reason,
+        compile_support_reason=compile_support_reason,
     )
 
 
 def build_train_command(args: argparse.Namespace, estimate: TrainingEstimate) -> str:
     command = [
         "uv run python train.py",
+        f"--dataset-repo {args.dataset_repo}",
         f"--variant {args.variant}",
         f"--optimizer {args.optimizer}",
         f"--tokenizer {args.tokenizer}",
-        f"--spm-vocab-size {args.spm_vocab_size}",
         f"--device {args.device}",
         f"--dtype {estimate.resolved_dtype}",
-        "--compile" if args.compile else "--no-compile",
+        "--compile" if estimate.resolved_compile else "--no-compile",
         f"--gradient-accumulation-steps {estimate.gradient_accumulation_steps}",
-        f"--feature-cache-dir {args.feature_cache_dir}",
         f"--max-batch-frames {estimate.max_batch_frames}",
         f"--speed-perturb-prob {args.speed_perturb_prob}",
         f"--noise-prob {args.noise_prob}",
@@ -387,6 +440,10 @@ def build_train_command(args: argparse.Namespace, estimate: TrainingEstimate) ->
         "--pin-memory" if estimate.pin_memory else "--no-pin-memory",
         "--persistent-workers" if estimate.persistent_workers else "--no-persistent-workers",
     ]
+    if args.tokenizer == "sentencepiece":
+        command.insert(4, f"--spm-vocab-size {args.spm_vocab_size}")
+    if args.feature_cache_dir is not None:
+        command.insert(8, f"--feature-cache-dir {args.feature_cache_dir}")
     return " \\\n  ".join(command)
 
 
@@ -402,11 +459,12 @@ def main() -> None:
             "device": args.device,
             "dtype": args.dtype,
             "resolved_dtype": estimate.resolved_dtype,
+            "compile": args.compile,
+            "resolved_compile": estimate.resolved_compile,
             "decode_strategy": args.decode_strategy,
             "requested_beam_size": args.beam_size,
             "output_dir": args.output_dir,
             "feature_cache_dir": args.feature_cache_dir,
-            "compile": args.compile,
             "epochs": args.epochs,
         },
         "estimate": asdict(estimate),
