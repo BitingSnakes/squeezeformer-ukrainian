@@ -226,12 +226,24 @@ def inference_autocast_context(device: torch.device, dtype: DTypeChoice, *, fp8_
 
 
 def build_app(session: ASRInferenceSession) -> gr.Blocks:
+    current_session = {"value": session}
+
+    def load_session_for_checkpoint(checkpoint: str) -> str:
+        checkpoint = checkpoint.strip() or DEFAULT_CHECKPOINT
+        current_session["value"] = ASRInferenceSession(
+            checkpoint,
+            session.device,
+            session.dtype,
+            fp8_recipe=session.fp8_recipe,
+        )
+        return f"Loaded checkpoint: {current_session['value'].checkpoint_path}"
+
     def transcribe_for_gradio(audio: str | tuple[int, list[float]] | None) -> str:
         if audio is None:
             return "Upload or record audio first."
 
         if isinstance(audio, str):
-            return session.transcribe_file(audio)
+            return current_session["value"].transcribe_file(audio)
 
         sample_rate, samples = audio
         waveform = torch.tensor(samples, dtype=torch.float32)
@@ -242,14 +254,29 @@ def build_app(session: ASRInferenceSession) -> gr.Blocks:
 
         with tempfile.NamedTemporaryFile(suffix=".wav") as temp_audio:
             torchaudio.save(temp_audio.name, waveform, sample_rate)
-            return session.transcribe_file(temp_audio.name)
+            return current_session["value"].transcribe_file(temp_audio.name)
 
     with gr.Blocks(title="Ukrainian Squeezeformer ASR") as app:
         gr.Markdown("# Ukrainian Squeezeformer ASR")
-        gr.Markdown(f"Checkpoint: `{session.checkpoint_path}`")
+        checkpoint_input = gr.Textbox(
+            value=session.checkpoint_path,
+            label="Checkpoint",
+            lines=1,
+        )
+        checkpoint_status = gr.Textbox(
+            value=f"Loaded checkpoint: {session.checkpoint_path}",
+            label="Checkpoint Status",
+            interactive=False,
+        )
+        load_checkpoint_button = gr.Button("Load Checkpoint")
         audio_input = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Audio")
         output = gr.Textbox(label="Transcript", lines=4)
         submit = gr.Button("Transcribe")
+        load_checkpoint_button.click(
+            fn=load_session_for_checkpoint,
+            inputs=checkpoint_input,
+            outputs=checkpoint_status,
+        )
         submit.click(fn=transcribe_for_gradio, inputs=audio_input, outputs=output)
         audio_input.change(fn=transcribe_for_gradio, inputs=audio_input, outputs=output)
     return app
