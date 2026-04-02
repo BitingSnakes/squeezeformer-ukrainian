@@ -108,6 +108,11 @@ def main() -> None:
     blank_prune_threshold = float(training_args.get("blank_prune_threshold", 0.0))
     blank_prune_layer = training_args.get("blank_prune_layer")
     blank_prune_min_keep_frames = int(training_args.get("blank_prune_min_keep_frames", 1))
+    aed_decoder_enabled = bool(training_args.get("aed_decoder", False))
+    aed_decoder_layers = int(training_args.get("aed_decoder_layers", 1))
+    aed_decoder_heads = int(training_args.get("aed_decoder_heads", 4))
+    aed_decoder_dropout = float(training_args.get("aed_decoder_dropout", 0.1))
+    liberta_distill_enabled = bool(training_args.get("liberta_distill", False))
     if intermediate_ctc_weight > 0.0:
         if intermediate_ctc_layers is not None:
             resolved_intermediate_ctc_layers = tuple(int(layer) for layer in intermediate_ctc_layers)
@@ -128,6 +133,11 @@ def main() -> None:
         ),
         blank_prune_threshold=blank_prune_threshold,
         blank_prune_min_keep_frames=blank_prune_min_keep_frames,
+        aed_decoder_enabled=aed_decoder_enabled,
+        aed_decoder_layers=aed_decoder_layers,
+        aed_decoder_heads=aed_decoder_heads,
+        aed_decoder_dropout=aed_decoder_dropout,
+        liberta_distill_enabled=liberta_distill_enabled,
     )
     model.load_state_dict(checkpoint["model_state_dict"])
     device = resolve_device(args.device)

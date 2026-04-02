@@ -21,6 +21,18 @@ from .model import (
 )
 
 
+def _lengths_to_padding_mask(lengths: Tensor, max_length: int) -> Tensor:
+    positions = torch.arange(max_length, device=lengths.device)
+    return positions.unsqueeze(0) >= lengths.unsqueeze(1)
+
+
+def mean_pool_sequence(x: Tensor, lengths: Tensor) -> Tensor:
+    mask = ~_lengths_to_padding_mask(lengths, x.size(1))
+    masked = x * mask.unsqueeze(-1).to(dtype=x.dtype)
+    denom = mask.sum(dim=1, keepdim=True).clamp_min(1).to(dtype=x.dtype)
+    return masked.sum(dim=1) / denom
+
+
 class Tokenizer:
     blank_id: int
     pad_id: int
@@ -238,6 +250,67 @@ def prune_encoder_frames_by_blank_probability(
     return pruned_batch, lengths.new_tensor(pruned_lengths)
 
 
+class TrainingOnlyAEDDecoder(nn.Module):
+    def __init__(
+        self,
+        *,
+        acoustic_vocab_size: int,
+        model_dim: int,
+        num_layers: int = 1,
+        num_heads: int = 4,
+        dropout: float = 0.1,
+        max_target_length: int = 512,
+    ) -> None:
+        super().__init__()
+        self.pad_id = 0
+        self.bos_id = 1
+        self.eos_id = 2
+        self.token_offset = 3
+        self.decoder_vocab_size = acoustic_vocab_size + self.token_offset
+        self.embedding = nn.Embedding(
+            self.decoder_vocab_size,
+            model_dim,
+            padding_idx=self.pad_id,
+        )
+        self.position_embedding = nn.Embedding(max_target_length, model_dim)
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=model_dim,
+            nhead=num_heads,
+            dim_feedforward=model_dim * 4,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+        )
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
+        self.output_projection = nn.Linear(model_dim, self.decoder_vocab_size)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(
+        self,
+        memory: Tensor,
+        memory_lengths: Tensor,
+        decoder_inputs: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        seq_len = decoder_inputs.size(1)
+        positions = torch.arange(seq_len, device=decoder_inputs.device)
+        x = self.embedding(decoder_inputs) + self.position_embedding(positions).unsqueeze(0)
+        x = self.dropout(x)
+        causal_mask = torch.triu(
+            torch.ones(seq_len, seq_len, device=decoder_inputs.device, dtype=torch.bool),
+            diagonal=1,
+        )
+        target_padding_mask = decoder_inputs.eq(self.pad_id)
+        memory_padding_mask = _lengths_to_padding_mask(memory_lengths, memory.size(1))
+        hidden = self.decoder(
+            x,
+            memory,
+            tgt_mask=causal_mask,
+            tgt_key_padding_mask=target_padding_mask,
+            memory_key_padding_mask=memory_padding_mask,
+        )
+        return self.output_projection(hidden), hidden
+
+
 class SqueezeformerCTC(nn.Module):
     def __init__(
         self,
@@ -247,6 +320,12 @@ class SqueezeformerCTC(nn.Module):
         blank_prune_layer: int | None = None,
         blank_prune_threshold: float = 0.0,
         blank_prune_min_keep_frames: int = 1,
+        aed_decoder_enabled: bool = False,
+        aed_decoder_layers: int = 1,
+        aed_decoder_heads: int = 4,
+        aed_decoder_dropout: float = 0.1,
+        liberta_distill_enabled: bool = False,
+        liberta_hidden_size: int = 1024,
         use_transformer_engine: bool = False,
     ) -> None:
         super().__init__()
@@ -255,6 +334,8 @@ class SqueezeformerCTC(nn.Module):
         self.blank_prune_layer = blank_prune_layer
         self.blank_prune_threshold = blank_prune_threshold
         self.blank_prune_min_keep_frames = blank_prune_min_keep_frames
+        self.aed_decoder_enabled = aed_decoder_enabled
+        self.liberta_distill_enabled = liberta_distill_enabled
         self.use_transformer_engine = use_transformer_engine
         self.encoder = SqueezeformerEncoder(
             encoder_config,
@@ -277,6 +358,22 @@ class SqueezeformerCTC(nn.Module):
                 )
                 for layer_index in sorted(ctc_head_layers)
             }
+        )
+        self.aed_decoder = (
+            TrainingOnlyAEDDecoder(
+                acoustic_vocab_size=vocab_size,
+                model_dim=encoder_config.d_model,
+                num_layers=aed_decoder_layers,
+                num_heads=aed_decoder_heads,
+                dropout=aed_decoder_dropout,
+            )
+            if aed_decoder_enabled
+            else None
+        )
+        self.liberta_projection = (
+            nn.Linear(encoder_config.d_model, liberta_hidden_size)
+            if liberta_distill_enabled
+            else None
         )
 
     def _post_block_transforms(self) -> dict[int, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]]:
@@ -364,15 +461,42 @@ class SqueezeformerCTC(nn.Module):
     def to_config_dict(self) -> dict[str, object]:
         return asdict(self.encoder_config)
 
+    def aed_forward(
+        self,
+        features: Tensor,
+        feature_lengths: Tensor,
+        decoder_inputs: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        if self.aed_decoder is None:
+            raise RuntimeError("AED decoder is disabled for this model.")
+        if self.blank_prune_layer is not None and self.blank_prune_threshold > 0.0:
+            encoded, output_lengths, _, _ = self.encoder.forward_with_intermediates(
+                features,
+                feature_lengths,
+                intermediate_layer_indices=(),
+                post_block_transforms=self._post_block_transforms(),
+            )
+        else:
+            encoded, output_lengths = self.encoder(features, feature_lengths)
+        logits, hidden = self.aed_decoder(encoded, output_lengths, decoder_inputs)
+        return logits, output_lengths, hidden
+
+    def project_aed_hidden_for_liberta(self, hidden: Tensor, lengths: Tensor) -> Tensor:
+        if self.liberta_projection is None:
+            raise RuntimeError("LiBERTa distillation head is disabled for this model.")
+        pooled = mean_pool_sequence(hidden, lengths)
+        return self.liberta_projection(pooled)
+
     def load_state_dict(self, state_dict: dict[str, object], strict: bool = True):
         # Backward-compatibility for checkpoints created with a single
         # `intermediate_classifier.*` head before multi-head support landed.
+        remapped_state_dict = dict(state_dict)
         if (
-            "intermediate_classifier.weight" in state_dict
+            "intermediate_classifier.weight" in remapped_state_dict
             and len(self.intermediate_ctc_layers) == 1
-            and f"intermediate_classifiers.{self.intermediate_ctc_layers[0]}.weight" not in state_dict
+            and f"intermediate_classifiers.{self.intermediate_ctc_layers[0]}.weight"
+            not in remapped_state_dict
         ):
-            remapped_state_dict = dict(state_dict)
             layer_key = str(self.intermediate_ctc_layers[0])
             for suffix in ("weight", "bias"):
                 old_key = f"intermediate_classifier.{suffix}"
@@ -380,8 +504,19 @@ class SqueezeformerCTC(nn.Module):
                     remapped_state_dict[f"intermediate_classifiers.{layer_key}.{suffix}"] = (
                         remapped_state_dict.pop(old_key)
                     )
-            state_dict = remapped_state_dict
-        return super().load_state_dict(state_dict, strict=strict)
+        if self.aed_decoder is None:
+            remapped_state_dict = {
+                key: value
+                for key, value in remapped_state_dict.items()
+                if not key.startswith("aed_decoder.")
+            }
+        if self.liberta_projection is None:
+            remapped_state_dict = {
+                key: value
+                for key, value in remapped_state_dict.items()
+                if not key.startswith("liberta_projection.")
+            }
+        return super().load_state_dict(remapped_state_dict, strict=strict)
 
 
 def load_lm_scorer(spec: str | None) -> Callable[[str], float] | None:

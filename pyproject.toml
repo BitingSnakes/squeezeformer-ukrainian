@@ -29,6 +29,7 @@ train = [
     "polars>=1.30.0",
     "torchcodec>=0.11.0",
     "trackio>=0.20.2",
+    "transformers>=4.57.0",
     "transformer-engine[pytorch]>=2.13.0",
 ]
 

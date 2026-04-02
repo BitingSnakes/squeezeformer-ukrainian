@@ -21,6 +21,7 @@ import torch
 import torch.distributed as dist
 import trackio
 from torch import Tensor, nn
+from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from squeezeformer_pytorch.asr import (
@@ -67,6 +68,12 @@ except (ImportError, OSError):
     DelayedScaling = None
     Format = None
 
+try:
+    from transformers import AutoModel, AutoTokenizer
+except ImportError:
+    AutoModel = None
+    AutoTokenizer = None
+
 
 def _checkpoint_name(epoch: int, val_wer: float) -> str:
     return f"checkpoint_epoch={epoch:04d}_valwer={val_wer:.6f}.pt"
@@ -77,8 +84,16 @@ def _safetensors_path(checkpoint_path: Path) -> Path:
 
 
 def _inference_checkpoint_payload(checkpoint: dict[str, object]) -> dict[str, object]:
+    state_dict = {
+        key: value
+        for key, value in checkpoint["model_state_dict"].items()
+        if not key.startswith("aed_decoder.") and not key.startswith("liberta_projection.")
+    }
+    training_args = dict(checkpoint.get("training_args", {}))
+    training_args["aed_decoder"] = False
+    training_args["liberta_distill"] = False
     return {
-        "model_state_dict": checkpoint["model_state_dict"],
+        "model_state_dict": state_dict,
         "encoder_config": checkpoint["encoder_config"],
         "tokenizer": checkpoint["tokenizer"],
         "featurizer_config": checkpoint.get("featurizer_config", {}),
@@ -86,7 +101,7 @@ def _inference_checkpoint_payload(checkpoint: dict[str, object]) -> dict[str, ob
         "global_step": checkpoint.get("global_step"),
         "best_val_wer": checkpoint.get("best_val_wer"),
         "metrics": checkpoint.get("metrics"),
-        "training_args": checkpoint.get("training_args", {}),
+        "training_args": training_args,
         "averaged_from": checkpoint.get("averaged_from"),
     }
 
@@ -100,6 +115,46 @@ def _export_inference_checkpoint(checkpoint: dict[str, object], checkpoint_path:
 class SchedulerDefaults(NamedTuple):
     peak_lr: float
     num_time_masks: int
+
+
+class FrozenLibertaTeacher:
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        device: torch.device,
+        max_length: int = 256,
+    ) -> None:
+        if AutoModel is None or AutoTokenizer is None:
+            raise RuntimeError(
+                "LiBERTa distillation requires transformers. Install the package and rerun."
+            )
+        self.device = device
+        self.max_length = max_length
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name)
+        self.model.to(device)
+        self.model.eval()
+        for parameter in self.model.parameters():
+            parameter.requires_grad_(False)
+        self.hidden_size = int(self.model.config.hidden_size)
+
+    def encode(self, texts: list[str]) -> Tensor:
+        tokenized = self.tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+        tokenized = {key: value.to(self.device) for key, value in tokenized.items()}
+        with torch.no_grad():
+            outputs = self.model(**tokenized)
+        hidden = outputs.last_hidden_state
+        mask = tokenized["attention_mask"].unsqueeze(-1).to(dtype=hidden.dtype)
+        denom = mask.sum(dim=1).clamp_min(1.0)
+        pooled = (hidden * mask).sum(dim=1) / denom
+        return pooled
 
 
 def _configure_console_logger(rank: int, is_main_process: bool) -> logging.Logger:
@@ -511,6 +566,121 @@ def _resolve_blank_pruning_settings(
     if min_keep_frames < 1:
         raise ValueError("--blank-prune-min-keep-frames must be at least 1.")
     return layer, threshold, min_keep_frames
+
+
+def _resolve_aed_settings(
+    args: argparse.Namespace,
+    checkpoint: dict[str, object] | None,
+) -> tuple[bool, int, int, float, float]:
+    checkpoint_args = checkpoint.get("training_args", {}) if checkpoint is not None else {}
+    checkpoint_enabled = checkpoint_args.get("aed_decoder")
+
+    if args.aed_decoder is False:
+        return (
+            False,
+            int(args.aed_decoder_layers),
+            int(args.aed_decoder_heads),
+            float(args.aed_decoder_dropout),
+            float(args.aed_loss_weight),
+        )
+    if args.aed_decoder is None and checkpoint is not None and checkpoint_enabled is not None:
+        enabled = bool(checkpoint_enabled)
+        return (
+            enabled,
+            int(checkpoint_args.get("aed_decoder_layers", args.aed_decoder_layers)),
+            int(checkpoint_args.get("aed_decoder_heads", args.aed_decoder_heads)),
+            float(checkpoint_args.get("aed_decoder_dropout", args.aed_decoder_dropout)),
+            float(checkpoint_args.get("aed_loss_weight", args.aed_loss_weight)),
+        )
+    enabled = bool(args.aed_decoder) if args.aed_decoder is not None else False
+    return (
+        enabled,
+        int(args.aed_decoder_layers),
+        int(args.aed_decoder_heads),
+        float(args.aed_decoder_dropout),
+        float(args.aed_loss_weight),
+    )
+
+
+def _resolve_liberta_settings(
+    args: argparse.Namespace,
+    checkpoint: dict[str, object] | None,
+    *,
+    aed_enabled: bool,
+) -> tuple[bool, str, float, int]:
+    checkpoint_args = checkpoint.get("training_args", {}) if checkpoint is not None else {}
+    checkpoint_enabled = checkpoint_args.get("liberta_distill")
+
+    if args.liberta_distill is False:
+        return False, args.liberta_model_name, float(args.liberta_distill_weight), int(
+            args.liberta_max_length
+        )
+    if args.liberta_distill is None and checkpoint is not None and checkpoint_enabled is not None:
+        enabled = bool(checkpoint_enabled)
+        model_name = str(checkpoint_args.get("liberta_model_name", args.liberta_model_name))
+        weight = float(checkpoint_args.get("liberta_distill_weight", args.liberta_distill_weight))
+        max_length = int(checkpoint_args.get("liberta_max_length", args.liberta_max_length))
+    else:
+        enabled = bool(args.liberta_distill) if args.liberta_distill is not None else False
+        model_name = args.liberta_model_name
+        weight = float(args.liberta_distill_weight)
+        max_length = int(args.liberta_max_length)
+
+    if enabled and not aed_enabled:
+        raise ValueError("LiBERTa distillation requires --aed-decoder.")
+    if not enabled:
+        return False, model_name, weight, max_length
+    if weight <= 0.0:
+        raise ValueError("--liberta-distill-weight must be > 0 when LiBERTa distillation is enabled.")
+    return True, model_name, weight, max_length
+
+
+def _build_aed_targets(
+    targets: Tensor,
+    target_lengths: Tensor,
+    *,
+    bos_id: int,
+    eos_id: int,
+    token_offset: int,
+    pad_id: int,
+) -> tuple[Tensor, Tensor, Tensor]:
+    sequences: list[Tensor] = []
+    offset = 0
+    for length in target_lengths.tolist():
+        sequence = targets[offset : offset + length] + token_offset
+        offset += length
+        sequences.append(sequence)
+
+    max_target_length = max((sequence.numel() for sequence in sequences), default=0) + 1
+    batch_size = len(sequences)
+    decoder_inputs = targets.new_full((batch_size, max_target_length), pad_id)
+    decoder_targets = targets.new_full((batch_size, max_target_length), pad_id)
+    decoder_target_lengths = target_lengths.new_empty(batch_size)
+
+    for index, sequence in enumerate(sequences):
+        target_sequence = torch.cat([sequence, sequence.new_tensor([eos_id])], dim=0)
+        input_sequence = torch.cat([sequence.new_tensor([bos_id]), sequence], dim=0)
+        decoder_inputs[index, : input_sequence.numel()] = input_sequence
+        decoder_targets[index, : target_sequence.numel()] = target_sequence
+        decoder_target_lengths[index] = target_sequence.numel()
+
+    return decoder_inputs, decoder_targets, decoder_target_lengths
+
+
+def _aed_cross_entropy_loss(
+    logits: Tensor,
+    targets: Tensor,
+    *,
+    pad_id: int,
+) -> Tensor:
+    loss = F.cross_entropy(
+        logits.transpose(1, 2),
+        targets,
+        ignore_index=pad_id,
+        reduction="sum",
+    )
+    normalizer = targets.ne(pad_id).sum().clamp_min(1)
+    return loss / normalizer
 
 
 def build_paper_scheduler(
@@ -1093,6 +1263,23 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
     parser.add_argument("--intermediate-ctc-weight", type=float, default=0.3)
+    parser.add_argument(
+        "--aed-decoder",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--aed-decoder-layers", type=int, default=1)
+    parser.add_argument("--aed-decoder-heads", type=int, default=4)
+    parser.add_argument("--aed-decoder-dropout", type=float, default=0.1)
+    parser.add_argument("--aed-loss-weight", type=float, default=0.3)
+    parser.add_argument(
+        "--liberta-distill",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--liberta-model-name", default="Goader/liberta-large-v2")
+    parser.add_argument("--liberta-distill-weight", type=float, default=0.05)
+    parser.add_argument("--liberta-max-length", type=int, default=256)
     parser.add_argument("--blank-prune-layer", type=int, default=None)
     parser.add_argument("--blank-prune-threshold", type=float, default=0.0)
     parser.add_argument("--blank-prune-min-keep-frames", type=int, default=1)
@@ -1692,6 +1879,16 @@ def main() -> None:
         encoder_config,
         checkpoint,
     )
+    aed_decoder_enabled, aed_decoder_layers, aed_decoder_heads, aed_decoder_dropout, aed_loss_weight = (
+        _resolve_aed_settings(args, checkpoint)
+    )
+    liberta_distill_enabled, liberta_model_name, liberta_distill_weight, liberta_max_length = (
+        _resolve_liberta_settings(
+            args,
+            checkpoint,
+            aed_enabled=aed_decoder_enabled,
+        )
+    )
     blank_prune_layer, blank_prune_threshold, blank_prune_min_keep_frames = (
         _resolve_blank_pruning_settings(args, encoder_config, checkpoint)
     )
@@ -1699,6 +1896,15 @@ def main() -> None:
     args.intermediate_ctc_layer = intermediate_ctc_layers[0] if len(intermediate_ctc_layers) == 1 else None
     args.intermediate_ctc = bool(intermediate_ctc_layers) and intermediate_ctc_weight > 0.0
     args.intermediate_ctc_weight = intermediate_ctc_weight
+    args.aed_decoder = aed_decoder_enabled
+    args.aed_decoder_layers = aed_decoder_layers
+    args.aed_decoder_heads = aed_decoder_heads
+    args.aed_decoder_dropout = aed_decoder_dropout
+    args.aed_loss_weight = aed_loss_weight
+    args.liberta_distill = liberta_distill_enabled
+    args.liberta_model_name = liberta_model_name
+    args.liberta_distill_weight = liberta_distill_weight
+    args.liberta_max_length = liberta_max_length
     args.blank_prune = blank_prune_layer is not None and blank_prune_threshold > 0.0
     args.blank_prune_layer = blank_prune_layer
     args.blank_prune_threshold = blank_prune_threshold
@@ -1722,6 +1928,11 @@ def main() -> None:
         blank_prune_layer=blank_prune_layer,
         blank_prune_threshold=blank_prune_threshold,
         blank_prune_min_keep_frames=blank_prune_min_keep_frames,
+        aed_decoder_enabled=aed_decoder_enabled,
+        aed_decoder_layers=aed_decoder_layers,
+        aed_decoder_heads=aed_decoder_heads,
+        aed_decoder_dropout=aed_decoder_dropout,
+        liberta_distill_enabled=liberta_distill_enabled,
         use_transformer_engine=args.dtype == DTypeChoice.FP8,
     )
     model.to(device)
@@ -1769,6 +1980,15 @@ def main() -> None:
             )
         )
     criterion = nn.CTCLoss(blank=tokenizer.blank_id, zero_infinity=True)
+    liberta_teacher = (
+        FrozenLibertaTeacher(
+            liberta_model_name,
+            device=device,
+            max_length=liberta_max_length,
+        )
+        if liberta_distill_enabled
+        else None
+    )
     ema = (
         ExponentialMovingAverage(
             model,
@@ -1842,6 +2062,8 @@ def main() -> None:
         running_loss = 0.0
         running_main_ctc_loss = 0.0
         running_intermediate_ctc_loss = 0.0
+        running_aed_loss = 0.0
+        running_liberta_distill_loss = 0.0
         for optimizer in optimizers:
             optimizer.zero_grad(set_to_none=True)
         for batch_index, batch in enumerate(train_loader, start=1):
@@ -1849,6 +2071,24 @@ def main() -> None:
             feature_lengths = batch["feature_lengths"].to(device)
             targets = batch["targets"].to(device)
             target_lengths = batch["target_lengths"].to(device)
+            if aed_decoder_enabled:
+                if model.aed_decoder is None:
+                    raise RuntimeError("AED decoder was enabled but not constructed on the model.")
+                decoder_inputs, decoder_targets, decoder_target_lengths = _build_aed_targets(
+                    targets,
+                    target_lengths,
+                    bos_id=model.aed_decoder.bos_id,
+                    eos_id=model.aed_decoder.eos_id,
+                    token_offset=model.aed_decoder.token_offset,
+                    pad_id=model.aed_decoder.pad_id,
+                )
+                decoder_inputs = decoder_inputs.to(device)
+                decoder_targets = decoder_targets.to(device)
+                decoder_target_lengths = decoder_target_lengths.to(device)
+            else:
+                decoder_inputs = None
+                decoder_targets = None
+                decoder_target_lengths = None
 
             with _autocast_context(device, args.dtype, fp8_recipe=fp8_recipe):
                 log_probs, output_lengths, intermediate_log_probs, intermediate_output_lengths = (
@@ -1877,10 +2117,42 @@ def main() -> None:
                 else:
                     intermediate_ctc_loss = None
                     loss = main_ctc_loss
+                if aed_decoder_enabled and decoder_inputs is not None and decoder_targets is not None:
+                    aed_logits, _, aed_hidden = forward_model.aed_forward(
+                        features,
+                        feature_lengths,
+                        decoder_inputs,
+                    )
+                    aed_loss = _aed_cross_entropy_loss(
+                        aed_logits,
+                        decoder_targets,
+                        pad_id=model.aed_decoder.pad_id,
+                    )
+                    loss = (1.0 - args.aed_loss_weight) * loss + args.aed_loss_weight * aed_loss
+                else:
+                    aed_loss = None
+                    aed_hidden = None
+            if liberta_teacher is not None and aed_hidden is not None and decoder_target_lengths is not None:
+                teacher_embeddings = liberta_teacher.encode(batch["transcripts"])
+                student_embeddings = forward_model.project_aed_hidden_for_liberta(
+                    aed_hidden,
+                    decoder_target_lengths,
+                )
+                liberta_distill_loss = F.mse_loss(
+                    F.normalize(student_embeddings, dim=-1),
+                    F.normalize(teacher_embeddings, dim=-1),
+                )
+                loss = loss + (args.liberta_distill_weight * liberta_distill_loss)
+            else:
+                liberta_distill_loss = None
             running_loss += float(loss.item())
             running_main_ctc_loss += float(main_ctc_loss.item())
             running_intermediate_ctc_loss += float(
                 intermediate_ctc_loss.item() if intermediate_ctc_loss is not None else 0.0
+            )
+            running_aed_loss += float(aed_loss.item() if aed_loss is not None else 0.0)
+            running_liberta_distill_loss += float(
+                liberta_distill_loss.item() if liberta_distill_loss is not None else 0.0
             )
             scaler.scale(loss / args.gradient_accumulation_steps).backward()
 
@@ -1933,6 +2205,12 @@ def main() -> None:
                                 if intermediate_ctc_loss is not None
                                 else 0.0
                             ),
+                            "train_aed_loss_step": float(aed_loss.item() if aed_loss is not None else 0.0),
+                            "train_liberta_distill_loss_step": float(
+                                liberta_distill_loss.item()
+                                if liberta_distill_loss is not None
+                                else 0.0
+                            ),
                             "grad_norm": grad_norm,
                             "ema_decay": ema.current_decay() if ema is not None else 0.0,
                             **learning_rates,
@@ -1942,14 +2220,18 @@ def main() -> None:
         train_loss = running_loss / max(1, len(train_loader))
         train_main_ctc_loss = running_main_ctc_loss / max(1, len(train_loader))
         train_intermediate_ctc_loss = running_intermediate_ctc_loss / max(1, len(train_loader))
+        train_aed_loss = running_aed_loss / max(1, len(train_loader))
+        train_liberta_distill_loss = running_liberta_distill_loss / max(1, len(train_loader))
         if is_main_process:
             ema_backup = ema.apply_to(model) if ema is not None else None
             logger.info(
-                "epoch %s training complete train_loss=%.4f train_main_ctc_loss=%.4f train_intermediate_ctc_loss=%.4f, starting validation",
+                "epoch %s training complete train_loss=%.4f train_main_ctc_loss=%.4f train_intermediate_ctc_loss=%.4f train_aed_loss=%.4f train_liberta_distill_loss=%.4f, starting validation",
                 epoch,
                 train_loss,
                 train_main_ctc_loss,
                 train_intermediate_ctc_loss,
+                train_aed_loss,
+                train_liberta_distill_loss,
             )
             validation = evaluate(
                 model,
@@ -1974,6 +2256,8 @@ def main() -> None:
                 "train_loss": train_loss,
                 "train_main_ctc_loss": train_main_ctc_loss,
                 "train_intermediate_ctc_loss": train_intermediate_ctc_loss,
+                "train_aed_loss": train_aed_loss,
+                "train_liberta_distill_loss": train_liberta_distill_loss,
                 "val_loss": val_metrics["loss"],
                 "val_cer": val_metrics["cer"],
                 "val_wer": val_metrics["wer"],

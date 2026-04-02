@@ -217,6 +217,38 @@ def test_ctc_model_can_emit_intermediate_log_probs_for_multiple_heads(tmp_path: 
     assert torch.isfinite(intermediate_log_probs[7]).all()
 
 
+@torch.no_grad()
+def test_ctc_model_can_emit_training_only_aed_logits() -> None:
+    model = SqueezeformerCTC(
+        encoder_config=squeezeformer_variant("xs"),
+        vocab_size=10,
+        aed_decoder_enabled=True,
+        aed_decoder_layers=1,
+        aed_decoder_heads=4,
+        liberta_distill_enabled=True,
+    )
+    model.eval()
+    lengths = torch.tensor([160, 123], dtype=torch.int64)
+    features = torch.randn(2, int(lengths.max().item()), 80)
+    decoder_inputs = torch.tensor(
+        [
+            [1, 4, 5, 0],
+            [1, 6, 0, 0],
+        ],
+        dtype=torch.int64,
+    )
+
+    logits, output_lengths, hidden = model.aed_forward(features, lengths, decoder_inputs)
+    projected = model.project_aed_hidden_for_liberta(hidden, torch.tensor([3, 2], dtype=torch.int64))
+
+    assert logits.shape == (2, 4, 13)
+    assert hidden.shape == (2, 4, model.encoder_config.d_model)
+    assert output_lengths.shape == (2,)
+    assert projected.shape == (2, 1024)
+    assert torch.isfinite(logits).all()
+    assert torch.isfinite(projected).all()
+
+
 def test_blank_probability_pruning_keeps_minimum_frames() -> None:
     x = torch.arange(2 * 4 * 3, dtype=torch.float32).view(2, 4, 3)
     lengths = torch.tensor([4, 3], dtype=torch.int64)
