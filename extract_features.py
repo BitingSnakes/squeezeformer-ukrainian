@@ -59,7 +59,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-transcript-chars", type=int, default=400)
     parser.add_argument("--max-symbol-ratio", type=float, default=0.5)
     parser.add_argument("--sample-rate", type=int, default=16_000)
-    parser.add_argument("--n-fft", type=int, default=400)
+    parser.add_argument(
+        "--frontend-backend",
+        default="audioflux",
+        choices=["torchaudio", "audioflux"],
+    )
+    parser.add_argument("--n-fft", type=int, default=512)
     parser.add_argument("--hop-length", type=int, default=160)
     parser.add_argument("--n-mels", type=int, default=80)
     parser.add_argument("--preemphasis", type=float, default=0.97)
@@ -136,6 +141,7 @@ def main() -> None:
         n_fft=args.n_fft,
         hop_length=args.hop_length,
         n_mels=args.n_mels,
+        backend=args.frontend_backend,
         preemphasis=args.preemphasis,
         normalize_signal=args.normalize_signal,
         normalize_feature=args.normalize_feature,
@@ -179,6 +185,7 @@ def main() -> None:
         "n_fft": args.n_fft,
         "hop_length": args.hop_length,
         "n_mels": args.n_mels,
+        "backend": args.frontend_backend,
         "preemphasis": args.preemphasis,
         "normalize_signal": args.normalize_signal,
         "normalize_feature": args.normalize_feature,

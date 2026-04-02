@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+import math
+
+import numpy as np
 import torch
 import torchaudio
 from torch import Tensor
 from torch.nn import functional as F
+
+try:
+    import audioflux as af
+    from audioflux.type import SpectralDataType, SpectralFilterBankScaleType
+except ImportError:
+    af = None
+    SpectralDataType = None
+    SpectralFilterBankScaleType = None
 
 
 class AudioFeaturizer(torch.nn.Module):
@@ -13,6 +24,7 @@ class AudioFeaturizer(torch.nn.Module):
         n_fft: int = 400,
         hop_length: int = 160,
         n_mels: int = 80,
+        backend: str = "torchaudio",
         preemphasis: float = 0.97,
         normalize_signal: bool = True,
         normalize_feature: bool = True,
@@ -20,17 +32,41 @@ class AudioFeaturizer(torch.nn.Module):
     ) -> None:
         super().__init__()
         self.sample_rate = sample_rate
+        self.n_fft = n_fft
+        self.n_mels = n_mels
+        self.backend = backend
         self.preemphasis = preemphasis
         self.normalize_signal = normalize_signal
         self.normalize_feature = normalize_feature
         self.normalize_per_frame = normalize_per_frame
         self.hop_length = hop_length
-        self.mel = torchaudio.transforms.MelSpectrogram(
-            sample_rate=sample_rate,
-            n_fft=n_fft,
-            hop_length=hop_length,
-            n_mels=n_mels,
-        )
+        if backend == "torchaudio":
+            self.mel = torchaudio.transforms.MelSpectrogram(
+                sample_rate=sample_rate,
+                n_fft=n_fft,
+                hop_length=hop_length,
+                n_mels=n_mels,
+            )
+            self._audioflux_bft = None
+        elif backend == "audioflux":
+            if af is None or SpectralFilterBankScaleType is None or SpectralDataType is None:
+                raise ImportError("audioflux backend requested, but audioflux is not installed.")
+            if n_fft <= 0 or n_fft & (n_fft - 1) != 0:
+                raise ValueError(
+                    "audioflux backend requires n_fft to be a power of two because "
+                    "its mel frontend uses fft_length=2**radix2_exp."
+                )
+            self.mel = None
+            self._audioflux_bft = af.BFT(
+                num=n_mels,
+                radix2_exp=int(math.log2(n_fft)),
+                samplate=sample_rate,
+                slide_length=hop_length,
+                scale_type=SpectralFilterBankScaleType.MEL,
+                data_type=SpectralDataType.POWER,
+            )
+        else:
+            raise ValueError(f"Unsupported frontend backend: {backend}")
 
     def forward(self, waveform: Tensor, sample_rate: int) -> Tensor:
         if waveform.dim() == 2:
@@ -49,8 +85,14 @@ class AudioFeaturizer(torch.nn.Module):
                 [waveform[:1], waveform[1:] - self.preemphasis * waveform[:-1]],
                 dim=0,
             )
-        features = self.mel(waveform)
-        features = torch.log(features.clamp_min(1e-5)).transpose(0, 1)
+        if self.backend == "torchaudio":
+            features = self.mel(waveform)
+            features = torch.log(features.clamp_min(1e-5)).transpose(0, 1)
+        else:
+            spec = self._audioflux_bft.bft(waveform.detach().cpu().numpy().astype(np.float32, copy=False))
+            spec = np.abs(spec)
+            features = torch.from_numpy(spec).to(dtype=waveform.dtype).transpose(0, 1)
+            features = torch.log(features.clamp_min(1e-5))
         if self.normalize_feature:
             if self.normalize_per_frame:
                 mean = features.mean(dim=-1, keepdim=True)
@@ -64,6 +106,9 @@ class AudioFeaturizer(torch.nn.Module):
     def config_dict(self) -> dict[str, object]:
         return {
             "sample_rate": self.sample_rate,
+            "n_fft": self.n_fft,
+            "n_mels": self.n_mels,
+            "backend": self.backend,
             "preemphasis": self.preemphasis,
             "normalize_signal": self.normalize_signal,
             "normalize_feature": self.normalize_feature,

@@ -698,6 +698,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--block-pattern", default="M,s,C,s")
+    parser.add_argument(
+        "--frontend-backend",
+        default="audioflux",
+        choices=["torchaudio", "audioflux"],
+    )
+    parser.add_argument("--n-fft", type=int, default=512)
+    parser.add_argument("--hop-length", type=int, default=160)
+    parser.add_argument("--n-mels", type=int, default=80)
     parser.add_argument("--preemphasis", type=float, default=0.97)
     parser.add_argument(
         "--normalize-signal",
@@ -1157,6 +1165,10 @@ def main() -> None:
             lm_scorer = shallow_fusion_lm.score_extension
 
     featurizer = AudioFeaturizer(
+        n_fft=args.n_fft,
+        hop_length=args.hop_length,
+        n_mels=args.n_mels,
+        backend=args.frontend_backend,
         preemphasis=args.preemphasis,
         normalize_signal=args.normalize_signal,
         normalize_feature=args.normalize_feature,
