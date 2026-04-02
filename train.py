@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import array
 import hashlib
 import json
 import logging
@@ -8,6 +9,7 @@ import os
 import random
 import sys
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, nullcontext
 from copy import deepcopy
 from dataclasses import asdict, replace
@@ -33,12 +35,13 @@ from squeezeformer_pytorch.checkpoints import save_checkpoint
 from squeezeformer_pytorch.data import (
     AudioFeaturizer,
     CV22ASRDataset,
+    CVRecord,
     SpecAugment,
     WaveformAugment,
     create_dataloader,
     download_cv22_dataset,
-    load_cv22_records,
-    prevalidate_records,
+    iter_cv22_records,
+    probe_audio_metadata,
 )
 from squeezeformer_pytorch.lm import NGramLanguageModel
 from squeezeformer_pytorch.metrics import char_error_rate, word_error_rate
@@ -117,6 +120,226 @@ def _validate_device_argument(device: str) -> str:
     except (RuntimeError, ValueError) as error:
         raise argparse.ArgumentTypeError(f"Invalid device '{device}': {error}") from error
     return device
+
+
+def _resolve_dataset_roots(args: argparse.Namespace) -> list[Path]:
+    sources = list(args.dataset_source or [])
+    if not sources:
+        sources = [args.dataset_repo]
+
+    dataset_roots: list[Path] = []
+    seen: set[Path] = set()
+    for source in sources:
+        dataset_root = download_cv22_dataset(
+            repo_id=source,
+            token=args.hf_token,
+            cache_dir=args.cache_dir,
+        ).resolve()
+        if dataset_root in seen:
+            continue
+        seen.add(dataset_root)
+        dataset_roots.append(dataset_root)
+    return dataset_roots
+
+
+class DiskBackedRecordStore:
+    def __init__(
+        self,
+        records_path: Path,
+        offsets: array.array,
+        estimated_frames: array.array,
+        *,
+        start: int = 0,
+        step: int = 1,
+    ) -> None:
+        self.records_path = records_path
+        self.offsets = offsets
+        self.estimated_frames = estimated_frames
+        self.start = start
+        self.step = step
+        self._handle = None
+
+    def _global_index(self, index: int) -> int:
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        return self.start + (index * self.step)
+
+    def _open_handle(self):
+        if self._handle is None or self._handle.closed:
+            self._handle = self.records_path.open("r", encoding="utf-8")
+        return self._handle
+
+    def close(self) -> None:
+        if self._handle is not None and not self._handle.closed:
+            self._handle.close()
+        self._handle = None
+
+    def __len__(self) -> int:
+        total = len(self.offsets)
+        if self.start >= total:
+            return 0
+        return ((total - self.start - 1) // self.step) + 1
+
+    def __getitem__(self, index: int) -> CVRecord:
+        global_index = self._global_index(index)
+        handle = self._open_handle()
+        handle.seek(self.offsets[global_index])
+        payload = json.loads(handle.readline())
+        return CVRecord(
+            audio_path=payload["audio_path"],
+            audio_bytes=None,
+            transcript=payload["transcript"],
+            utterance_id=payload["utterance_id"],
+            estimated_frames=int(self.estimated_frames[global_index]),
+            speaker_id=payload["speaker_id"],
+            has_speaker_id=bool(payload["has_speaker_id"]),
+        )
+
+    def __iter__(self):
+        for index in range(len(self)):
+            yield self[index]
+
+    def shard(self, rank: int, world_size: int) -> "DiskBackedRecordStore":
+        return DiskBackedRecordStore(
+            self.records_path,
+            self.offsets,
+            self.estimated_frames,
+            start=self.start + rank,
+            step=self.step * world_size,
+        )
+
+    def populate_metadata(self, hop_length: int, num_workers: int = 4) -> None:
+        global_indices = [
+            self._global_index(index)
+            for index in range(len(self))
+            if int(self.estimated_frames[self._global_index(index)]) <= 0
+        ]
+        if not global_indices:
+            return
+
+        def populate(global_index: int) -> tuple[int, int]:
+            handle = self.records_path.open("r", encoding="utf-8")
+            try:
+                handle.seek(self.offsets[global_index])
+                payload = json.loads(handle.readline())
+            finally:
+                handle.close()
+            num_samples, sample_rate = probe_audio_metadata(payload["audio_path"], None)
+            frames = max(1, int(num_samples / hop_length)) if num_samples > 0 and sample_rate > 0 else 0
+            return global_index, frames
+
+        if num_workers <= 1:
+            populated = [populate(global_index) for global_index in global_indices]
+        else:
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                populated = list(executor.map(populate, global_indices))
+        for global_index, frames in populated:
+            self.estimated_frames[global_index] = max(0, int(frames))
+
+
+def _build_disk_backed_record_store(
+    dataset_roots: list[Path],
+    *,
+    split: str,
+    seed: int,
+    val_fraction: float,
+    test_fraction: float,
+    max_samples: int | None,
+    min_transcript_chars: int,
+    max_transcript_chars: int,
+    max_symbol_ratio: float,
+    lowercase_transcripts: bool,
+    records_path: Path,
+) -> DiskBackedRecordStore:
+    records_path.parent.mkdir(parents=True, exist_ok=True)
+    offsets = array.array("Q")
+    estimated_frames = array.array("I")
+    written = 0
+    with records_path.open("w", encoding="utf-8") as handle:
+        for dataset_root in dataset_roots:
+            remaining_samples = None
+            if max_samples is not None:
+                remaining_samples = max_samples - written
+                if remaining_samples <= 0:
+                    break
+            for record in iter_cv22_records(
+                dataset_root=dataset_root,
+                split=split,
+                seed=seed,
+                val_fraction=val_fraction,
+                test_fraction=test_fraction,
+                max_samples=remaining_samples,
+                min_transcript_chars=min_transcript_chars,
+                max_transcript_chars=max_transcript_chars,
+                max_symbol_ratio=max_symbol_ratio,
+                lowercase_transcripts=lowercase_transcripts,
+            ):
+                offsets.append(handle.tell())
+                handle.write(
+                    json.dumps(
+                        {
+                            "audio_path": record.audio_path,
+                            "transcript": record.transcript,
+                            "utterance_id": record.utterance_id,
+                            "speaker_id": record.speaker_id,
+                            "has_speaker_id": record.has_speaker_id,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                handle.write("\n")
+                estimated_frames.append(max(0, int(record.estimated_frames)))
+                written += 1
+    if not offsets:
+        raise RuntimeError(
+            f"Split '{split}' is empty after applying the current split fractions across "
+            "all dataset sources."
+        )
+    return DiskBackedRecordStore(records_path, offsets, estimated_frames)
+
+
+def _load_records_from_dataset_roots(
+    dataset_roots: list[Path],
+    *,
+    split: str,
+    seed: int,
+    val_fraction: float,
+    test_fraction: float,
+    max_samples: int | None,
+    min_transcript_chars: int,
+    max_transcript_chars: int,
+    max_symbol_ratio: float,
+    lowercase_transcripts: bool,
+) -> list:
+    records = []
+    for dataset_root in dataset_roots:
+        remaining_samples = None
+        if max_samples is not None:
+            remaining_samples = max_samples - len(records)
+            if remaining_samples <= 0:
+                break
+        records.extend(
+            iter_cv22_records(
+                dataset_root=dataset_root,
+                split=split,
+                seed=seed,
+                val_fraction=val_fraction,
+                test_fraction=test_fraction,
+                max_samples=remaining_samples,
+                min_transcript_chars=min_transcript_chars,
+                max_transcript_chars=max_transcript_chars,
+                max_symbol_ratio=max_symbol_ratio,
+                lowercase_transcripts=lowercase_transcripts,
+            )
+        )
+    if not records:
+        raise RuntimeError(
+            f"Split '{split}' is empty after applying the current split fractions across "
+            "all dataset sources."
+        )
+    return records
 
 
 def resolve_device(device: str) -> torch.device:
@@ -702,6 +925,16 @@ def _build_split_audit(split_records: dict[str, list]) -> dict[str, object]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train Squeezeformer CTC on speech-uk/cv22.")
     parser.add_argument("--dataset-repo", default="speech-uk/cv22")
+    parser.add_argument(
+        "--dataset-source",
+        action="append",
+        default=None,
+        help=(
+            "Dataset source to load. Repeat to combine multiple sources. Each source may be a "
+            "Hugging Face dataset repo or a local directory with Common Voice-style TSV or "
+            "Parquet manifests plus audio files. If omitted, --dataset-repo is used."
+        ),
+    )
     parser.add_argument("--hf-token", default=os.environ.get("HF_TOKEN"))
     parser.add_argument("--cache-dir", default=None)
     parser.add_argument("--resume", default=None)
@@ -1241,14 +1474,11 @@ def main() -> None:
     variant_defaults = _variant_defaults(args.variant)
     lm_scorer = load_lm_scorer(args.lm_scorer)
 
-    dataset_root = download_cv22_dataset(
-        repo_id=args.dataset_repo,
-        token=args.hf_token,
-        cache_dir=args.cache_dir,
-    )
+    dataset_roots = _resolve_dataset_roots(args)
     lowercase_transcripts = args.tokenizer != "sentencepiece"
-    train_records = load_cv22_records(
-        dataset_root=dataset_root,
+    record_store_dir = output_dir / "record_cache"
+    train_records = _build_disk_backed_record_store(
+        dataset_roots,
         split="train",
         seed=args.seed,
         val_fraction=args.val_fraction,
@@ -1258,9 +1488,10 @@ def main() -> None:
         max_transcript_chars=args.max_transcript_chars,
         max_symbol_ratio=args.max_symbol_ratio,
         lowercase_transcripts=lowercase_transcripts,
+        records_path=record_store_dir / "train.jsonl",
     )
-    val_records = load_cv22_records(
-        dataset_root=dataset_root,
+    val_records = _build_disk_backed_record_store(
+        dataset_roots,
         split="validation",
         seed=args.seed,
         val_fraction=args.val_fraction,
@@ -1270,12 +1501,13 @@ def main() -> None:
         max_transcript_chars=args.max_transcript_chars,
         max_symbol_ratio=args.max_symbol_ratio,
         lowercase_transcripts=lowercase_transcripts,
+        records_path=record_store_dir / "validation.jsonl",
     )
     if args.prevalidate_audio:
-        train_records = prevalidate_records(train_records, num_workers=args.prevalidate_workers)
-        val_records = prevalidate_records(val_records, num_workers=args.prevalidate_workers)
-        if not train_records or not val_records:
-            raise RuntimeError("Audio prevalidation removed every sample from train or validation.")
+        raise ValueError(
+            "--prevalidate-audio is not supported with the disk-backed training record store. "
+            "Leave it disabled for large multi-source training runs."
+        )
     split_audit = _build_split_audit({"train": train_records, "validation": val_records})
     if is_main_process:
         (output_dir / "split_audit.json").write_text(
@@ -1283,7 +1515,8 @@ def main() -> None:
             encoding="utf-8",
         )
         logger.info(
-            "loaded dataset train_samples=%s val_samples=%s speaker_balance_ratio=%.3f",
+            "loaded dataset sources=%s train_samples=%s val_samples=%s speaker_balance_ratio=%.3f",
+            [str(dataset_root) for dataset_root in dataset_roots],
             len(train_records),
             len(val_records),
             float(split_audit["speaker_balance_ratio"]),
@@ -1316,6 +1549,10 @@ def main() -> None:
         shallow_fusion_lm.save(shallow_fusion_lm_path)
         if lm_scorer is None:
             lm_scorer = shallow_fusion_lm.score_extension
+    if hasattr(train_records, "close"):
+        train_records.close()
+    if hasattr(val_records, "close"):
+        val_records.close()
 
     featurizer = AudioFeaturizer(
         n_fft=args.n_fft,
@@ -1348,11 +1585,7 @@ def main() -> None:
     val_feature_cache_dir = (
         Path(args.feature_cache_dir) / "validation" if args.feature_cache_dir is not None else None
     )
-    local_train_records = (
-        [record for index, record in enumerate(train_records) if index % world_size == rank]
-        if distributed
-        else train_records
-    )
+    local_train_records = train_records.shard(rank, world_size) if distributed else train_records
     train_dataset = CV22ASRDataset(
         local_train_records,
         tokenizer=tokenizer,

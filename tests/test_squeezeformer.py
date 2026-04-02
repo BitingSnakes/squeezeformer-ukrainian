@@ -1,3 +1,4 @@
+import array
 import json
 import logging
 import math
@@ -38,10 +39,14 @@ from squeezeformer_pytorch.data import (
 )
 from squeezeformer_pytorch.runtime_types import DTypeChoice, OptimizerChoice
 from train import (
+    DiskBackedRecordStore,
     ExponentialMovingAverage,
     _average_topk_checkpoints,
+    _build_disk_backed_record_store,
     _build_fp8_recipe,
     _configure_console_logger,
+    _load_records_from_dataset_roots,
+    _resolve_dataset_roots,
     _update_top_checkpoints,
     _validate_device_argument,
     _validate_fp8_runtime,
@@ -485,6 +490,140 @@ def test_load_cv22_records_preserves_case_when_lowercase_disabled(tmp_path: Path
         lowercase_transcripts=False,
     )
     assert [record.transcript for record in records] == ["Це Тест"]
+
+
+def test_resolve_dataset_roots_uses_dataset_source_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    def fake_download_cv22_dataset(
+        repo_id: str,
+        token: str | None,
+        cache_dir: str | None = None,
+        force_download: bool = False,
+        allow_patterns: list[str] | None = None,
+    ) -> Path:
+        del token, cache_dir, force_download, allow_patterns
+        return {"source-a": first, "source-b": second}[repo_id]
+
+    monkeypatch.setattr("train.download_cv22_dataset", fake_download_cv22_dataset)
+
+    args = type(
+        "Args",
+        (),
+        {
+            "dataset_repo": "speech-uk/cv22",
+            "dataset_source": ["source-a", "source-b", "source-a"],
+            "hf_token": None,
+            "cache_dir": None,
+        },
+    )()
+
+    assert _resolve_dataset_roots(args) == [first.resolve(), second.resolve()]
+
+
+def test_load_records_from_dataset_roots_combines_sources_with_global_limit(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "train.tsv").write_text(
+        "path\tsentence\tid\tduration\n"
+        "a.wav\tперший запис\tutt0\t0.3\n"
+        "b.wav\tдругий запис\tutt1\t0.3\n",
+        encoding="utf-8",
+    )
+    (second / "train.tsv").write_text(
+        "path\tsentence\tid\tduration\n"
+        "c.wav\tтретій запис\tutt2\t0.3\n"
+        "d.wav\tчетвертий запис\tutt3\t0.3\n",
+        encoding="utf-8",
+    )
+
+    records = _load_records_from_dataset_roots(
+        [first, second],
+        split="train",
+        seed=13,
+        val_fraction=0.0,
+        test_fraction=0.0,
+        max_samples=3,
+        min_transcript_chars=1,
+        max_transcript_chars=400,
+        max_symbol_ratio=0.5,
+        lowercase_transcripts=True,
+    )
+
+    assert [record.utterance_id for record in records] == ["utt0", "utt1", "utt2"]
+
+
+def test_build_disk_backed_record_store_combines_sources_with_global_limit(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "train.tsv").write_text(
+        "path\tsentence\tid\tduration\n"
+        "a.wav\tперший запис\tutt0\t0.3\n"
+        "b.wav\tдругий запис\tutt1\t0.3\n",
+        encoding="utf-8",
+    )
+    (second / "train.tsv").write_text(
+        "path\tsentence\tid\tduration\n"
+        "c.wav\tтретій запис\tutt2\t0.3\n"
+        "d.wav\tчетвертий запис\tutt3\t0.3\n",
+        encoding="utf-8",
+    )
+
+    store = _build_disk_backed_record_store(
+        [first, second],
+        split="train",
+        seed=13,
+        val_fraction=0.0,
+        test_fraction=0.0,
+        max_samples=3,
+        min_transcript_chars=1,
+        max_transcript_chars=400,
+        max_symbol_ratio=0.5,
+        lowercase_transcripts=True,
+        records_path=tmp_path / "records" / "train.jsonl",
+    )
+
+    assert isinstance(store, DiskBackedRecordStore)
+    assert len(store) == 3
+    assert [record.utterance_id for record in store] == ["utt0", "utt1", "utt2"]
+
+
+def test_disk_backed_record_store_shard_views_rows(tmp_path: Path) -> None:
+    records_path = tmp_path / "train.jsonl"
+    records_path.write_text(
+        '{"audio_path":"a.wav","transcript":"a","utterance_id":"utt0","speaker_id":null,"has_speaker_id":false}\n'
+        '{"audio_path":"b.wav","transcript":"b","utterance_id":"utt1","speaker_id":null,"has_speaker_id":false}\n'
+        '{"audio_path":"c.wav","transcript":"c","utterance_id":"utt2","speaker_id":null,"has_speaker_id":false}\n'
+        '{"audio_path":"d.wav","transcript":"d","utterance_id":"utt3","speaker_id":null,"has_speaker_id":false}\n',
+        encoding="utf-8",
+    )
+    offsets = [0]
+    content = records_path.read_text(encoding="utf-8")
+    running = 0
+    for line in content.splitlines(keepends=True)[:-1]:
+        running += len(line)
+        offsets.append(running)
+
+    store = DiskBackedRecordStore(
+        records_path,
+        array.array("Q", offsets),
+        array.array("I", [10, 20, 30, 40]),
+    )
+
+    shard = store.shard(rank=1, world_size=2)
+
+    assert len(shard) == 2
+    assert [record.utterance_id for record in shard] == ["utt1", "utt3"]
 
 
 def test_average_topk_checkpoints_logs_shape_mismatch_without_rank_error(

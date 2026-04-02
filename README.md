@@ -116,6 +116,30 @@ corpus in RAM. That keeps LM preparation usable even when the underlying dataset
 
 For local development and smoke tests, `--dataset-repo` can also point at a local directory that contains Common Voice-style manifests and audio files.
 
+To combine multiple sources during training, repeat `--dataset-source`. Each entry may be either:
+
+- a Hugging Face dataset repo id
+- a local directory, such as a mounted Google Drive path in Colab
+
+When `--dataset-source` is present, `train.py` uses that list instead of `--dataset-repo`.
+
+For large runs, `train.py` now streams selected split records into on-disk JSONL indexes under
+`OUTPUT_DIR/record_cache` instead of keeping the full combined manifest in RAM. That makes
+multi-source training practical even when the backing audio spans hundreds of GB, as long as the
+manifests and cache files fit on disk.
+
+Constraint: do not enable `--prevalidate-audio` for these large runs. That mode is intentionally
+blocked on the disk-backed path because it would require rebuilding the split in memory.
+
+Example: mix two Google Drive folders in Colab
+
+```bash
+uv run python train.py \
+  --device cuda \
+  --dataset-source /content/drive/MyDrive/asr/source_a \
+  --dataset-source /content/drive/MyDrive/asr/source_b
+```
+
 Important: the dataset itself exposes only a source train split. This repo creates deterministic internal `train`, `validation`, and `test` splits from that source data. When real speaker metadata such as `client_id` or `speaker_id` is available, the split is speaker-aware. When the dataset does not expose speaker identity, the pipeline falls back to utterance-level hashing so training still works, and the split audit marks speaker identity as unavailable.
 
 Default split behavior:

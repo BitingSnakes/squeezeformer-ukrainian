@@ -737,11 +737,17 @@ def create_dataloader(
     prefetch_factor: int = 2,
     metadata_workers: int = 4,
 ) -> DataLoader[dict[str, Any]]:
-    materialize_record_metadata(
-        dataset.records,
-        hop_length=dataset.featurizer.hop_length,
-        num_workers=metadata_workers,
-    )
+    if hasattr(dataset.records, "populate_metadata"):
+        dataset.records.populate_metadata(
+            hop_length=dataset.featurizer.hop_length,
+            num_workers=metadata_workers,
+        )
+    else:
+        materialize_record_metadata(
+            dataset.records,
+            hop_length=dataset.featurizer.hop_length,
+            num_workers=metadata_workers,
+        )
     dataloader_kwargs = {
         "num_workers": num_workers,
         "collate_fn": collate_asr_batch,
