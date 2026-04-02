@@ -169,7 +169,7 @@ class DiskBackedRecordStore:
 
     def _open_handle(self):
         if self._handle is None or self._handle.closed:
-            self._handle = self.records_path.open("r", encoding="utf-8")
+            self._handle = self.records_path.open("rb")
         return self._handle
 
     def close(self) -> None:
@@ -187,7 +187,7 @@ class DiskBackedRecordStore:
         global_index = self._global_index(index)
         handle = self._open_handle()
         handle.seek(self.offsets[global_index])
-        payload = json.loads(handle.readline())
+        payload = json.loads(handle.readline().decode("utf-8"))
         return CVRecord(
             audio_path=payload["audio_path"],
             audio_bytes=_load_cached_audio_bytes(payload, records_path=self.records_path),
@@ -221,10 +221,10 @@ class DiskBackedRecordStore:
             return
 
         def populate(global_index: int) -> tuple[int, int]:
-            handle = self.records_path.open("r", encoding="utf-8")
+            handle = self.records_path.open("rb")
             try:
                 handle.seek(self.offsets[global_index])
-                payload = json.loads(handle.readline())
+                payload = json.loads(handle.readline().decode("utf-8"))
             finally:
                 handle.close()
             audio_bytes = _load_cached_audio_bytes(payload, records_path=self.records_path)
@@ -260,7 +260,7 @@ def _build_disk_backed_record_store(
     offsets = array.array("Q")
     estimated_frames = array.array("I")
     written = 0
-    with records_path.open("w", encoding="utf-8") as handle:
+    with records_path.open("wb") as handle:
         for dataset_root in dataset_roots:
             remaining_samples = None
             if max_samples is not None:
@@ -291,8 +291,7 @@ def _build_disk_backed_record_store(
                         blob_path.write_bytes(record.audio_bytes)
                     audio_blob_path = str(blob_path.relative_to(records_path.parent))
                 offsets.append(handle.tell())
-                handle.write(
-                    json.dumps(
+                payload = json.dumps(
                         {
                             "audio_path": record.audio_path,
                             "audio_blob_path": audio_blob_path,
@@ -302,9 +301,9 @@ def _build_disk_backed_record_store(
                             "has_speaker_id": record.has_speaker_id,
                         },
                         ensure_ascii=False,
-                    )
                 )
-                handle.write("\n")
+                handle.write(payload.encode("utf-8"))
+                handle.write(b"\n")
                 estimated_frames.append(max(0, int(record.estimated_frames)))
                 written += 1
     if not offsets:
