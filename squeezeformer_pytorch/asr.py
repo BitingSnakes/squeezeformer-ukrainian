@@ -206,10 +206,12 @@ class SqueezeformerCTC(nn.Module):
         self,
         encoder_config: SqueezeformerConfig,
         vocab_size: int,
+        intermediate_ctc_layer: int | None = None,
         use_transformer_engine: bool = False,
     ) -> None:
         super().__init__()
         self.encoder_config = encoder_config
+        self.intermediate_ctc_layer = intermediate_ctc_layer
         self.use_transformer_engine = use_transformer_engine
         self.encoder = SqueezeformerEncoder(
             encoder_config,
@@ -220,6 +222,15 @@ class SqueezeformerCTC(nn.Module):
             vocab_size,
             use_transformer_engine=use_transformer_engine,
         )
+        self.intermediate_classifier = (
+            make_linear(
+                encoder_config.d_model,
+                vocab_size,
+                use_transformer_engine=use_transformer_engine,
+            )
+            if intermediate_ctc_layer is not None
+            else None
+        )
 
     def forward(self, features: Tensor, feature_lengths: Tensor) -> tuple[Tensor, Tensor]:
         encoded, output_lengths = self.encoder(features, feature_lengths)
@@ -229,6 +240,34 @@ class SqueezeformerCTC(nn.Module):
     def log_probs(self, features: Tensor, feature_lengths: Tensor) -> tuple[Tensor, Tensor]:
         logits, output_lengths = self(features, feature_lengths)
         return F.log_softmax(logits, dim=-1), output_lengths
+
+    def log_probs_with_intermediate(
+        self,
+        features: Tensor,
+        feature_lengths: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor | None, Tensor | None]:
+        if self.intermediate_classifier is None or self.intermediate_ctc_layer is None:
+            log_probs, output_lengths = self.log_probs(features, feature_lengths)
+            return log_probs, output_lengths, None, None
+
+        encoded, output_lengths, intermediate_encoded, intermediate_lengths = (
+            self.encoder.forward_with_intermediate(
+                features,
+                feature_lengths,
+                intermediate_layer_index=self.intermediate_ctc_layer,
+            )
+        )
+        logits = apply_linear_with_fp8_padding(self.classifier, encoded)
+        intermediate_logits = apply_linear_with_fp8_padding(
+            self.intermediate_classifier,
+            intermediate_encoded,
+        )
+        return (
+            F.log_softmax(logits, dim=-1),
+            output_lengths,
+            F.log_softmax(intermediate_logits, dim=-1),
+            intermediate_lengths,
+        )
 
     def to_config_dict(self) -> dict[str, object]:
         return asdict(self.encoder_config)

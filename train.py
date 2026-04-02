@@ -62,7 +62,7 @@ except ImportError:
 try:
     import transformer_engine.pytorch as te
     from transformer_engine.common.recipe import DelayedScaling, Format
-except (ImportError, OSError):
+except ImportError, OSError:
     te = None
     DelayedScaling = None
     Format = None
@@ -180,6 +180,38 @@ def _variant_defaults(variant: str) -> SchedulerDefaults:
     if variant == "m":
         return SchedulerDefaults(peak_lr=1.5e-3, num_time_masks=7)
     return SchedulerDefaults(peak_lr=1e-3, num_time_masks=10)
+
+
+def _default_intermediate_ctc_layer(encoder_config: SqueezeformerConfig) -> int:
+    return max(0, (encoder_config.num_layers // 2) - 1)
+
+
+def _resolve_intermediate_ctc_settings(
+    args: argparse.Namespace,
+    encoder_config: SqueezeformerConfig,
+    checkpoint: dict[str, object] | None,
+) -> tuple[int | None, float]:
+    checkpoint_args = checkpoint.get("training_args", {}) if checkpoint is not None else {}
+    checkpoint_weight = checkpoint_args.get("intermediate_ctc_weight")
+    checkpoint_layer = checkpoint_args.get("intermediate_ctc_layer")
+
+    if checkpoint_weight is not None:
+        weight = float(checkpoint_weight)
+        layer = int(checkpoint_layer) if checkpoint_layer is not None else None
+    else:
+        weight = float(args.intermediate_ctc_weight)
+        layer = args.intermediate_ctc_layer
+
+    if weight <= 0.0:
+        return None, 0.0
+    if layer is None:
+        layer = _default_intermediate_ctc_layer(encoder_config)
+    if not 0 <= layer < encoder_config.num_layers:
+        raise ValueError(
+            "--intermediate-ctc-layer must be within encoder block range "
+            f"[0, {encoder_config.num_layers - 1}], got {layer}."
+        )
+    return layer, weight
 
 
 def build_paper_scheduler(
@@ -694,6 +726,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-epochs", type=int, default=20)
     parser.add_argument("--hold-epochs", type=int, default=160)
     parser.add_argument("--decay-exponent", type=float, default=1.0)
+    parser.add_argument("--intermediate-ctc-layer", type=int, default=None)
+    parser.add_argument("--intermediate-ctc-weight", type=float, default=0.3)
     parser.add_argument("--ema-decay", type=float, default=0.999)
     parser.add_argument("--ema-warmup-steps", type=int, default=0)
     parser.add_argument("--muon-warmup-epochs", type=int, default=None)
@@ -1282,6 +1316,13 @@ def main() -> None:
             activation_checkpointing=args.activation_checkpointing,
             attention_backend=args.attention_backend,
         )
+    intermediate_ctc_layer, intermediate_ctc_weight = _resolve_intermediate_ctc_settings(
+        args,
+        encoder_config,
+        checkpoint,
+    )
+    args.intermediate_ctc_layer = intermediate_ctc_layer
+    args.intermediate_ctc_weight = intermediate_ctc_weight
     fp8_recipe = _build_fp8_recipe(args)
     if distributed and requested_device.type == "cuda":
         if requested_device.index not in {None, local_rank}:
@@ -1297,6 +1338,7 @@ def main() -> None:
     model = SqueezeformerCTC(
         encoder_config=encoder_config,
         vocab_size=tokenizer.vocab_size,
+        intermediate_ctc_layer=intermediate_ctc_layer,
         use_transformer_engine=args.dtype == DTypeChoice.FP8,
     )
     model.to(device)
@@ -1374,11 +1416,13 @@ def main() -> None:
         global_step = int(checkpoint.get("global_step", 0))
         best_val_wer = float(checkpoint.get("best_val_wer", float("inf")))
         logger.info(
-            "resumed from %s starting_epoch=%s global_step=%s best_val_wer=%.4f",
+            "resumed from %s starting_epoch=%s global_step=%s best_val_wer=%.4f intermediate_ctc_layer=%s intermediate_ctc_weight=%.3f",
             args.resume,
             start_epoch,
             global_step,
             best_val_wer,
+            intermediate_ctc_layer,
+            intermediate_ctc_weight,
         )
 
     if is_main_process:
@@ -1393,6 +1437,8 @@ def main() -> None:
                 "active_optimizers": optimizer_names,
                 "optimizer_steps_per_epoch": optimizer_steps_per_epoch,
                 "featurizer_config": featurizer.config_dict(),
+                "intermediate_ctc_layer": intermediate_ctc_layer,
+                "intermediate_ctc_weight": intermediate_ctc_weight,
                 "split_audit": split_audit,
                 "distributed": distributed,
                 "world_size": world_size,
@@ -1403,6 +1449,8 @@ def main() -> None:
         logger.info("epoch %s/%s started", epoch, args.epochs)
         forward_model.train()
         running_loss = 0.0
+        running_main_ctc_loss = 0.0
+        running_intermediate_ctc_loss = 0.0
         for optimizer in optimizers:
             optimizer.zero_grad(set_to_none=True)
         for batch_index, batch in enumerate(train_loader, start=1):
@@ -1412,9 +1460,36 @@ def main() -> None:
             target_lengths = batch["target_lengths"].to(device)
 
             with _autocast_context(device, args.dtype, fp8_recipe=fp8_recipe):
-                log_probs, output_lengths = forward_model.log_probs(features, feature_lengths)
-                loss = criterion(log_probs.transpose(0, 1), targets, output_lengths, target_lengths)
+                (
+                    log_probs,
+                    output_lengths,
+                    intermediate_log_probs,
+                    intermediate_output_lengths,
+                ) = forward_model.log_probs_with_intermediate(features, feature_lengths)
+                main_ctc_loss = criterion(
+                    log_probs.transpose(0, 1),
+                    targets,
+                    output_lengths,
+                    target_lengths,
+                )
+                if intermediate_log_probs is not None and intermediate_output_lengths is not None:
+                    intermediate_ctc_loss = criterion(
+                        intermediate_log_probs.transpose(0, 1),
+                        targets,
+                        intermediate_output_lengths,
+                        target_lengths,
+                    )
+                    loss = (
+                        1.0 - intermediate_ctc_weight
+                    ) * main_ctc_loss + intermediate_ctc_weight * intermediate_ctc_loss
+                else:
+                    intermediate_ctc_loss = None
+                    loss = main_ctc_loss
             running_loss += float(loss.item())
+            running_main_ctc_loss += float(main_ctc_loss.item())
+            running_intermediate_ctc_loss += float(
+                intermediate_ctc_loss.item() if intermediate_ctc_loss is not None else 0.0
+            )
             scaler.scale(loss / args.gradient_accumulation_steps).backward()
 
             should_step = batch_index % args.gradient_accumulation_steps == 0 or batch_index == len(
@@ -1465,6 +1540,12 @@ def main() -> None:
                             "epoch": epoch,
                             "global_step": global_step,
                             "train_loss_step": float(loss.item()),
+                            "train_main_ctc_loss_step": float(main_ctc_loss.item()),
+                            "train_intermediate_ctc_loss_step": float(
+                                intermediate_ctc_loss.item()
+                                if intermediate_ctc_loss is not None
+                                else 0.0
+                            ),
                             "grad_norm": grad_norm,
                             "ema_decay": ema.current_decay() if ema is not None else 0.0,
                             **learning_rates,
@@ -1472,10 +1553,16 @@ def main() -> None:
                     )
 
         train_loss = running_loss / max(1, len(train_loader))
+        train_main_ctc_loss = running_main_ctc_loss / max(1, len(train_loader))
+        train_intermediate_ctc_loss = running_intermediate_ctc_loss / max(1, len(train_loader))
         if is_main_process:
             ema_backup = ema.apply_to(model) if ema is not None else None
             logger.info(
-                "epoch %s training complete train_loss=%.4f, starting validation", epoch, train_loss
+                "epoch %s training complete train_loss=%.4f train_main_ctc_loss=%.4f train_intermediate_ctc_loss=%.4f, starting validation",
+                epoch,
+                train_loss,
+                train_main_ctc_loss,
+                train_intermediate_ctc_loss,
             )
             validation = evaluate(
                 model,
@@ -1498,6 +1585,8 @@ def main() -> None:
                 "epoch": epoch,
                 "global_step": global_step,
                 "train_loss": train_loss,
+                "train_main_ctc_loss": train_main_ctc_loss,
+                "train_intermediate_ctc_loss": train_intermediate_ctc_loss,
                 "val_loss": val_metrics["loss"],
                 "val_cer": val_metrics["cer"],
                 "val_wer": val_metrics["wer"],

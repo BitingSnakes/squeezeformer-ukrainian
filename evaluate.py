@@ -101,7 +101,18 @@ def main() -> None:
     checkpoint = load_checkpoint(args.checkpoint, map_location="cpu")
     tokenizer = tokenizer_from_dict(checkpoint["tokenizer"])
     encoder_config = SqueezeformerConfig(**checkpoint["encoder_config"])
-    model = SqueezeformerCTC(encoder_config=encoder_config, vocab_size=tokenizer.vocab_size)
+    training_args = checkpoint.get("training_args", {})
+    intermediate_ctc_weight = float(training_args.get("intermediate_ctc_weight", 0.0))
+    intermediate_ctc_layer = training_args.get("intermediate_ctc_layer")
+    model = SqueezeformerCTC(
+        encoder_config=encoder_config,
+        vocab_size=tokenizer.vocab_size,
+        intermediate_ctc_layer=(
+            int(intermediate_ctc_layer)
+            if intermediate_ctc_weight > 0.0 and intermediate_ctc_layer is not None
+            else None
+        ),
+    )
     model.load_state_dict(checkpoint["model_state_dict"])
     device = resolve_device(args.device)
     _validate_device_ready(device)

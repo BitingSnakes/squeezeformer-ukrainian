@@ -89,7 +89,9 @@ class AudioFeaturizer(torch.nn.Module):
             features = self.mel(waveform)
             features = torch.log(features.clamp_min(1e-5)).transpose(0, 1)
         else:
-            spec = self._audioflux_bft.bft(waveform.detach().cpu().numpy().astype(np.float32, copy=False))
+            spec = self._audioflux_bft.bft(
+                waveform.detach().cpu().numpy().astype(np.float32, copy=False)
+            )
             spec = np.abs(spec)
             features = torch.from_numpy(spec).to(dtype=waveform.dtype).transpose(0, 1)
             features = torch.log(features.clamp_min(1e-5))

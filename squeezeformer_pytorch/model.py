@@ -10,7 +10,7 @@ from torch.utils.checkpoint import checkpoint as activation_checkpoint
 
 try:
     import transformer_engine.pytorch as te
-except (ImportError, OSError):
+except ImportError, OSError:
     te = None
 
 
@@ -779,10 +779,22 @@ class SqueezeformerEncoder(nn.Module):
             ]
         )
 
-    def forward(self, features: Tensor, lengths: Tensor) -> tuple[Tensor, Tensor]:
+    def _forward_impl(
+        self,
+        features: Tensor,
+        lengths: Tensor,
+        intermediate_layer_index: int | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor | None, Tensor | None]:
         if features.dim() != 3:
             raise ValueError(
                 f"Expected features with shape [batch, time, mel], got {tuple(features.shape)}"
+            )
+        if intermediate_layer_index is not None and not (
+            0 <= intermediate_layer_index < len(self.blocks)
+        ):
+            raise ValueError(
+                "intermediate_layer_index must reference an encoder block within "
+                f"[0, {len(self.blocks) - 1}], got {intermediate_layer_index}."
             )
 
         x = self.subsampling(features)
@@ -793,6 +805,8 @@ class SqueezeformerEncoder(nn.Module):
         x = self.input_norm(x)
 
         recover_stack: list[tuple[Tensor, Tensor]] = []
+        intermediate_x: Tensor | None = None
+        intermediate_lengths: Tensor | None = None
         for layer_index, block in enumerate(self.blocks):
             if layer_index in self.config.time_reduce_idx:
                 recover_stack.append((x, lengths))
@@ -835,8 +849,32 @@ class SqueezeformerEncoder(nn.Module):
             else:
                 x = block(x, pos=pos, attn_mask=attn_mask, pad_mask=pad_mask)
             x = x[:, : int(lengths.max().item()), :]
+            if layer_index == intermediate_layer_index:
+                intermediate_x = x
+                intermediate_lengths = lengths
 
+        return x, lengths, intermediate_x, intermediate_lengths
+
+    def forward(self, features: Tensor, lengths: Tensor) -> tuple[Tensor, Tensor]:
+        x, lengths, _, _ = self._forward_impl(features, lengths)
         return x, lengths
+
+    def forward_with_intermediate(
+        self,
+        features: Tensor,
+        lengths: Tensor,
+        intermediate_layer_index: int,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        x, output_lengths, intermediate_x, intermediate_lengths = self._forward_impl(
+            features,
+            lengths,
+            intermediate_layer_index=intermediate_layer_index,
+        )
+        if intermediate_x is None or intermediate_lengths is None:
+            raise RuntimeError(
+                f"Failed to capture intermediate encoder output for layer {intermediate_layer_index}."
+            )
+        return x, output_lengths, intermediate_x, intermediate_lengths
 
 
 def build_squeezeformer_encoder(

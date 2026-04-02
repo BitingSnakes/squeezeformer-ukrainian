@@ -101,7 +101,11 @@ def test_larger_variant_reduces_frame_budget(monkeypatch) -> None:
 def test_auto_dtype_prefers_fp8_when_supported(monkeypatch) -> None:
     args = _base_args(device="cuda:0", dtype="auto")
 
-    monkeypatch.setattr(hparam_tuner, "probe_device", lambda device: hparam_tuner.DeviceProfile(device, "cuda", 24.0, 16))
+    monkeypatch.setattr(
+        hparam_tuner,
+        "probe_device",
+        lambda device: hparam_tuner.DeviceProfile(device, "cuda", 24.0, 16),
+    )
     monkeypatch.setattr(hparam_tuner, "_fp8_support_status", lambda device, variant: (True, None))
 
     estimate = estimate_training_hparams(args)

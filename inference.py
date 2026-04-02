@@ -52,6 +52,8 @@ class ASRInferenceSession:
         encoder_config = SqueezeformerConfig(**checkpoint_data["encoder_config"])
         training_args = checkpoint_data.get("training_args", {})
         checkpoint_dtype = str(training_args.get("dtype", ""))
+        intermediate_ctc_weight = float(training_args.get("intermediate_ctc_weight", 0.0))
+        intermediate_ctc_layer = training_args.get("intermediate_ctc_layer")
         use_transformer_engine = checkpoint_dtype == "fp8" or dtype == DTypeChoice.FP8
         if dtype == DTypeChoice.FP8:
             validate_fp8_inference_runtime(device, encoder_config)
@@ -59,6 +61,11 @@ class ASRInferenceSession:
         self.model = SqueezeformerCTC(
             encoder_config=encoder_config,
             vocab_size=self.tokenizer.vocab_size,
+            intermediate_ctc_layer=(
+                int(intermediate_ctc_layer)
+                if intermediate_ctc_weight > 0.0 and intermediate_ctc_layer is not None
+                else None
+            ),
             use_transformer_engine=use_transformer_engine,
         )
         self.model.load_state_dict(checkpoint_data["model_state_dict"])
@@ -75,10 +82,13 @@ class ASRInferenceSession:
         features = self.featurizer(waveform, sample_rate).unsqueeze(0).to(self.device)
         feature_lengths = torch.tensor([features.size(1)], device=self.device)
 
-        with torch.inference_mode(), inference_autocast_context(
-            self.device,
-            self.dtype,
-            fp8_recipe=self.fp8_recipe,
+        with (
+            torch.inference_mode(),
+            inference_autocast_context(
+                self.device,
+                self.dtype,
+                fp8_recipe=self.fp8_recipe,
+            ),
         ):
             log_probs, _ = self.model.log_probs(features, feature_lengths)
 
@@ -181,7 +191,9 @@ def build_fp8_recipe(args: argparse.Namespace):
     )
 
 
-def validate_fp8_inference_runtime(device: torch.device, encoder_config: SqueezeformerConfig) -> None:
+def validate_fp8_inference_runtime(
+    device: torch.device, encoder_config: SqueezeformerConfig
+) -> None:
     if device.type != "cuda":
         raise ValueError("FP8 inference requires a CUDA device.")
     if not transformer_engine_available() or te is None:
@@ -201,7 +213,9 @@ def validate_fp8_inference_runtime(device: torch.device, encoder_config: Squeeze
             is_available, reason = bool(availability), None
         if not is_available:
             suffix = f" {reason}" if reason else ""
-            raise RuntimeError(f"Transformer Engine reports FP8 is unavailable on this runtime.{suffix}")
+            raise RuntimeError(
+                f"Transformer Engine reports FP8 is unavailable on this runtime.{suffix}"
+            )
 
 
 def inference_autocast_context(device: torch.device, dtype: DTypeChoice, *, fp8_recipe=None):

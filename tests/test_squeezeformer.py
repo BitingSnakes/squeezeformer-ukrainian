@@ -146,6 +146,59 @@ def test_temporal_unet_handles_odd_length_sequences() -> None:
     assert torch.isfinite(outputs).all()
 
 
+@torch.no_grad()
+def test_encoder_can_return_mid_layer_hidden_state() -> None:
+    model = build_squeezeformer_encoder("xs")
+    model.eval()
+    lengths = torch.tensor([160, 123], dtype=torch.int64)
+    features = torch.randn(2, int(lengths.max().item()), 80)
+
+    outputs, output_lengths, intermediate, intermediate_lengths = model.forward_with_intermediate(
+        features,
+        lengths,
+        intermediate_layer_index=7,
+    )
+
+    assert outputs.shape[0] == intermediate.shape[0] == 2
+    assert outputs.shape[2] == intermediate.shape[2] == model.config.d_model
+    assert torch.equal(output_lengths, torch.tensor([40, 30]))
+    assert torch.equal(intermediate_lengths, torch.tensor([20, 15]))
+    assert intermediate.shape[1] == int(intermediate_lengths.max().item())
+    assert torch.isfinite(intermediate).all()
+
+
+@torch.no_grad()
+def test_ctc_model_can_emit_intermediate_log_probs(tmp_path: Path) -> None:
+    tokenizer = SentencePieceTokenizer.train(
+        ["привіт світе", "це короткий тест", "мовна модель"],
+        model_prefix=tmp_path / "test_intermediate_spm",
+        vocab_size=24,
+    )
+    model = SqueezeformerCTC(
+        encoder_config=squeezeformer_variant("xs"),
+        vocab_size=tokenizer.vocab_size,
+        intermediate_ctc_layer=7,
+    )
+    model.eval()
+    lengths = torch.tensor([160, 123], dtype=torch.int64)
+    features = torch.randn(2, int(lengths.max().item()), 80)
+
+    (
+        log_probs,
+        output_lengths,
+        intermediate_log_probs,
+        intermediate_output_lengths,
+    ) = model.log_probs_with_intermediate(features, lengths)
+
+    assert log_probs.shape[:2] == (2, int(output_lengths.max().item()))
+    assert intermediate_log_probs is not None
+    assert intermediate_output_lengths is not None
+    assert intermediate_log_probs.shape[:2] == (2, int(intermediate_output_lengths.max().item()))
+    assert intermediate_log_probs.shape[-1] == tokenizer.vocab_size
+    assert torch.isfinite(log_probs).all()
+    assert torch.isfinite(intermediate_log_probs).all()
+
+
 def test_variant_table_matches_paper() -> None:
     expected = {
         "xs": (16, 144, 4),
