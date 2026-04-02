@@ -8,6 +8,7 @@ dependencies = [
     "jiwer>=4.0.0",
     "nvidia-npp>=13.1.0.44",
     "polars>=1.30.0",
+    "safetensors>=0.6.2",
     "sentencepiece>=0.2.0",
     "torch>=2.11.0",
     "torchaudio>=2.11.0",

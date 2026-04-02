@@ -1,3 +1,4 @@
+from dataclasses import asdict
 import math
 import sys
 from pathlib import Path
@@ -15,6 +16,7 @@ from squeezeformer_pytorch import (
     tokenizer_from_dict,
 )
 from squeezeformer_pytorch.asr import load_lm_scorer
+from squeezeformer_pytorch.checkpoints import load_checkpoint, save_checkpoint
 from squeezeformer_pytorch.data import (
     AdaptiveBatchSampler,
     AudioFeaturizer,
@@ -172,6 +174,37 @@ def test_sentencepiece_tokenizer_roundtrip(tmp_path: Path) -> None:
     assert token_ids
     restored = tokenizer_from_dict(tokenizer.to_dict())
     assert restored.decode(token_ids)
+
+
+def test_safetensors_checkpoint_roundtrip(tmp_path: Path) -> None:
+    tokenizer = SentencePieceTokenizer.train(
+        ["привіт світе", "це короткий тест", "мовна модель"],
+        model_prefix=tmp_path / "spm_ckpt",
+        vocab_size=24,
+    )
+    model = SqueezeformerCTC(
+        encoder_config=squeezeformer_variant("xs"),
+        vocab_size=tokenizer.vocab_size,
+    )
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+        "encoder_config": asdict(model.encoder_config),
+        "tokenizer": tokenizer.to_dict(),
+        "featurizer_config": {"sample_rate": 16_000},
+        "training_args": {"dtype": "bfloat16"},
+    }
+
+    checkpoint_path = tmp_path / "checkpoint_best.safetensors"
+    save_checkpoint(checkpoint, checkpoint_path)
+    restored = load_checkpoint(checkpoint_path)
+
+    assert checkpoint_path.exists()
+    assert checkpoint_path.with_suffix(".json").exists()
+    assert restored["encoder_config"] == checkpoint["encoder_config"]
+    assert restored["tokenizer"] == checkpoint["tokenizer"]
+    assert restored["training_args"] == checkpoint["training_args"]
+    for key, value in checkpoint["model_state_dict"].items():
+        assert torch.equal(restored["model_state_dict"][key], value)
 
 
 def test_ngram_lm_prefers_seen_extension(tmp_path: Path) -> None:

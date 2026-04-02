@@ -538,8 +538,11 @@ uv run python evaluate.py \
 Training writes:
 
 - `checkpoint_last.pt`
+- `checkpoint_last.safetensors` plus `checkpoint_last.json` for inference/evaluation
 - `checkpoint_best.pt`
+- `checkpoint_best.safetensors` plus `checkpoint_best.json` for inference/evaluation
 - `checkpoint_topk_avg.pt`
+- `checkpoint_topk_avg.safetensors` plus `checkpoint_topk_avg.json` for inference/evaluation
 - `checkpoints_topk/` with the best `--keep-top-k` checkpoints by validation WER
 - `checkpoints_topk/metadata.json`
 - `eval_reports/epoch_XXXX.json`

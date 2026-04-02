@@ -39,6 +39,7 @@ from squeezeformer_pytorch.data import (
     load_cv22_records,
     prevalidate_records,
 )
+from squeezeformer_pytorch.checkpoints import save_checkpoint
 from squeezeformer_pytorch.lm import NGramLanguageModel
 from squeezeformer_pytorch.metrics import char_error_rate, word_error_rate
 from squeezeformer_pytorch.model import (
@@ -64,6 +65,31 @@ except ImportError:
 
 def _checkpoint_name(epoch: int, val_wer: float) -> str:
     return f"checkpoint_epoch={epoch:04d}_valwer={val_wer:.6f}.pt"
+
+
+def _safetensors_path(checkpoint_path: Path) -> Path:
+    return checkpoint_path.with_suffix(".safetensors")
+
+
+def _inference_checkpoint_payload(checkpoint: dict[str, object]) -> dict[str, object]:
+    return {
+        "model_state_dict": checkpoint["model_state_dict"],
+        "encoder_config": checkpoint["encoder_config"],
+        "tokenizer": checkpoint["tokenizer"],
+        "featurizer_config": checkpoint.get("featurizer_config", {}),
+        "epoch": checkpoint.get("epoch"),
+        "global_step": checkpoint.get("global_step"),
+        "best_val_wer": checkpoint.get("best_val_wer"),
+        "metrics": checkpoint.get("metrics"),
+        "training_args": checkpoint.get("training_args", {}),
+        "averaged_from": checkpoint.get("averaged_from"),
+    }
+
+
+def _export_inference_checkpoint(checkpoint: dict[str, object], checkpoint_path: Path) -> Path:
+    safetensors_path = _safetensors_path(checkpoint_path)
+    save_checkpoint(_inference_checkpoint_payload(checkpoint), safetensors_path)
+    return safetensors_path
 
 
 class SchedulerDefaults(NamedTuple):
@@ -442,7 +468,7 @@ def _update_top_checkpoints(
 
     filename = _checkpoint_name(epoch=epoch, val_wer=val_wer)
     checkpoint_path = topk_dir / filename
-    torch.save(checkpoint, checkpoint_path)
+    save_checkpoint(checkpoint, checkpoint_path)
 
     metadata.append(
         {
@@ -498,7 +524,8 @@ def _average_topk_checkpoints(output_dir: Path) -> Path | None:
     averaged_checkpoint["model_state_dict"] = model_state_dict
     averaged_checkpoint["averaged_from"] = metadata
     averaged_path = output_dir / "checkpoint_topk_avg.pt"
-    torch.save(averaged_checkpoint, averaged_path)
+    save_checkpoint(averaged_checkpoint, averaged_path)
+    _export_inference_checkpoint(averaged_checkpoint, averaged_path)
     return averaged_path
 
 
@@ -1481,10 +1508,15 @@ def main() -> None:
                 args=args,
             )
             latest_path = output_dir / "checkpoint_last.pt"
-            torch.save(checkpoint, latest_path)
+            save_checkpoint(checkpoint, latest_path)
+            latest_safetensors_path = _export_inference_checkpoint(checkpoint, latest_path)
             if val_metrics["wer"] < best_val_wer:
                 best_val_wer = val_metrics["wer"]
-                torch.save(checkpoint, output_dir / "checkpoint_best.pt")
+                best_path = output_dir / "checkpoint_best.pt"
+                save_checkpoint(checkpoint, best_path)
+                best_safetensors_path = _export_inference_checkpoint(checkpoint, best_path)
+            else:
+                best_safetensors_path = _safetensors_path(output_dir / "checkpoint_best.pt")
             _update_top_checkpoints(
                 output_dir=output_dir,
                 checkpoint=checkpoint,
@@ -1509,6 +1541,12 @@ def main() -> None:
                 latest_path,
                 output_dir / "checkpoint_best.pt",
                 averaged_path if averaged_path is not None else "n/a",
+            )
+            logger.info(
+                "exported inference artifacts latest_safe=%s best_safe=%s averaged_safe=%s",
+                latest_safetensors_path,
+                best_safetensors_path if best_safetensors_path.exists() else "n/a",
+                _safetensors_path(averaged_path).as_posix() if averaged_path is not None else "n/a",
             )
         if distributed:
             dist.barrier()
