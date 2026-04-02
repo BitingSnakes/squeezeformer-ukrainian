@@ -44,6 +44,7 @@ from squeezeformer_pytorch.data import (
     download_cv22_dataset,
     iter_cv22_records,
     iter_cv22_records_from_source,
+    prevalidate_records,
     probe_audio_metadata,
     read_binary_source,
 )
@@ -498,6 +499,119 @@ def _load_records_from_dataset_roots(
             "all dataset sources."
         )
     return records
+
+
+def _prevalidate_loaded_records(
+    records: list[CVRecord],
+    *,
+    split: str,
+    num_workers: int,
+) -> list[CVRecord]:
+    validated_records = prevalidate_records(records, num_workers=num_workers)
+    if not validated_records:
+        raise RuntimeError(f"Split '{split}' is empty after audio prevalidation.")
+    return validated_records
+
+
+def _load_train_val_records(
+    args: argparse.Namespace,
+    dataset_sources: list[str | Path],
+    *,
+    lowercase_transcripts: bool,
+    output_dir: Path,
+) -> tuple[list[CVRecord] | DiskBackedRecordStore, list[CVRecord] | DiskBackedRecordStore]:
+    if args.record_cache:
+        record_store_dir = (
+            Path(args.record_cache_dir)
+            if args.record_cache_dir is not None
+            else output_dir / "record_cache"
+        )
+        train_records = _build_disk_backed_record_store(
+            dataset_sources,
+            split="train",
+            seed=args.seed,
+            val_fraction=args.val_fraction,
+            test_fraction=args.test_fraction,
+            max_samples=args.max_train_samples,
+            min_transcript_chars=args.min_transcript_chars,
+            max_transcript_chars=args.max_transcript_chars,
+            max_symbol_ratio=args.max_symbol_ratio,
+            lowercase_transcripts=lowercase_transcripts,
+            records_path=record_store_dir / "train.jsonl",
+            hf_token=args.hf_token,
+        )
+        val_records = _build_disk_backed_record_store(
+            dataset_sources,
+            split="validation",
+            seed=args.seed,
+            val_fraction=args.val_fraction,
+            test_fraction=args.test_fraction,
+            max_samples=args.max_val_samples,
+            min_transcript_chars=args.min_transcript_chars,
+            max_transcript_chars=args.max_transcript_chars,
+            max_symbol_ratio=args.max_symbol_ratio,
+            lowercase_transcripts=lowercase_transcripts,
+            records_path=record_store_dir / "validation.jsonl",
+            hf_token=args.hf_token,
+        )
+        if args.prevalidate_audio:
+            raise ValueError(
+                "--prevalidate-audio is not supported with the disk-backed training record store. "
+                "Leave it disabled for large multi-source training runs or use --no-record-cache."
+            )
+        return train_records, val_records
+
+    train_records = _load_records_from_dataset_roots(
+        dataset_sources,
+        split="train",
+        seed=args.seed,
+        val_fraction=args.val_fraction,
+        test_fraction=args.test_fraction,
+        max_samples=args.max_train_samples,
+        min_transcript_chars=args.min_transcript_chars,
+        max_transcript_chars=args.max_transcript_chars,
+        max_symbol_ratio=args.max_symbol_ratio,
+        lowercase_transcripts=lowercase_transcripts,
+        hf_token=args.hf_token,
+    )
+    val_records = _load_records_from_dataset_roots(
+        dataset_sources,
+        split="validation",
+        seed=args.seed,
+        val_fraction=args.val_fraction,
+        test_fraction=args.test_fraction,
+        max_samples=args.max_val_samples,
+        min_transcript_chars=args.min_transcript_chars,
+        max_transcript_chars=args.max_transcript_chars,
+        max_symbol_ratio=args.max_symbol_ratio,
+        lowercase_transcripts=lowercase_transcripts,
+        hf_token=args.hf_token,
+    )
+    if args.prevalidate_audio:
+        train_records = _prevalidate_loaded_records(
+            train_records,
+            split="train",
+            num_workers=args.prevalidate_workers,
+        )
+        val_records = _prevalidate_loaded_records(
+            val_records,
+            split="validation",
+            num_workers=args.prevalidate_workers,
+        )
+    return train_records, val_records
+
+
+def _shard_records_for_rank(
+    records: list[CVRecord] | DiskBackedRecordStore,
+    *,
+    rank: int,
+    world_size: int,
+) -> list[CVRecord] | DiskBackedRecordStore:
+    if world_size <= 1:
+        return records
+    if hasattr(records, "shard"):
+        return records.shard(rank, world_size)
+    return records[rank::world_size]
 
 
 def resolve_device(device: str) -> torch.device:
@@ -1228,6 +1342,15 @@ def parse_args() -> argparse.Namespace:
             "OUTPUT_DIR/record_cache."
         ),
     )
+    parser.add_argument(
+        "--record-cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Whether to build disk-backed train/validation record indexes. Disable with "
+            "--no-record-cache to keep records only in memory."
+        ),
+    )
     parser.add_argument("--resume", default=None)
     parser.add_argument(
         "--distributed",
@@ -1877,44 +2000,12 @@ def main() -> None:
 
     dataset_sources = _resolve_dataset_sources(args)
     lowercase_transcripts = args.tokenizer != "sentencepiece"
-    record_store_dir = (
-        Path(args.record_cache_dir)
-        if args.record_cache_dir is not None
-        else output_dir / "record_cache"
-    )
-    train_records = _build_disk_backed_record_store(
+    train_records, val_records = _load_train_val_records(
+        args,
         dataset_sources,
-        split="train",
-        seed=args.seed,
-        val_fraction=args.val_fraction,
-        test_fraction=args.test_fraction,
-        max_samples=args.max_train_samples,
-        min_transcript_chars=args.min_transcript_chars,
-        max_transcript_chars=args.max_transcript_chars,
-        max_symbol_ratio=args.max_symbol_ratio,
         lowercase_transcripts=lowercase_transcripts,
-        records_path=record_store_dir / "train.jsonl",
-        hf_token=args.hf_token,
+        output_dir=output_dir,
     )
-    val_records = _build_disk_backed_record_store(
-        dataset_sources,
-        split="validation",
-        seed=args.seed,
-        val_fraction=args.val_fraction,
-        test_fraction=args.test_fraction,
-        max_samples=args.max_val_samples,
-        min_transcript_chars=args.min_transcript_chars,
-        max_transcript_chars=args.max_transcript_chars,
-        max_symbol_ratio=args.max_symbol_ratio,
-        lowercase_transcripts=lowercase_transcripts,
-        records_path=record_store_dir / "validation.jsonl",
-        hf_token=args.hf_token,
-    )
-    if args.prevalidate_audio:
-        raise ValueError(
-            "--prevalidate-audio is not supported with the disk-backed training record store. "
-            "Leave it disabled for large multi-source training runs."
-        )
     split_audit = _build_split_audit({"train": train_records, "validation": val_records})
     if is_main_process:
         (output_dir / "split_audit.json").write_text(
@@ -1992,7 +2083,11 @@ def main() -> None:
     val_feature_cache_dir = (
         Path(args.feature_cache_dir) / "validation" if args.feature_cache_dir is not None else None
     )
-    local_train_records = train_records.shard(rank, world_size) if distributed else train_records
+    local_train_records = _shard_records_for_rank(
+        train_records,
+        rank=rank,
+        world_size=world_size,
+    )
     train_dataset = CV22ASRDataset(
         local_train_records,
         tokenizer=tokenizer,

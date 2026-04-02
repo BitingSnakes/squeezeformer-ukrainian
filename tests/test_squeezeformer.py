@@ -46,13 +46,16 @@ from train import (
     _build_disk_backed_record_store,
     _build_fp8_recipe,
     _configure_console_logger,
+    _load_train_val_records,
     _load_records_from_dataset_roots,
     _resolve_dataset_sources,
     _resolve_dataset_roots,
+    _shard_records_for_rank,
     _update_top_checkpoints,
     _validate_device_argument,
     _validate_fp8_runtime,
     _variant_defaults,
+    parse_args,
     build_optimizer,
     build_paper_scheduler,
     resolve_device,
@@ -633,6 +636,18 @@ def test_resolve_dataset_sources_preserves_remote_parquet_urls() -> None:
     ]
 
 
+def test_parse_args_supports_no_record_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["train.py", "--device", "cpu", "--no-record-cache"],
+    )
+
+    args = parse_args()
+
+    assert args.record_cache is False
+
+
 def test_load_records_from_dataset_roots_combines_sources_with_global_limit(tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -732,6 +747,110 @@ def test_build_disk_backed_record_store_reads_parquet_manifest_file(tmp_path: Pa
     assert isinstance(store, DiskBackedRecordStore)
     assert len(store) == 2
     assert [record.utterance_id for record in store] == ["utt0", "utt1"]
+
+
+def test_load_train_val_records_without_record_cache_uses_in_memory_loader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    train_rows = [
+        CVRecord(
+            audio_path="a.wav",
+            audio_bytes=None,
+            transcript="перший запис",
+            utterance_id="utt0",
+            estimated_frames=10,
+        )
+    ]
+    val_rows = [
+        CVRecord(
+            audio_path="b.wav",
+            audio_bytes=None,
+            transcript="другий запис",
+            utterance_id="utt1",
+            estimated_frames=12,
+        )
+    ]
+    calls: list[str] = []
+
+    def fake_load_records_from_dataset_roots(
+        dataset_sources: list[str | Path],
+        *,
+        split: str,
+        seed: int,
+        val_fraction: float,
+        test_fraction: float,
+        max_samples: int | None,
+        min_transcript_chars: int,
+        max_transcript_chars: int,
+        max_symbol_ratio: float,
+        lowercase_transcripts: bool,
+        hf_token: str | None = None,
+    ) -> list[CVRecord]:
+        del (
+            dataset_sources,
+            seed,
+            val_fraction,
+            test_fraction,
+            max_samples,
+            min_transcript_chars,
+            max_transcript_chars,
+            max_symbol_ratio,
+            lowercase_transcripts,
+            hf_token,
+        )
+        calls.append(split)
+        return train_rows if split == "train" else val_rows
+
+    def fake_build_disk_backed_record_store(*args, **kwargs):
+        raise AssertionError("disk-backed store should not be used when --no-record-cache is set")
+
+    monkeypatch.setattr("train._load_records_from_dataset_roots", fake_load_records_from_dataset_roots)
+    monkeypatch.setattr("train._build_disk_backed_record_store", fake_build_disk_backed_record_store)
+
+    args = type(
+        "Args",
+        (),
+        {
+            "record_cache": False,
+            "record_cache_dir": None,
+            "seed": 13,
+            "val_fraction": 0.1,
+            "test_fraction": 0.1,
+            "max_train_samples": None,
+            "max_val_samples": None,
+            "min_transcript_chars": 1,
+            "max_transcript_chars": 400,
+            "max_symbol_ratio": 0.5,
+            "hf_token": None,
+            "prevalidate_audio": False,
+            "prevalidate_workers": 1,
+        },
+    )()
+
+    train_records, val_records = _load_train_val_records(
+        args,
+        [tmp_path / "data"],
+        lowercase_transcripts=True,
+        output_dir=tmp_path / "artifacts",
+    )
+
+    assert calls == ["train", "validation"]
+    assert train_records == train_rows
+    assert val_records == val_rows
+
+
+def test_shard_records_for_rank_slices_in_memory_records() -> None:
+    records = [
+        CVRecord("a.wav", None, "a", "utt0", 1),
+        CVRecord("b.wav", None, "b", "utt1", 1),
+        CVRecord("c.wav", None, "c", "utt2", 1),
+        CVRecord("d.wav", None, "d", "utt3", 1),
+    ]
+
+    shard = _shard_records_for_rank(records, rank=1, world_size=2)
+
+    assert [record.utterance_id for record in shard] == ["utt1", "utt3"]
 
 
 def test_disk_backed_record_store_shard_views_rows(tmp_path: Path) -> None:
