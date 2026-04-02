@@ -4,6 +4,7 @@ import argparse
 import tempfile
 from contextlib import ExitStack, nullcontext
 from pathlib import Path
+from typing import Any
 
 import gradio as gr
 import torch
@@ -33,6 +34,11 @@ DEFAULT_CHECKPOINT = (
 )
 
 
+def _is_torchao_quantized_checkpoint(checkpoint_data: dict[str, Any]) -> bool:
+    quantization = checkpoint_data.get("quantization")
+    return isinstance(quantization, dict) and quantization.get("backend") == "torchao"
+
+
 class ASRInferenceSession:
     def __init__(
         self,
@@ -58,6 +64,7 @@ class ASRInferenceSession:
         blank_prune_threshold = float(training_args.get("blank_prune_threshold", 0.0))
         blank_prune_layer = training_args.get("blank_prune_layer")
         blank_prune_min_keep_frames = int(training_args.get("blank_prune_min_keep_frames", 1))
+        is_torchao_quantized = _is_torchao_quantized_checkpoint(checkpoint_data)
         if intermediate_ctc_weight > 0.0:
             if intermediate_ctc_layers is not None:
                 resolved_intermediate_ctc_layers = tuple(
@@ -69,8 +76,12 @@ class ASRInferenceSession:
                 resolved_intermediate_ctc_layers = ()
         else:
             resolved_intermediate_ctc_layers = ()
-        use_transformer_engine = checkpoint_dtype == "fp8" or dtype == DTypeChoice.FP8
+        use_transformer_engine = not is_torchao_quantized and (
+            checkpoint_dtype == "fp8" or dtype == DTypeChoice.FP8
+        )
         if dtype == DTypeChoice.FP8:
+            if is_torchao_quantized:
+                raise ValueError("TorchAO quantized checkpoints do not support FP8 inference.")
             validate_fp8_inference_runtime(device, encoder_config)
 
         self.model = SqueezeformerCTC(
@@ -86,7 +97,10 @@ class ASRInferenceSession:
             blank_prune_min_keep_frames=blank_prune_min_keep_frames,
             use_transformer_engine=use_transformer_engine,
         )
-        self.model.load_state_dict(checkpoint_data["model_state_dict"])
+        if is_torchao_quantized:
+            self.model.load_state_dict(checkpoint_data["model_state_dict"], assign=True)
+        else:
+            self.model.load_state_dict(checkpoint_data["model_state_dict"])
         self.model.to(device)
         self.model.eval()
 

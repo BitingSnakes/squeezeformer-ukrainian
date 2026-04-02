@@ -159,6 +159,7 @@ class DiskBackedRecordStore:
         self.start = start
         self.step = step
         self._handle = None
+        self._handle_pid: int | None = None
 
     def _global_index(self, index: int) -> int:
         if index < 0:
@@ -168,14 +169,20 @@ class DiskBackedRecordStore:
         return self.start + (index * self.step)
 
     def _open_handle(self):
+        current_pid = os.getpid()
+        if self._handle_pid != current_pid and self._handle is not None and not self._handle.closed:
+            self._handle.close()
+            self._handle = None
         if self._handle is None or self._handle.closed:
             self._handle = self.records_path.open("rb")
+            self._handle_pid = current_pid
         return self._handle
 
     def close(self) -> None:
         if self._handle is not None and not self._handle.closed:
             self._handle.close()
         self._handle = None
+        self._handle_pid = None
 
     def __len__(self) -> int:
         total = len(self.offsets)
