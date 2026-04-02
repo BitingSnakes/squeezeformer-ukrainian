@@ -1,21 +1,21 @@
 # Squeezeformer PyTorch
 
-This repository contains a standalone PyTorch implementation of the Squeezeformer encoder from [arXiv-2206.00888v2](/workspace/arXiv-2206.00888v2), plus CTC training and evaluation scripts for the gated Hugging Face dataset `speech-uk/cv22`.
+This repository contains a standalone PyTorch implementation of the Squeezeformer encoder from [arXiv:2206.00888v2](https://arxiv.org/abs/2206.00888v2), plus CTC training and evaluation scripts for the gated Hugging Face dataset `speech-uk/cv22`.
 
 ## What Is Here
 
-- [model.py](/workspace/squeezeformer_pytorch/model.py): encoder architecture and published size variants
-- [asr.py](/workspace/squeezeformer_pytorch/asr.py): CTC wrapper, tokenizer implementations, beam search, LM scorer hook
-- [lm.py](/workspace/squeezeformer_pytorch/lm.py): concrete character n-gram shallow-fusion LM
-- [data.py](/workspace/squeezeformer_pytorch/data.py): dataset download, Polars manifest loading, transcript normalization, featurization, caching, bucketing
-- [metrics.py](/workspace/squeezeformer_pytorch/metrics.py): CER and WER through `jiwer`
-- [train.py](/workspace/train.py): training entrypoint
-- [train_lm.py](/workspace/train_lm.py): train a shallow-fusion n-gram LM from a text corpus or dataset transcripts
-- [extract_features.py](/workspace/extract_features.py): extract and cache frontend log-mel features without training
-- [evaluate.py](/workspace/evaluate.py): evaluation entrypoint
-- [benchmark.py](/workspace/benchmark.py): synthetic throughput, memory, and decode-speed benchmark
-- [hparam_tuner.py](/workspace/hparam_tuner.py): estimate hardware-sensitive `train.py` values and emit a ready command
-- [tests](/workspace/tests): architecture and training utility checks
+- [model.py](squeezeformer_pytorch/model.py): encoder architecture and published size variants
+- [asr.py](squeezeformer_pytorch/asr.py): CTC wrapper, tokenizer implementations, beam search, LM scorer hook
+- [lm.py](squeezeformer_pytorch/lm.py): concrete character n-gram shallow-fusion LM
+- [data.py](squeezeformer_pytorch/data.py): dataset download, Polars manifest loading, transcript normalization, featurization, caching, bucketing
+- [metrics.py](squeezeformer_pytorch/metrics.py): CER and WER through `jiwer`
+- [train.py](train.py): training entrypoint
+- [train_lm.py](train_lm.py): train a shallow-fusion n-gram LM from a text corpus or dataset transcripts
+- [extract_features.py](extract_features.py): extract and cache frontend log-mel features without training
+- [evaluate.py](evaluate.py): evaluation entrypoint
+- [benchmark.py](benchmark.py): synthetic throughput, memory, and decode-speed benchmark
+- [hparam_tuner.py](hparam_tuner.py): estimate hardware-sensitive `train.py` values and emit a ready command
+- [tests](tests): architecture and training utility checks
 
 ## Architecture Fidelity
 
@@ -66,7 +66,7 @@ export HF_TOKEN=your_huggingface_token
 
 The loader downloads the dataset snapshot with `huggingface_hub.snapshot_download()` and reads TSV or Parquet manifests with `polars`.
 
-For transcript-only workflows such as [train_lm.py](/workspace/train_lm.py), the repo now
+For transcript-only workflows such as [train_lm.py](train_lm.py), the repo now
 downloads only manifest files and streams transcript rows instead of materializing the full
 corpus in RAM. That keeps LM preparation usable even when the underlying dataset is tens of GB.
 
@@ -139,7 +139,7 @@ Relevant training flags:
 ## Feature Extraction
 
 This repo supports both on-the-fly cache warming through training/evaluation and a standalone
-offline extractor via [extract_features.py](/workspace/extract_features.py).
+offline extractor via [extract_features.py](extract_features.py).
 
 When caching is enabled:
 
@@ -193,7 +193,7 @@ Notes:
 
 ## Training Features
 
-[train.py](/workspace/train.py) now includes:
+[train.py](train.py) now includes:
 
 - SentencePiece-128 by default
 - Muon by default, with AdamW on auxiliary parameter groups
@@ -453,7 +453,7 @@ uv run python evaluate.py \
   --lm-weight 0.2
 ```
 
-This repo also includes a concrete character n-gram shallow-fusion LM in [lm.py](/workspace/squeezeformer_pytorch/lm.py).
+This repo also includes a concrete character n-gram shallow-fusion LM in [lm.py](squeezeformer_pytorch/lm.py).
 
 Train and save it automatically during ASR training:
 
@@ -528,7 +528,7 @@ Resume loads:
 
 ## Evaluation Outputs
 
-[evaluate.py](/workspace/evaluate.py) prints and logs:
+[evaluate.py](evaluate.py) prints and logs:
 
 - loss
 - CER
@@ -578,6 +578,6 @@ uv run python -c "import train, evaluate; print('imports_ok')"
 
 ## Sources
 
-- Paper source: [arXiv-2206.00888v2](/workspace/arXiv-2206.00888v2)
+- Paper source: [arXiv:2206.00888v2](https://arxiv.org/abs/2206.00888v2)
 - Dataset card: `https://huggingface.co/datasets/speech-uk/cv22`
 - `trackio`: `https://pypi.org/project/trackio/`
