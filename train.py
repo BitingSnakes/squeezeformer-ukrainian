@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -502,6 +503,48 @@ def _state_dict_shape_map(state_dict: dict[str, Tensor]) -> dict[str, tuple[int,
     return {key: tuple(value.shape) for key, value in state_dict.items()}
 
 
+def _checkpoint_compatibility_signature(model_state_dict: dict[str, Tensor]) -> str:
+    shape_items = sorted(
+        (key, list(shape)) for key, shape in _state_dict_shape_map(model_state_dict).items()
+    )
+    payload = json.dumps(shape_items, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _load_topk_metadata(metadata_path: Path) -> tuple[str | None, list[dict[str, object]]]:
+    if not metadata_path.exists():
+        return None, []
+    raw_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if isinstance(raw_metadata, list):
+        return None, raw_metadata
+    if not isinstance(raw_metadata, dict):
+        raise ValueError(f"Unexpected top-k metadata format in {metadata_path}.")
+    items = raw_metadata.get("items", [])
+    if not isinstance(items, list):
+        raise ValueError(f"Unexpected top-k metadata items format in {metadata_path}.")
+    compatibility_signature = raw_metadata.get("compatibility_signature")
+    if compatibility_signature is not None and not isinstance(compatibility_signature, str):
+        raise ValueError(f"Unexpected top-k compatibility signature format in {metadata_path}.")
+    return compatibility_signature, items
+
+
+def _write_topk_metadata(
+    metadata_path: Path,
+    compatibility_signature: str,
+    items: list[dict[str, object]],
+) -> None:
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "compatibility_signature": compatibility_signature,
+                "items": items,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
 def _update_top_checkpoints(
     output_dir: Path,
     checkpoint: dict[str, object],
@@ -513,28 +556,36 @@ def _update_top_checkpoints(
     topk_dir.mkdir(parents=True, exist_ok=True)
 
     metadata_path = topk_dir / "metadata.json"
-    if metadata_path.exists():
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    else:
-        metadata = []
+    compatibility_signature, metadata = _load_topk_metadata(metadata_path)
 
-    current_shapes = _state_dict_shape_map(checkpoint["model_state_dict"])
+    current_signature = _checkpoint_compatibility_signature(checkpoint["model_state_dict"])
+    logger = logging.getLogger("train")
+    if compatibility_signature is not None and compatibility_signature != current_signature:
+        for item in metadata:
+            checkpoint_path = topk_dir / str(item["path"])
+            if checkpoint_path.exists():
+                checkpoint_path.unlink()
+        metadata = []
     compatible_metadata: list[dict[str, object]] = []
+    removed_incompatible = 0
     for item in metadata:
         checkpoint_path = topk_dir / str(item["path"])
         if not checkpoint_path.exists():
             continue
         saved_checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-        saved_shapes = _state_dict_shape_map(saved_checkpoint["model_state_dict"])
-        if saved_shapes != current_shapes:
-            logging.getLogger("train").warning(
-                "Removing incompatible top-k checkpoint %s because parameter shapes do not match the current checkpoint.",
-                checkpoint_path,
-                extra={"rank": 0},
-            )
+        saved_signature = _checkpoint_compatibility_signature(saved_checkpoint["model_state_dict"])
+        if saved_signature != current_signature:
             checkpoint_path.unlink()
+            removed_incompatible += 1
             continue
         compatible_metadata.append(item)
+    if removed_incompatible:
+        logger.info(
+            "Removed %s incompatible top-k checkpoint artifact(s) from %s.",
+            removed_incompatible,
+            topk_dir,
+            extra={"rank": 0},
+        )
     metadata = compatible_metadata
 
     filename = _checkpoint_name(epoch=epoch, val_wer=val_wer)
@@ -557,14 +608,14 @@ def _update_top_checkpoints(
         if stale_path.exists():
             stale_path.unlink()
 
-    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    _write_topk_metadata(metadata_path, current_signature, metadata)
 
 
 def _average_topk_checkpoints(output_dir: Path) -> Path | None:
     metadata_path = output_dir / "checkpoints_topk" / "metadata.json"
     if not metadata_path.exists():
         return None
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    _, metadata = _load_topk_metadata(metadata_path)
     if not metadata:
         return None
 

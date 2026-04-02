@@ -498,10 +498,13 @@ def test_average_topk_checkpoints_logs_shape_mismatch_without_rank_error(
 
     topk_dir = tmp_path / "checkpoints_topk"
     topk_dir.mkdir()
-    metadata = [
-        {"path": "ckpt_a.pt"},
-        {"path": "ckpt_b.pt"},
-    ]
+    metadata = {
+        "compatibility_signature": "legacy-test-signature",
+        "items": [
+            {"path": "ckpt_a.pt"},
+            {"path": "ckpt_b.pt"},
+        ],
+    }
     (topk_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     torch.save(
         {
@@ -532,9 +535,11 @@ def test_average_topk_checkpoints_logs_shape_mismatch_without_rank_error(
 def test_update_top_checkpoints_removes_incompatible_existing_entries(tmp_path: Path) -> None:
     topk_dir = tmp_path / "checkpoints_topk"
     topk_dir.mkdir()
-    metadata = [
-        {"epoch": 7, "val_wer": 1.0, "path": "old.pt"},
-    ]
+    metadata = {
+        "items": [
+            {"epoch": 7, "val_wer": 1.0, "path": "old.pt"},
+        ]
+    }
     (topk_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     save_checkpoint(
         {
@@ -558,9 +563,10 @@ def test_update_top_checkpoints_removes_incompatible_existing_entries(tmp_path: 
     )
 
     saved_metadata = json.loads((topk_dir / "metadata.json").read_text(encoding="utf-8"))
-    assert saved_metadata == [
+    assert saved_metadata["items"] == [
         {"epoch": 8, "val_wer": 0.9, "path": "checkpoint_epoch=0008_valwer=0.900000.pt"}
     ]
+    assert isinstance(saved_metadata["compatibility_signature"], str)
     assert not (topk_dir / "old.pt").exists()
 
 
