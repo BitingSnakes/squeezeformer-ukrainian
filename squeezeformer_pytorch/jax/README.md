@@ -40,6 +40,12 @@ state or already attached elsewhere. The fix is normally:
 The `transparent hugepages` warning is not the blocker here; it is only a
 performance/startup warning.
 
+The JAX training script intentionally uses single-process data loading. PyTorch
+`DataLoader` worker forking is not a good match for JAX's multithreaded runtime
+and can trigger warnings like `os.fork() is incompatible with multithreaded code`
+or hang the process. If you pass `--num-workers`, `--pin-memory`, or
+`--persistent-workers`, the JAX script will override them to safe values.
+
 Minimal usage:
 
 ```python

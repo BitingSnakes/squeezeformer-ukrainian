@@ -64,6 +64,34 @@ def _configure_console_logger() -> logging.Logger:
     return logger
 
 
+def _resolve_dataloader_settings(
+    *,
+    num_workers: int,
+    pin_memory: bool,
+    persistent_workers: bool,
+    logger: logging.Logger,
+) -> tuple[int, bool, bool]:
+    resolved_num_workers = 0
+    resolved_pin_memory = False
+    resolved_persistent_workers = False
+    if num_workers != 0:
+        logger.warning(
+            "forcing --num-workers=0 for the JAX path because PyTorch DataLoader "
+            "worker forking can deadlock with JAX's multithreaded runtime"
+        )
+    if pin_memory:
+        logger.warning(
+            "forcing --pin-memory=false for the JAX path because batches are copied "
+            "into JAX arrays rather than moved through PyTorch accelerator memory"
+        )
+    if persistent_workers:
+        logger.warning(
+            "forcing --persistent-workers=false because JAX training uses single-process "
+            "data loading in this script"
+        )
+    return resolved_num_workers, resolved_pin_memory, resolved_persistent_workers
+
+
 def _variant_peak_lr(variant: str) -> float:
     if variant in {"xs", "s", "sm"}:
         return 2e-3
@@ -511,6 +539,12 @@ def main() -> None:
         jax.local_device_count(),
         jax.default_backend(),
         output_dir,
+    )
+    args.num_workers, args.pin_memory, args.persistent_workers = _resolve_dataloader_settings(
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory,
+        persistent_workers=args.persistent_workers,
+        logger=logger,
     )
 
     dataset_root = download_cv22_dataset(
