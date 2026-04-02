@@ -472,6 +472,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-epochs", type=int, default=20)
     parser.add_argument("--hold-epochs", type=int, default=160)
     parser.add_argument("--decay-exponent", type=float, default=1.0)
+    parser.add_argument(
+        "--intermediate-ctc",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--blank-prune",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--block-pattern", default="M,s,C,s")
     parser.add_argument(
         "--attention-backend",
@@ -524,6 +534,16 @@ def main() -> None:
     args = parse_args()
     if (args.adaptive_batch_unit is None) != (args.adaptive_batch_budget is None):
         raise ValueError("--adaptive-batch-unit and --adaptive-batch-budget must be set together.")
+    if args.intermediate_ctc:
+        raise ValueError(
+            "The JAX trainer does not implement intermediate CTC yet. "
+            "Use --no-intermediate-ctc or the PyTorch trainer."
+        )
+    if args.blank_prune:
+        raise ValueError(
+            "The JAX trainer does not implement blank-driven frame pruning yet. "
+            "Use --no-blank-prune or the PyTorch trainer."
+        )
 
     logger = _configure_console_logger()
     random.seed(args.seed)
