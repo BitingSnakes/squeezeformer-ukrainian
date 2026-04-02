@@ -1096,6 +1096,7 @@ def main() -> None:
         token=args.hf_token,
         cache_dir=args.cache_dir,
     )
+    lowercase_transcripts = args.tokenizer != "sentencepiece"
     train_records = load_cv22_records(
         dataset_root=dataset_root,
         split="train",
@@ -1106,6 +1107,7 @@ def main() -> None:
         min_transcript_chars=args.min_transcript_chars,
         max_transcript_chars=args.max_transcript_chars,
         max_symbol_ratio=args.max_symbol_ratio,
+        lowercase_transcripts=lowercase_transcripts,
     )
     val_records = load_cv22_records(
         dataset_root=dataset_root,
@@ -1117,6 +1119,7 @@ def main() -> None:
         min_transcript_chars=args.min_transcript_chars,
         max_transcript_chars=args.max_transcript_chars,
         max_symbol_ratio=args.max_symbol_ratio,
+        lowercase_transcripts=lowercase_transcripts,
     )
     if args.prevalidate_audio:
         train_records = prevalidate_records(train_records, num_workers=args.prevalidate_workers)

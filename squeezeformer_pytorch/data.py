@@ -39,8 +39,10 @@ class CVRecord:
     sample_rate: int = 0
 
 
-def normalize_transcript(text: str) -> str:
-    normalized = text.strip().lower()
+def normalize_transcript(text: str, lowercase: bool = True) -> str:
+    normalized = text.strip()
+    if lowercase:
+        normalized = normalized.lower()
     normalized = normalized.replace("’", "'").replace("`", "'").replace("ʼ", "'")
     normalized = re.sub(r"[“”«»]", '"', normalized)
     normalized = re.sub(r"\s+", " ", normalized)
@@ -130,11 +132,11 @@ def iter_manifest_rows(dataset_root: Path, batch_size: int = 8192) -> Iterable[d
         yield from pl.read_parquet(path).iter_rows(named=True)
 
 
-def _extract_transcript(row: dict[str, Any]) -> str:
+def _extract_transcript(row: dict[str, Any], lowercase: bool = True) -> str:
     for column in TRANSCRIPT_COLUMNS:
         value = row.get(column)
         if isinstance(value, str) and value.strip():
-            return normalize_transcript(value)
+            return normalize_transcript(value, lowercase=lowercase)
     raise KeyError(f"No transcript column found in row. Tried {TRANSCRIPT_COLUMNS}.")
 
 
@@ -253,6 +255,7 @@ def load_cv22_records(
     min_transcript_chars: int = 1,
     max_transcript_chars: int = 400,
     max_symbol_ratio: float = 0.5,
+    lowercase_transcripts: bool = True,
 ) -> list[CVRecord]:
     records = list(
         iter_cv22_records(
@@ -265,6 +268,7 @@ def load_cv22_records(
             min_transcript_chars=min_transcript_chars,
             max_transcript_chars=max_transcript_chars,
             max_symbol_ratio=max_symbol_ratio,
+            lowercase_transcripts=lowercase_transcripts,
         )
     )
     if not records:
@@ -282,6 +286,7 @@ def iter_cv22_records(
     min_transcript_chars: int = 1,
     max_transcript_chars: int = 400,
     max_symbol_ratio: float = 0.5,
+    lowercase_transcripts: bool = True,
 ) -> Iterable[CVRecord]:
     selected = 0
     found_usable_record = False
@@ -291,7 +296,7 @@ def iter_cv22_records(
     for row in iter_manifest_rows(dataset_root):
         scanned += 1
         try:
-            transcript = _extract_transcript(row)
+            transcript = _extract_transcript(row, lowercase=lowercase_transcripts)
             audio_path, audio_bytes = _resolve_audio(row, dataset_root=dataset_root)
         except KeyError:
             continue
@@ -343,12 +348,14 @@ def load_cv22_corpus_texts(
     dataset_root: Path,
     deduplicate: bool = False,
     max_samples: int | None = None,
+    lowercase_transcripts: bool = True,
 ) -> list[str]:
     texts = list(
         iter_cv22_corpus_texts(
             dataset_root=dataset_root,
             deduplicate=deduplicate,
             max_samples=max_samples,
+            lowercase_transcripts=lowercase_transcripts,
         )
     )
     if not texts:
@@ -361,6 +368,7 @@ def iter_cv22_corpus_texts_from_repo(
     token: str | None,
     deduplicate: bool = False,
     max_samples: int | None = None,
+    lowercase_transcripts: bool = True,
 ) -> Iterable[str]:
     seen: set[str] = set()
     yielded = 0
@@ -393,7 +401,7 @@ def iter_cv22_corpus_texts_from_repo(
 
         for row in rows:
             try:
-                transcript = _extract_transcript(row)
+                transcript = _extract_transcript(row, lowercase=lowercase_transcripts)
             except KeyError:
                 continue
             if deduplicate:
@@ -410,12 +418,13 @@ def iter_cv22_corpus_texts(
     dataset_root: Path,
     deduplicate: bool = False,
     max_samples: int | None = None,
+    lowercase_transcripts: bool = True,
 ) -> Iterable[str]:
     seen: set[str] = set()
     yielded = 0
     for row in iter_manifest_rows(dataset_root):
         try:
-            transcript = _extract_transcript(row)
+            transcript = _extract_transcript(row, lowercase=lowercase_transcripts)
         except KeyError:
             continue
         if deduplicate:

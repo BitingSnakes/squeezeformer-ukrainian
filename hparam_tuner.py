@@ -8,9 +8,16 @@ from dataclasses import asdict, dataclass
 
 import torch
 
-from squeezeformer_pytorch import SqueezeformerCTC, squeezeformer_variant
+from squeezeformer_pytorch.model import FP8_SHAPE_ALIGNMENT, transformer_engine_available
+from squeezeformer_pytorch.asr import SqueezeformerCTC
+from squeezeformer_pytorch.model import squeezeformer_variant
 
-DTYPE_CHOICES = ("float32", "float16", "bfloat16")
+try:
+    import transformer_engine.pytorch as te
+except (ImportError, OSError):
+    te = None
+
+DTYPE_CHOICES = ("auto", "float32", "float16", "bfloat16", "fp8")
 OPTIMIZER_CHOICES = ("muon", "adamw")
 TOKENIZER_CHOICES = ("sentencepiece", "character")
 DECODE_STRATEGY_CHOICES = ("greedy", "beam")
@@ -27,6 +34,7 @@ class DeviceProfile:
 
 @dataclass(frozen=True)
 class TrainingEstimate:
+    variant: str
     batch_size: int
     max_batch_frames: int
     gradient_accumulation_steps: int
@@ -38,9 +46,14 @@ class TrainingEstimate:
     persistent_workers: bool
     model_parameters: int
     model_parameters_millions: float
+    reference_model_parameters: int
+    parameter_scale: float
     available_memory_gb: float | None
     target_effective_frames: int
     estimated_effective_frames: int
+    resolved_dtype: str
+    fp8_supported: bool
+    fp8_support_reason: str | None
 
 
 def parse_args() -> argparse.Namespace:
@@ -83,6 +96,8 @@ def _dtype_size_bytes(dtype: str) -> int:
         return 4
     if dtype in {"float16", "bfloat16"}:
         return 2
+    if dtype == "fp8":
+        return 1
     raise ValueError(f"Unsupported dtype: {dtype}")
 
 
@@ -161,15 +176,59 @@ def _round_to_multiple(value: float, multiple: int) -> int:
     return max(multiple, int(round(value / multiple) * multiple))
 
 
+def _fp8_support_status(device: str, variant: str) -> tuple[bool, str | None]:
+    resolved = torch.device(device)
+    if resolved.type != "cuda":
+        return False, "FP8 requires a CUDA device."
+    if not torch.cuda.is_available():
+        return False, "CUDA was requested, but torch.cuda.is_available() is false."
+    if not transformer_engine_available() or te is None:
+        return False, "transformer-engine is unavailable in this runtime."
+    config = squeezeformer_variant(variant)
+    if config.d_model % FP8_SHAPE_ALIGNMENT != 0:
+        return (
+            False,
+            f"Variant {variant} is not FP8-compatible; d_model must be divisible by {FP8_SHAPE_ALIGNMENT}.",
+        )
+    if hasattr(te, "is_fp8_available"):
+        availability = te.is_fp8_available()
+        if isinstance(availability, tuple):
+            is_available, reason = availability
+        else:
+            is_available, reason = bool(availability), None
+        if not is_available:
+            return False, reason or "Transformer Engine reports FP8 is unavailable."
+    return True, None
+
+
+def _resolve_training_dtype(args: argparse.Namespace) -> tuple[str, bool, str | None]:
+    fp8_supported, fp8_reason = _fp8_support_status(args.device, args.variant)
+    requested_dtype = args.dtype
+    if requested_dtype == "auto":
+        if fp8_supported:
+            return "fp8", fp8_supported, fp8_reason
+        if torch.device(args.device).type == "cuda":
+            if torch.cuda.is_bf16_supported():
+                return "bfloat16", fp8_supported, fp8_reason
+            return "float16", fp8_supported, fp8_reason
+        return "bfloat16", fp8_supported, fp8_reason
+    if requested_dtype == "fp8" and not fp8_supported:
+        reason = fp8_reason or "FP8 is unavailable on this runtime."
+        raise ValueError(f"Requested dtype fp8 is not supported. {reason}")
+    return requested_dtype, fp8_supported, fp8_reason
+
+
 def estimate_training_hparams(args: argparse.Namespace) -> TrainingEstimate:
     profile = probe_device(args.device)
+    resolved_dtype, fp8_supported, fp8_support_reason = _resolve_training_dtype(args)
     vocab_size = args.spm_vocab_size if args.tokenizer == "sentencepiece" else 256
     model_parameters = count_model_parameters(args.variant, vocab_size=vocab_size)
     model_parameters_millions = model_parameters / 1_000_000.0
 
-    reference_params = count_model_parameters("sm", vocab_size=128) / 1_000_000.0
-    variant_factor = math.sqrt(max(model_parameters_millions, 1e-6) / reference_params)
-    dtype_factor = 4.0 / _dtype_size_bytes(args.dtype)
+    reference_model_parameters = count_model_parameters("sm", vocab_size=128)
+    parameter_scale = max(model_parameters, 1) / max(reference_model_parameters, 1)
+    variant_factor = math.sqrt(parameter_scale)
+    dtype_factor = 4.0 / _dtype_size_bytes(resolved_dtype)
     augmentation_factor = 1.0 - min(
         0.35,
         0.20 * args.speed_perturb_prob + 0.08 * args.noise_prob + 0.06 * args.reverb_prob,
@@ -273,6 +332,7 @@ def estimate_training_hparams(args: argparse.Namespace) -> TrainingEstimate:
         beam_size = args.beam_size
 
     return TrainingEstimate(
+        variant=args.variant,
         batch_size=batch_size,
         max_batch_frames=max_batch_frames,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -284,9 +344,14 @@ def estimate_training_hparams(args: argparse.Namespace) -> TrainingEstimate:
         persistent_workers=persistent_workers,
         model_parameters=model_parameters,
         model_parameters_millions=model_parameters_millions,
+        reference_model_parameters=reference_model_parameters,
+        parameter_scale=parameter_scale,
         available_memory_gb=profile.memory_gb,
         target_effective_frames=target_effective_frames,
         estimated_effective_frames=max_batch_frames * gradient_accumulation_steps,
+        resolved_dtype=resolved_dtype,
+        fp8_supported=fp8_supported,
+        fp8_support_reason=fp8_support_reason,
     )
 
 
@@ -298,7 +363,7 @@ def build_train_command(args: argparse.Namespace, estimate: TrainingEstimate) ->
         f"--tokenizer {args.tokenizer}",
         f"--spm-vocab-size {args.spm_vocab_size}",
         f"--device {args.device}",
-        f"--dtype {args.dtype}",
+        f"--dtype {estimate.resolved_dtype}",
         f"--gradient-accumulation-steps {estimate.gradient_accumulation_steps}",
         f"--feature-cache-dir {args.feature_cache_dir}",
         f"--max-batch-frames {estimate.max_batch_frames}",
@@ -330,6 +395,7 @@ def main() -> None:
             "spm_vocab_size": args.spm_vocab_size,
             "device": args.device,
             "dtype": args.dtype,
+            "resolved_dtype": estimate.resolved_dtype,
             "decode_strategy": args.decode_strategy,
             "requested_beam_size": args.beam_size,
             "output_dir": args.output_dir,

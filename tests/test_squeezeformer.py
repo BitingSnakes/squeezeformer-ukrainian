@@ -30,6 +30,7 @@ from squeezeformer_pytorch.data import (
     iter_cv22_records,
     load_cv22_corpus_texts,
     load_cv22_records,
+    normalize_transcript,
     transcript_is_usable,
 )
 from squeezeformer_pytorch.runtime_types import DTypeChoice, OptimizerChoice
@@ -306,6 +307,20 @@ def test_load_cv22_corpus_texts_normalizes_and_deduplicates(tmp_path: Path) -> N
     assert deduped == ["це тест", "мовна модель"]
 
 
+def test_normalize_transcript_preserves_case_when_lowercase_disabled() -> None:
+    assert normalize_transcript(" Це   Тест ", lowercase=False) == "Це Тест"
+
+
+def test_load_cv22_corpus_texts_preserves_case_when_lowercase_disabled(tmp_path: Path) -> None:
+    manifest = tmp_path / "train.tsv"
+    manifest.write_text(
+        "path\tsentence\na.wav\t Це   Тест \nb.wav\tце тест\nc.wav\tМовна   Модель\n",
+        encoding="utf-8",
+    )
+    texts = load_cv22_corpus_texts(tmp_path, deduplicate=False, lowercase_transcripts=False)
+    assert texts == ["Це Тест", "це тест", "Мовна Модель"]
+
+
 def test_iter_cv22_corpus_texts_reads_root_level_parquet(tmp_path: Path) -> None:
     pl.DataFrame(
         {
@@ -333,6 +348,23 @@ def test_load_cv22_records_works_without_speaker_id_field(tmp_path: Path) -> Non
     assert len(records) == 2
     assert all(record.speaker_id is None for record in records)
     assert all(not record.has_speaker_id for record in records)
+
+
+def test_load_cv22_records_preserves_case_when_lowercase_disabled(tmp_path: Path) -> None:
+    manifest = tmp_path / "train.tsv"
+    manifest.write_text(
+        "path\tsentence\tid\tduration\na.wav\tЦе Тест\tutt0\t0.3\n",
+        encoding="utf-8",
+    )
+    records = load_cv22_records(
+        dataset_root=tmp_path,
+        split="train",
+        seed=13,
+        val_fraction=0.0,
+        test_fraction=0.0,
+        lowercase_transcripts=False,
+    )
+    assert [record.transcript for record in records] == ["Це Тест"]
 
 
 def test_iter_cv22_records_streams_split_selection(tmp_path: Path) -> None:
