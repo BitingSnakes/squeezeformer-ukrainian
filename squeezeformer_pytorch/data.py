@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import multiprocessing as mp
 import re
 import sys
@@ -26,6 +27,9 @@ from .frontend import AudioFeaturizer, SpecAugment, WaveformAugment
 
 TRANSCRIPT_COLUMNS = ("sentence", "transcript", "transcription", "text", "normalized_text")
 AUDIO_COLUMNS = ("path", "audio")
+
+
+logger = logging.getLogger("train")
 
 
 @dataclass(frozen=True)
@@ -158,6 +162,7 @@ def _iter_remote_rows(source_url: str, *, token: str | None, batch_size: int) ->
             yield from batches[0].iter_rows(named=True)
         return
     if suffix == ".parquet":
+        logger.info("loading remote parquet manifest %s", source_url)
         yield from pl.read_parquet(payload).iter_rows(named=True)
         return
     raise ValueError(f"Unsupported remote manifest format for {source_url}.")
@@ -170,6 +175,12 @@ def _iter_repo_manifest_urls(repo_id: str, token: str | None) -> Iterable[str]:
     manifest_files = tsv_files or parquet_files
     if not manifest_files:
         raise FileNotFoundError(f"No TSV or Parquet manifest files found in dataset repo {repo_id}.")
+    if parquet_files and not tsv_files:
+        logger.info(
+            "discovered %s parquet manifest file(s) in dataset repo %s",
+            len(parquet_files),
+            repo_id,
+        )
     for repo_path in manifest_files:
         yield hf_hub_url(repo_id=repo_id, filename=repo_path, repo_type="dataset")
 
@@ -178,6 +189,14 @@ def iter_manifest_rows(dataset_root: Path, batch_size: int = 8192) -> Iterable[d
     manifest_paths = list(_iter_manifest_paths(dataset_root))
     if not manifest_paths:
         raise FileNotFoundError(f"No TSV or Parquet manifest files found under {dataset_root}.")
+
+    parquet_paths = [path for path in manifest_paths if path.suffix == ".parquet"]
+    if parquet_paths:
+        logger.info(
+            "discovered %s parquet manifest file(s) under %s",
+            len(parquet_paths),
+            dataset_root,
+        )
 
     for path in manifest_paths:
         if path.suffix == ".tsv":
@@ -195,6 +214,7 @@ def iter_manifest_rows(dataset_root: Path, batch_size: int = 8192) -> Iterable[d
             continue
 
         # Process Parquet files one at a time to avoid concatenating all manifests into memory.
+        logger.info("loading parquet manifest %s", path)
         yield from pl.read_parquet(path).iter_rows(named=True)
 
 
@@ -224,6 +244,7 @@ def iter_manifest_rows_from_source(
                 yield from batches[0].iter_rows(named=True)
             return
         if suffix == ".parquet":
+            logger.info("loading parquet manifest %s", source_path)
             yield from pl.read_parquet(source_path).iter_rows(named=True)
             return
         raise ValueError(f"Unsupported manifest file: {source_path}")

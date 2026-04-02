@@ -9,6 +9,7 @@ import logging
 import os
 import random
 import sys
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, nullcontext
@@ -180,6 +181,13 @@ def _configure_console_logger(rank: int, is_main_process: bool) -> logging.Logge
         logger.addHandler(handler)
     logger.propagate = False
     return logging.LoggerAdapter(logger, {"rank": rank})
+
+
+def _format_elapsed_seconds(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, remainder = divmod(seconds, 60.0)
+    return f"{int(minutes)}m {remainder:.1f}s"
 
 
 def _validate_device_argument(device: str) -> str:
@@ -1965,6 +1973,7 @@ def _build_checkpoint(
 
 def main() -> None:
     args = parse_args()
+    process_start_time = time.perf_counter()
     if (args.adaptive_batch_unit is None) != (args.adaptive_batch_budget is None):
         raise ValueError("--adaptive-batch-unit and --adaptive-batch-budget must be set together.")
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -1996,10 +2005,30 @@ def main() -> None:
         output_dir,
     )
     variant_defaults = _variant_defaults(args.variant)
+    stage_start_time = time.perf_counter()
+    logger.info("loading LM scorer source=%s", args.lm_scorer or "disabled")
     lm_scorer = load_lm_scorer(args.lm_scorer)
+    logger.info(
+        "LM scorer ready source=%s elapsed=%s",
+        args.lm_scorer or "disabled",
+        _format_elapsed_seconds(time.perf_counter() - stage_start_time),
+    )
 
+    stage_start_time = time.perf_counter()
+    logger.info("resolving dataset sources")
     dataset_sources = _resolve_dataset_sources(args)
     lowercase_transcripts = args.tokenizer != "sentencepiece"
+    logger.info(
+        "dataset sources resolved count=%s elapsed=%s",
+        len(dataset_sources),
+        _format_elapsed_seconds(time.perf_counter() - stage_start_time),
+    )
+    stage_start_time = time.perf_counter()
+    logger.info(
+        "loading dataset records splits=train,validation record_cache=%s prevalidate_audio=%s",
+        args.record_cache,
+        args.prevalidate_audio,
+    )
     train_records, val_records = _load_train_val_records(
         args,
         dataset_sources,
@@ -2013,15 +2042,29 @@ def main() -> None:
             encoding="utf-8",
         )
         logger.info(
-            "loaded dataset sources=%s train_samples=%s val_samples=%s speaker_balance_ratio=%.3f",
+            "loaded dataset sources=%s train_samples=%s val_samples=%s speaker_balance_ratio=%.3f elapsed=%s",
             [str(dataset_source) for dataset_source in dataset_sources],
             len(train_records),
             len(val_records),
             float(split_audit["speaker_balance_ratio"]),
+            _format_elapsed_seconds(time.perf_counter() - stage_start_time),
         )
 
+    stage_start_time = time.perf_counter()
     checkpoint = (
         torch.load(args.resume, map_location="cpu", weights_only=False) if args.resume else None
+    )
+    if args.resume:
+        logger.info(
+            "resume checkpoint loaded path=%s elapsed=%s",
+            args.resume,
+            _format_elapsed_seconds(time.perf_counter() - stage_start_time),
+        )
+    stage_start_time = time.perf_counter()
+    logger.info(
+        "preparing tokenizer mode=%s resume=%s",
+        args.tokenizer,
+        checkpoint is not None,
     )
     if checkpoint is not None:
         tokenizer = tokenizer_from_dict(checkpoint["tokenizer"])
@@ -2037,7 +2080,18 @@ def main() -> None:
         tokenizer = CharacterTokenizer.build(record.transcript for record in train_records)
     tokenizer_path = output_dir / "tokenizer.json"
     tokenizer.save(tokenizer_path)
+    logger.info(
+        "tokenizer ready vocab_size=%s elapsed=%s",
+        tokenizer.vocab_size,
+        _format_elapsed_seconds(time.perf_counter() - stage_start_time),
+    )
     if args.fit_shallow_fusion_lm:
+        stage_start_time = time.perf_counter()
+        logger.info(
+            "training shallow-fusion LM order=%s alpha=%.3f",
+            args.shallow_fusion_lm_order,
+            args.shallow_fusion_lm_alpha,
+        )
         shallow_fusion_lm = NGramLanguageModel.train(
             (record.transcript for record in train_records),
             order=args.shallow_fusion_lm_order,
@@ -2047,6 +2101,11 @@ def main() -> None:
         shallow_fusion_lm.save(shallow_fusion_lm_path)
         if lm_scorer is None:
             lm_scorer = shallow_fusion_lm.score_extension
+        logger.info(
+            "shallow-fusion LM ready path=%s elapsed=%s",
+            shallow_fusion_lm_path,
+            _format_elapsed_seconds(time.perf_counter() - stage_start_time),
+        )
     if hasattr(train_records, "close"):
         train_records.close()
     if hasattr(val_records, "close"):
@@ -2102,6 +2161,16 @@ def main() -> None:
         featurizer=featurizer,
         feature_cache_dir=val_feature_cache_dir,
     )
+    stage_start_time = time.perf_counter()
+    logger.info(
+        "building dataloaders train_shard_samples=%s val_samples=%s num_workers=%s metadata_workers=%s persistent_workers=%s prefetch_factor=%s",
+        len(local_train_records),
+        len(val_records),
+        args.num_workers,
+        args.metadata_workers,
+        args.persistent_workers,
+        args.prefetch_factor,
+    )
     train_loader = create_dataloader(
         train_dataset,
         batch_size=args.batch_size,
@@ -2129,6 +2198,14 @@ def main() -> None:
         persistent_workers=args.persistent_workers,
         prefetch_factor=args.prefetch_factor,
         metadata_workers=args.metadata_workers,
+    )
+    train_batches = len(train_loader)
+    val_batches = len(val_loader)
+    logger.info(
+        "dataloaders ready train_batches=%s val_batches=%s elapsed=%s",
+        train_batches,
+        val_batches,
+        _format_elapsed_seconds(time.perf_counter() - stage_start_time),
     )
 
     encoder_config = (
@@ -2190,6 +2267,17 @@ def main() -> None:
         device = requested_device
     if args.dtype == DTypeChoice.FP8:
         _validate_fp8_runtime(device, encoder_config)
+    stage_start_time = time.perf_counter()
+    logger.info(
+        "building model variant=%s dtype=%s compile=%s intermediate_ctc_layers=%s aed=%s liberta=%s blank_prune_layer=%s",
+        args.variant,
+        args.dtype,
+        args.compile,
+        list(intermediate_ctc_layers),
+        aed_decoder_enabled,
+        liberta_distill_enabled,
+        blank_prune_layer,
+    )
     model = SqueezeformerCTC(
         encoder_config=encoder_config,
         vocab_size=tokenizer.vocab_size,
@@ -2258,6 +2346,11 @@ def main() -> None:
         if liberta_distill_enabled
         else None
     )
+    logger.info(
+        "model and auxiliaries ready params=%s elapsed=%s",
+        sum(parameter.numel() for parameter in model.parameters()),
+        _format_elapsed_seconds(time.perf_counter() - stage_start_time),
+    )
     ema = (
         ExponentialMovingAverage(
             model,
@@ -2324,9 +2417,22 @@ def main() -> None:
                 "world_size": world_size,
             },
         )
+        logger.info(
+            "trackio initialized project=%s elapsed_since_start=%s",
+            args.trackio_project,
+            _format_elapsed_seconds(time.perf_counter() - process_start_time),
+        )
 
     for epoch in range(start_epoch, args.epochs + 1):
-        logger.info("epoch %s/%s started", epoch, args.epochs)
+        epoch_start_time = time.perf_counter()
+        logger.info(
+            "epoch %s/%s started train_batches=%s val_batches=%s grad_accumulation=%s",
+            epoch,
+            args.epochs,
+            train_batches,
+            val_batches,
+            args.gradient_accumulation_steps,
+        )
         forward_model.train()
         running_loss = 0.0
         running_main_ctc_loss = 0.0
@@ -2340,6 +2446,15 @@ def main() -> None:
             feature_lengths = batch["feature_lengths"].to(device)
             targets = batch["targets"].to(device)
             target_lengths = batch["target_lengths"].to(device)
+            if is_main_process and batch_index == 1:
+                logger.info(
+                    "epoch=%s first_train_batch_ready elapsed=%s batch_size=%s max_feature_frames=%s target_tokens=%s",
+                    epoch,
+                    _format_elapsed_seconds(time.perf_counter() - epoch_start_time),
+                    int(features.size(0)),
+                    int(feature_lengths.max().item()),
+                    int(target_lengths.sum().item()),
+                )
             if aed_decoder_enabled:
                 if model.aed_decoder is None:
                     raise RuntimeError("AED decoder was enabled but not constructed on the model.")
@@ -2504,13 +2619,14 @@ def main() -> None:
         if is_main_process:
             ema_backup = ema.apply_to(model) if ema is not None else None
             logger.info(
-                "epoch %s training complete train_loss=%.4f train_main_ctc_loss=%.4f train_intermediate_ctc_loss=%.4f train_aed_loss=%.4f train_liberta_distill_loss=%.4f, starting validation",
+                "epoch %s training complete train_loss=%.4f train_main_ctc_loss=%.4f train_intermediate_ctc_loss=%.4f train_aed_loss=%.4f train_liberta_distill_loss=%.4f elapsed=%s, starting validation",
                 epoch,
                 train_loss,
                 train_main_ctc_loss,
                 train_intermediate_ctc_loss,
                 train_aed_loss,
                 train_liberta_distill_loss,
+                _format_elapsed_seconds(time.perf_counter() - epoch_start_time),
             )
             validation = evaluate(
                 model,
