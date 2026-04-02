@@ -50,6 +50,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--feature-cache-dir", default=None)
     parser.add_argument(
+        "--lowercase-transcripts",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Normalize evaluation references to lowercase before loading the dataset. "
+            "Defaults to the checkpoint tokenizer convention."
+        ),
+    )
+    parser.add_argument(
         "--bucket-by-length",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -103,6 +112,7 @@ def main() -> None:
     args = parse_args()
     checkpoint = load_checkpoint(args.checkpoint, map_location="cpu")
     tokenizer = tokenizer_from_dict(checkpoint["tokenizer"])
+    checkpoint_tokenizer_type = str(checkpoint["tokenizer"].get("type", ""))
     encoder_config = SqueezeformerConfig(**checkpoint["encoder_config"])
     training_args = checkpoint.get("training_args", {})
     intermediate_ctc_weight = float(training_args.get("intermediate_ctc_weight", 0.0))
@@ -151,6 +161,11 @@ def main() -> None:
     _validate_device_ready(device)
     model.to(device)
     model.eval()
+    lowercase_transcripts = (
+        args.lowercase_transcripts
+        if args.lowercase_transcripts is not None
+        else checkpoint_tokenizer_type != "sentencepiece"
+    )
 
     dataset_root = download_cv22_dataset(
         repo_id=args.dataset_repo,
@@ -164,6 +179,7 @@ def main() -> None:
         val_fraction=args.val_fraction,
         test_fraction=args.test_fraction,
         max_samples=args.max_samples,
+        lowercase_transcripts=lowercase_transcripts,
     )
     if args.prevalidate_audio:
         records = prevalidate_records(records, num_workers=args.prevalidate_workers)
