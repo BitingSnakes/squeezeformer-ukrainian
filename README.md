@@ -55,6 +55,11 @@ uv pip install gradio
 If you are installing from the project metadata instead, `gradio` is already included in
 `pyproject.toml`.
 
+Optional extras:
+
+- `uv pip install .[train]` for training dependencies, including Transformer Engine FP8 support
+- `uv pip install .[quantize]` for TorchAO post-training quantization
+
 ## Inference
 
 Use [inference.py](inference.py) for either one-shot transcription or a local Gradio UI.
@@ -93,6 +98,54 @@ uv run python inference.py \
 The Gradio UI supports both uploaded audio files and live microphone recording. You can also
 paste a different checkpoint path or Hugging Face URL into the app and reload it without
 restarting the server.
+
+## Post-Training Quantization
+
+Use [quantize.py](quantize.py) to convert a regular checkpoint into a TorchAO int8 weight-only
+checkpoint for smaller on-disk artifacts and quantized inference.
+
+Install the extra first:
+
+```bash
+uv pip install .[quantize]
+```
+
+Example: quantize a checkpoint
+
+```bash
+uv run python quantize.py \
+  --checkpoint artifacts/cv22-sm/checkpoint_best.pt \
+  --output artifacts/cv22-sm/checkpoint_best.torchao-int8.pt
+```
+
+Useful flags:
+
+- `--checkpoint`: source checkpoint path or Hugging Face checkpoint URL
+- `--output`: destination `.pt` path for the quantized checkpoint
+- `--device`: quantization device such as `cpu` or `cuda:0`
+
+Quantized checkpoints are saved as `.pt` files with the original metadata plus a
+`quantization` section describing the TorchAO backend and config. They are not exported as
+`.safetensors`.
+
+Example: run inference with a quantized checkpoint
+
+```bash
+uv run python inference.py \
+  --checkpoint artifacts/cv22-sm/checkpoint_best.torchao-int8.pt \
+  --audio path/to/audio.wav \
+  --device cpu \
+  --dtype float32
+```
+
+Notes:
+
+- quantized checkpoints use TorchAO int8 weight-only quantization through `Int8WeightOnlyConfig`
+- [inference.py](inference.py) detects these checkpoints automatically and loads them with
+  `assign=True`
+- TorchAO quantized checkpoints do not support `--dtype fp8`; use `float32`, `bfloat16`, or
+  `float16` instead, depending on your runtime
+- quantization changes the inference format; it does not preserve Transformer Engine FP8 modules
 
 ## Dataset Access
 
