@@ -482,6 +482,8 @@ def _average_topk_checkpoints(output_dir: Path) -> Path | None:
 
     averaged_state: dict[str, Tensor] | None = None
     template_checkpoint: dict[str, object] | None = None
+    template_shapes: dict[str, tuple[int, ...]] | None = None
+    included_metadata: list[dict[str, object]] = []
     for item in metadata:
         checkpoint_path = output_dir / "checkpoints_topk" / str(item["path"])
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
@@ -492,20 +494,30 @@ def _average_topk_checkpoints(output_dir: Path) -> Path | None:
                 for key, value in state_dict.items()
             }
             template_checkpoint = checkpoint
+            template_shapes = {key: tuple(value.shape) for key, value in state_dict.items()}
+            included_metadata.append(item)
         else:
+            current_shapes = {key: tuple(value.shape) for key, value in state_dict.items()}
+            if current_shapes != template_shapes:
+                logging.getLogger("train").warning(
+                    "Skipping checkpoint %s during top-k averaging because parameter shapes do not match the template checkpoint.",
+                    checkpoint_path,
+                )
+                continue
             for key, value in state_dict.items():
                 averaged_state[key].add_(value.detach().to(dtype=torch.float32))
+            included_metadata.append(item)
 
     assert averaged_state is not None
     assert template_checkpoint is not None
-    factor = 1.0 / len(metadata)
+    factor = 1.0 / len(included_metadata)
     model_state_dict = {}
     for key, value in template_checkpoint["model_state_dict"].items():
         averaged = averaged_state[key] * factor
         model_state_dict[key] = averaged.to(dtype=value.dtype)
     averaged_checkpoint = dict(template_checkpoint)
     averaged_checkpoint["model_state_dict"] = model_state_dict
-    averaged_checkpoint["averaged_from"] = metadata
+    averaged_checkpoint["averaged_from"] = included_metadata
     averaged_path = output_dir / "checkpoint_topk_avg.pt"
     save_checkpoint(averaged_checkpoint, averaged_path)
     _export_inference_checkpoint(averaged_checkpoint, averaged_path)
