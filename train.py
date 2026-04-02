@@ -222,9 +222,19 @@ def _resolve_intermediate_ctc_settings(
     checkpoint: dict[str, object] | None,
 ) -> tuple[tuple[int, ...], float]:
     checkpoint_args = checkpoint.get("training_args", {}) if checkpoint is not None else {}
+    checkpoint_enabled = checkpoint_args.get("intermediate_ctc_enabled")
     checkpoint_weight = checkpoint_args.get("intermediate_ctc_weight")
     checkpoint_layers = checkpoint_args.get("intermediate_ctc_layers")
     checkpoint_layer = checkpoint_args.get("intermediate_ctc_layer")
+
+    if args.intermediate_ctc is False:
+        return (), 0.0
+    if (
+        args.intermediate_ctc is None
+        and checkpoint is not None
+        and checkpoint_enabled is False
+    ):
+        return (), 0.0
 
     if checkpoint_weight is not None:
         weight = float(checkpoint_weight)
@@ -261,6 +271,11 @@ def _resolve_blank_pruning_settings(
     checkpoint: dict[str, object] | None,
 ) -> tuple[int | None, float, int]:
     checkpoint_args = checkpoint.get("training_args", {}) if checkpoint is not None else {}
+    checkpoint_enabled = checkpoint_args.get("blank_prune_enabled")
+    if args.blank_prune is False:
+        return None, 0.0, max(1, int(args.blank_prune_min_keep_frames))
+    if args.blank_prune is None and checkpoint is not None and checkpoint_enabled is False:
+        return None, 0.0, max(1, int(checkpoint_args.get("blank_prune_min_keep_frames", 1)))
     if "blank_prune_threshold" in checkpoint_args:
         threshold = float(checkpoint_args.get("blank_prune_threshold", 0.0))
         layer = checkpoint_args.get("blank_prune_layer")
@@ -799,10 +814,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decay-exponent", type=float, default=1.0)
     parser.add_argument("--intermediate-ctc-layer", type=int, default=None)
     parser.add_argument("--intermediate-ctc-layers", default=None)
+    parser.add_argument(
+        "--intermediate-ctc",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parser.add_argument("--intermediate-ctc-weight", type=float, default=0.3)
     parser.add_argument("--blank-prune-layer", type=int, default=None)
     parser.add_argument("--blank-prune-threshold", type=float, default=0.0)
     parser.add_argument("--blank-prune-min-keep-frames", type=int, default=1)
+    parser.add_argument(
+        "--blank-prune",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parser.add_argument("--ema-decay", type=float, default=0.999)
     parser.add_argument("--ema-warmup-steps", type=int, default=0)
     parser.add_argument("--muon-warmup-epochs", type=int, default=None)
@@ -1401,7 +1426,9 @@ def main() -> None:
     )
     args.intermediate_ctc_layers = list(intermediate_ctc_layers)
     args.intermediate_ctc_layer = intermediate_ctc_layers[0] if len(intermediate_ctc_layers) == 1 else None
+    args.intermediate_ctc = bool(intermediate_ctc_layers) and intermediate_ctc_weight > 0.0
     args.intermediate_ctc_weight = intermediate_ctc_weight
+    args.blank_prune = blank_prune_layer is not None and blank_prune_threshold > 0.0
     args.blank_prune_layer = blank_prune_layer
     args.blank_prune_threshold = blank_prune_threshold
     args.blank_prune_min_keep_frames = blank_prune_min_keep_frames
