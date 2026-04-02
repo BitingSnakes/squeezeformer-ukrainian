@@ -10,7 +10,7 @@ from torch.utils.checkpoint import checkpoint as activation_checkpoint
 
 try:
     import transformer_engine.pytorch as te
-except ImportError:
+except (ImportError, OSError):
     te = None
 
 

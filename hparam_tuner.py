@@ -66,8 +66,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tokenizer", default="sentencepiece", choices=TOKENIZER_CHOICES)
     parser.add_argument("--spm-vocab-size", type=int, default=128)
     parser.add_argument("--device", required=True)
-    parser.add_argument("--dtype", default="bfloat16", choices=DTYPE_CHOICES)
+    parser.add_argument("--dtype", default="auto", choices=DTYPE_CHOICES)
     parser.add_argument("--feature-cache-dir", default="artifacts/feature_cache")
+    parser.add_argument(
+        "--compile",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--speed-perturb-prob", type=float, default=0.0)
     parser.add_argument("--noise-prob", type=float, default=0.0)
     parser.add_argument("--reverb-prob", type=float, default=0.0)
@@ -107,7 +112,7 @@ def _cpu_memory_gb() -> float | None:
     try:
         page_size = os.sysconf("SC_PAGE_SIZE")
         page_count = os.sysconf("SC_PHYS_PAGES")
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return None
     if not isinstance(page_size, int) or not isinstance(page_count, int):
         return None
@@ -364,6 +369,7 @@ def build_train_command(args: argparse.Namespace, estimate: TrainingEstimate) ->
         f"--spm-vocab-size {args.spm_vocab_size}",
         f"--device {args.device}",
         f"--dtype {estimate.resolved_dtype}",
+        "--compile" if args.compile else "--no-compile",
         f"--gradient-accumulation-steps {estimate.gradient_accumulation_steps}",
         f"--feature-cache-dir {args.feature_cache_dir}",
         f"--max-batch-frames {estimate.max_batch_frames}",
@@ -400,6 +406,7 @@ def main() -> None:
             "requested_beam_size": args.beam_size,
             "output_dir": args.output_dir,
             "feature_cache_dir": args.feature_cache_dir,
+            "compile": args.compile,
             "epochs": args.epochs,
         },
         "estimate": asdict(estimate),
