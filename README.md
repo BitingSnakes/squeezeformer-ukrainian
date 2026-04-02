@@ -13,6 +13,7 @@ This repository contains a standalone PyTorch implementation of the Squeezeforme
 - [train_lm.py](train_lm.py): train a shallow-fusion n-gram LM from a text corpus or dataset transcripts
 - [extract_features.py](extract_features.py): extract and cache frontend log-mel features without training
 - [evaluate.py](evaluate.py): evaluation entrypoint
+- [inference.py](inference.py): transcribe a single file or launch a small Gradio ASR app
 - [benchmark.py](benchmark.py): synthetic throughput, memory, and decode-speed benchmark
 - [hparam_tuner.py](hparam_tuner.py): estimate hardware-sensitive `train.py` values and emit a ready command
 - [tests](tests): architecture and training utility checks
@@ -48,7 +49,50 @@ CPU setup:
 uv venv .venv
 uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 uv pip install polars jiwer sentencepiece huggingface_hub trackio pytest ruff
+uv pip install gradio
 ```
+
+If you are installing from the project metadata instead, `gradio` is already included in
+`pyproject.toml`.
+
+## Inference
+
+Use [inference.py](inference.py) for either one-shot transcription or a local Gradio UI.
+
+Example: transcribe one file from the default Hugging Face checkpoint
+
+```bash
+uv run python inference.py --audio path/to/audio.wav
+```
+
+Example: launch the Gradio app on `http://127.0.0.1:7860`
+
+```bash
+uv run python inference.py --gradio
+```
+
+Useful flags:
+
+- `--checkpoint`: local checkpoint path or Hugging Face checkpoint URL
+- `--device`: inference device such as `cpu` or `cuda:0`
+- `--dtype`: autocast dtype, for example `float32`, `bfloat16`, `float16`, or `fp8`
+- `--host`: Gradio bind host, default `127.0.0.1`
+- `--port`: Gradio bind port, default `7860`
+- `--share`: create a public Gradio share link
+
+Example: launch the Gradio app on all interfaces with a specific checkpoint
+
+```bash
+uv run python inference.py \
+  --gradio \
+  --checkpoint artifacts/squeezeformer-cv22/checkpoint_best.pt \
+  --host 0.0.0.0 \
+  --port 7860
+```
+
+The Gradio UI supports both uploaded audio files and live microphone recording. You can also
+paste a different checkpoint path or Hugging Face URL into the app and reload it without
+restarting the server.
 
 ## Dataset Access
 
