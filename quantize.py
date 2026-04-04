@@ -8,7 +8,7 @@ import torch
 from huggingface_hub import hf_hub_download
 
 from squeezeformer_pytorch.asr import SqueezeformerCTC, tokenizer_from_dict
-from squeezeformer_pytorch.checkpoints import load_checkpoint
+from squeezeformer_pytorch.checkpoints import load_checkpoint, save_checkpoint
 from squeezeformer_pytorch.model import SqueezeformerConfig
 
 try:
@@ -47,7 +47,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output",
-        help="Destination .pt path for the quantized checkpoint. Defaults next to the source.",
+        help=(
+            "Destination checkpoint path. Defaults next to the source as "
+            "'.torchao-int8.safetensors'."
+        ),
     )
     parser.add_argument(
         "--device",
@@ -64,11 +67,11 @@ def resolve_output_path(checkpoint_path: str, output: str | None) -> Path:
         source = Path(checkpoint_path)
         suffix = "".join(source.suffixes)
         if suffix:
-            output_path = source.with_name(f"{source.name.removesuffix(suffix)}.torchao-int8.pt")
+            output_path = source.with_name(
+                f"{source.name.removesuffix(suffix)}.torchao-int8.safetensors"
+            )
         else:
-            output_path = source.with_name(f"{source.name}.torchao-int8.pt")
-    if output_path.suffix == ".safetensors":
-        raise ValueError("TorchAO quantized checkpoints must be saved as .pt files.")
+            output_path = source.with_name(f"{source.name}.torchao-int8.safetensors")
     return output_path
 
 
@@ -150,7 +153,7 @@ def main() -> None:
     quantize_(model, Int8WeightOnlyConfig(), device=device)
 
     payload = build_quantized_checkpoint_payload(checkpoint_data, model)
-    torch.save(payload, output_path)
+    save_checkpoint(payload, output_path)
     print(output_path)
 
 

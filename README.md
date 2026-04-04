@@ -132,24 +132,24 @@ Example: quantize a checkpoint
 ```bash
 uv run python quantize.py \
   --checkpoint artifacts/cv22-sm/checkpoint_best.pt \
-  --output artifacts/cv22-sm/checkpoint_best.torchao-int8.pt
+  --output artifacts/cv22-sm/checkpoint_best.torchao-int8.safetensors
 ```
 
 Useful flags:
 
 - `--checkpoint`: source checkpoint path or Hugging Face checkpoint URL
-- `--output`: destination `.pt` path for the quantized checkpoint
+- `--output`: destination checkpoint path, typically `.safetensors`
 - `--device`: quantization device such as `cpu` or `cuda:0`
 
-Quantized checkpoints are saved as `.pt` files with the original metadata plus a
-`quantization` section describing the TorchAO backend and config. They are not exported as
-`.safetensors`.
+Quantized checkpoints can be saved as `.safetensors`, with weights stored in the safetensors
+file and the original metadata plus the `quantization` section written to the adjacent `.json`
+sidecar.
 
 Example: run inference with a quantized checkpoint
 
 ```bash
 uv run python inference.py \
-  --checkpoint artifacts/cv22-sm/checkpoint_best.torchao-int8.pt \
+  --checkpoint artifacts/cv22-sm/checkpoint_best.torchao-int8.safetensors \
   --audio path/to/audio.wav \
   --device cpu \
   --dtype float32
