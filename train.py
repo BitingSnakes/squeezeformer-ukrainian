@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, nullcontext
 from copy import deepcopy
 from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import urlparse
@@ -72,7 +73,7 @@ from squeezeformer_pytorch.runtime_types import (
 try:
     import transformer_engine.pytorch as te
     from transformer_engine.common.recipe import DelayedScaling, Format
-except ImportError, OSError:
+except (ImportError, OSError):
     te = None
     DelayedScaling = None
     Format = None
@@ -2405,10 +2406,13 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     if is_main_process:
         output_dir.mkdir(parents=True, exist_ok=True)
+    training_log_path = output_dir / (
+        f"training_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
+    )
     logger = _configure_console_logger(
         rank=rank,
         is_main_process=is_main_process,
-        log_path=output_dir / "training.log",
+        log_path=training_log_path,
     )
     trackio_dir = _configure_trackio_storage(output_dir)
     resume_path = _resolve_resume_checkpoint_path(args, output_dir=output_dir, logger=logger)
