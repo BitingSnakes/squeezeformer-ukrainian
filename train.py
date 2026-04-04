@@ -844,6 +844,23 @@ def _shard_records_for_rank(
     return records[rank::world_size]
 
 
+def _record_store_duration_hours(
+    records: list[CVRecord] | DiskBackedRecordStore,
+    *,
+    hop_length: int,
+    sample_rate: int = 16000,
+) -> float:
+    if sample_rate <= 0:
+        return 0.0
+    total_frames = 0
+    if hasattr(records, "estimated_frames"):
+        total_frames = sum(int(value) for value in records.estimated_frames)
+    else:
+        total_frames = sum(max(0, int(record.estimated_frames)) for record in records)
+    total_seconds = (float(total_frames) * float(hop_length)) / float(sample_rate)
+    return total_seconds / 3600.0
+
+
 def resolve_device(device: str) -> torch.device:
     return torch.device(device)
 
@@ -2449,9 +2466,11 @@ def main() -> None:
     )
     stage_start_time = time.perf_counter()
     logger.info(
-        "building dataloaders train_shard_samples=%s val_samples=%s num_workers=%s metadata_workers=%s persistent_workers=%s prefetch_factor=%s",
+        "building dataloaders train_shard_samples=%s val_samples=%s train_hours=%.2f val_hours=%.2f num_workers=%s metadata_workers=%s persistent_workers=%s prefetch_factor=%s",
         len(local_train_records),
         len(val_records),
+        _record_store_duration_hours(local_train_records, hop_length=args.hop_length),
+        _record_store_duration_hours(val_records, hop_length=args.hop_length),
         args.num_workers,
         args.metadata_workers,
         args.persistent_workers,
