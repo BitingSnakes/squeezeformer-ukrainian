@@ -643,6 +643,8 @@ def _load_train_val_records(
     output_dir: Path,
 ) -> tuple[list[CVRecord] | DiskBackedRecordStore, list[CVRecord] | DiskBackedRecordStore]:
     use_external_validation = bool(validation_dataset_sources)
+    train_val_fraction = 0.0 if use_external_validation else args.val_fraction
+    train_test_fraction = 0.0 if use_external_validation else args.test_fraction
     validation_split = "train" if use_external_validation else "validation"
     validation_val_fraction = 0.0 if use_external_validation else args.val_fraction
     validation_test_fraction = 0.0 if use_external_validation else args.test_fraction
@@ -657,8 +659,8 @@ def _load_train_val_records(
             train_dataset_sources,
             split="train",
             seed=args.seed,
-            val_fraction=args.val_fraction,
-            test_fraction=args.test_fraction,
+            val_fraction=train_val_fraction,
+            test_fraction=train_test_fraction,
             max_samples=args.max_train_samples,
             min_transcript_chars=args.min_transcript_chars,
             max_transcript_chars=args.max_transcript_chars,
@@ -692,8 +694,8 @@ def _load_train_val_records(
         train_dataset_sources,
         split="train",
         seed=args.seed,
-        val_fraction=args.val_fraction,
-        test_fraction=args.test_fraction,
+        val_fraction=train_val_fraction,
+        test_fraction=train_test_fraction,
         max_samples=args.max_train_samples,
         min_transcript_chars=args.min_transcript_chars,
         max_transcript_chars=args.max_transcript_chars,
@@ -1467,8 +1469,9 @@ def parse_args() -> argparse.Namespace:
             "Validation-only dataset source. Repeat to combine multiple sources. Each source may "
             "be a Hugging Face dataset repo, a direct TSV/Parquet file path or URL, or a local "
             "directory with Common Voice-style TSV or Parquet manifests plus audio files. When "
-            "provided, the full set of records from these sources is used for validation instead "
-            "of sampling a validation split from --dataset-source."
+            "provided, the full set of records from these sources is used for validation and "
+            "--dataset-source is consumed in full for training without train/validation/test "
+            "splitting."
         ),
     )
     parser.add_argument("--hf-token", default=os.environ.get("HF_TOKEN"))
