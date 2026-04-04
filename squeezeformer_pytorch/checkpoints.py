@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import asdict
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
@@ -41,6 +42,10 @@ def load_checkpoint(
         )
 
     checkpoint = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if "encoder_config" in checkpoint:
+        from .model import SqueezeformerConfig
+
+        checkpoint["encoder_config"] = asdict(SqueezeformerConfig(**checkpoint["encoder_config"]))
     checkpoint["model_state_dict"] = load_file(str(checkpoint_path), device=str(map_location))
     return checkpoint
 

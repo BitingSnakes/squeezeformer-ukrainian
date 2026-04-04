@@ -13,7 +13,7 @@ from .masking import make_attention_mask, make_sequence_mask
 
 try:
     import transformer_engine.pytorch as te
-except ImportError, OSError:
+except (ImportError, OSError):
     te = None
 
 

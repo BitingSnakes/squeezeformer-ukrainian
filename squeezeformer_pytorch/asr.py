@@ -228,24 +228,49 @@ def prune_encoder_frames_by_blank_probability(
     required_keep = lengths.clamp(min=0, max=max(1, min_keep_frames))
     needs_fallback = pruned_lengths < min_keep_frames
     if needs_fallback.any():
-        masked_blank_probabilities = blank_probabilities.masked_fill(~valid_mask, float("inf"))
-        global_topk = min(max_time, max(1, min_keep_frames))
-        topk_indices = torch.topk(
-            masked_blank_probabilities,
-            k=global_topk,
-            dim=1,
-            largest=False,
-        ).indices
-        topk_rank_mask = torch.arange(global_topk, device=lengths.device).unsqueeze(
-            0
-        ) < required_keep.unsqueeze(1)
-        fallback_keep_mask = torch.zeros_like(valid_mask)
-        fallback_keep_mask.scatter_(1, topk_indices, topk_rank_mask)
-        threshold_keep_mask = torch.where(
-            needs_fallback.unsqueeze(1),
-            fallback_keep_mask,
-            threshold_keep_mask,
-        )
+        # Preserve threshold-selected frames when possible; if none survived the threshold,
+        # fall back to the lowest-blank frames instead.
+        rows_needing_padding = needs_fallback & pruned_lengths.gt(0)
+        if rows_needing_padding.any():
+            prefix_positions = torch.arange(max_time, device=lengths.device).unsqueeze(0)
+            prefix_candidates = valid_mask & ~threshold_keep_mask
+            prefix_rank = torch.where(
+                prefix_candidates,
+                prefix_positions,
+                torch.full_like(prefix_positions, max_time),
+            )
+            prefix_indices = torch.argsort(prefix_rank, dim=1)
+            additional_keep = (required_keep - pruned_lengths).clamp_min(0)
+            additional_rank_mask = torch.arange(max_time, device=lengths.device).unsqueeze(
+                0
+            ) < additional_keep.unsqueeze(1)
+            padding_keep_mask = torch.zeros_like(valid_mask)
+            padding_keep_mask.scatter_(1, prefix_indices, additional_rank_mask)
+            threshold_keep_mask = torch.where(
+                rows_needing_padding.unsqueeze(1),
+                threshold_keep_mask | padding_keep_mask,
+                threshold_keep_mask,
+            )
+        rows_with_no_kept_frames = needs_fallback & pruned_lengths.eq(0)
+        if rows_with_no_kept_frames.any():
+            masked_blank_probabilities = blank_probabilities.masked_fill(~valid_mask, float("inf"))
+            global_topk = min(max_time, max(1, min_keep_frames))
+            topk_indices = torch.topk(
+                masked_blank_probabilities,
+                k=global_topk,
+                dim=1,
+                largest=False,
+            ).indices
+            topk_rank_mask = torch.arange(global_topk, device=lengths.device).unsqueeze(
+                0
+            ) < required_keep.unsqueeze(1)
+            fallback_keep_mask = torch.zeros_like(valid_mask)
+            fallback_keep_mask.scatter_(1, topk_indices, topk_rank_mask)
+            threshold_keep_mask = torch.where(
+                rows_with_no_kept_frames.unsqueeze(1),
+                fallback_keep_mask,
+                threshold_keep_mask,
+            )
         pruned_lengths = torch.where(needs_fallback, required_keep, pruned_lengths)
 
     max_pruned_length = int(pruned_lengths.max().item()) if batch_size > 0 else 0

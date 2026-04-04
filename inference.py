@@ -29,7 +29,7 @@ from squeezeformer_pytorch.runtime_types import DTypeChoice
 try:
     import transformer_engine.pytorch as te
     from transformer_engine.common.recipe import DelayedScaling, Format
-except ImportError, OSError:
+except (ImportError, OSError):
     te = None
     DelayedScaling = None
     Format = None

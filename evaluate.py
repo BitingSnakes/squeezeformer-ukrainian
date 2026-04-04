@@ -265,6 +265,7 @@ def main() -> None:
                 "aed_loss",
                 "liberta_distill_loss",
             )
+            if name in metrics
         ),
     )
     print(json.dumps(payload, indent=2, ensure_ascii=False))

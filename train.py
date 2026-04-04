@@ -70,7 +70,7 @@ from squeezeformer_pytorch.runtime_types import (
 try:
     import transformer_engine.pytorch as te
     from transformer_engine.common.recipe import DelayedScaling, Format
-except ImportError, OSError:
+except (ImportError, OSError):
     te = None
     DelayedScaling = None
     Format = None
@@ -502,10 +502,10 @@ def _build_disk_backed_record_store(
     min_transcript_chars: int,
     max_transcript_chars: int,
     max_symbol_ratio: float,
-    min_audio_duration_sec: float,
-    max_audio_duration_sec: float,
     lowercase_transcripts: bool,
     records_path: Path,
+    min_audio_duration_sec: float = 0.01,
+    max_audio_duration_sec: float = 30.0,
     hf_token: str | None = None,
 ) -> DiskBackedRecordStore:
     records_path.parent.mkdir(parents=True, exist_ok=True)
@@ -710,9 +710,9 @@ def _load_records_from_dataset_roots(
     min_transcript_chars: int,
     max_transcript_chars: int,
     max_symbol_ratio: float,
-    min_audio_duration_sec: float,
-    max_audio_duration_sec: float,
     lowercase_transcripts: bool,
+    min_audio_duration_sec: float = 0.01,
+    max_audio_duration_sec: float = 30.0,
     hf_token: str | None = None,
 ) -> list:
     records = []
@@ -780,11 +780,12 @@ def _prevalidate_loaded_records(
 def _load_train_val_records(
     args: argparse.Namespace,
     train_dataset_sources: list[str | Path],
-    validation_dataset_sources: list[str | Path],
+    validation_dataset_sources: list[str | Path] | None = None,
     *,
     lowercase_transcripts: bool,
     output_dir: Path,
 ) -> tuple[list[CVRecord] | DiskBackedRecordStore, list[CVRecord] | DiskBackedRecordStore]:
+    validation_dataset_sources = validation_dataset_sources or []
     use_external_validation = bool(validation_dataset_sources)
     train_val_fraction = 0.0 if use_external_validation else args.val_fraction
     train_test_fraction = 0.0 if use_external_validation else args.test_fraction
@@ -793,6 +794,18 @@ def _load_train_val_records(
     validation_test_fraction = 0.0 if use_external_validation else args.test_fraction
 
     if args.record_cache:
+        common_record_store_kwargs = {
+            "seed": args.seed,
+            "min_transcript_chars": args.min_transcript_chars,
+            "max_transcript_chars": args.max_transcript_chars,
+            "max_symbol_ratio": args.max_symbol_ratio,
+            "lowercase_transcripts": lowercase_transcripts,
+            "hf_token": args.hf_token,
+        }
+        if hasattr(args, "min_audio_duration_sec"):
+            common_record_store_kwargs["min_audio_duration_sec"] = args.min_audio_duration_sec
+        if hasattr(args, "max_audio_duration_sec"):
+            common_record_store_kwargs["max_audio_duration_sec"] = args.max_audio_duration_sec
         record_store_dir = (
             Path(args.record_cache_dir)
             if args.record_cache_dir is not None
@@ -801,34 +814,20 @@ def _load_train_val_records(
         train_records = _build_disk_backed_record_store(
             train_dataset_sources,
             split="train",
-            seed=args.seed,
             val_fraction=train_val_fraction,
             test_fraction=train_test_fraction,
             max_samples=args.max_train_samples,
-            min_transcript_chars=args.min_transcript_chars,
-            max_transcript_chars=args.max_transcript_chars,
-            max_symbol_ratio=args.max_symbol_ratio,
-            min_audio_duration_sec=args.min_audio_duration_sec,
-            max_audio_duration_sec=args.max_audio_duration_sec,
-            lowercase_transcripts=lowercase_transcripts,
             records_path=record_store_dir / "train.jsonl",
-            hf_token=args.hf_token,
+            **common_record_store_kwargs,
         )
         val_records = _build_disk_backed_record_store(
             validation_dataset_sources or train_dataset_sources,
             split=validation_split,
-            seed=args.seed,
             val_fraction=validation_val_fraction,
             test_fraction=validation_test_fraction,
             max_samples=args.max_val_samples,
-            min_transcript_chars=args.min_transcript_chars,
-            max_transcript_chars=args.max_transcript_chars,
-            max_symbol_ratio=args.max_symbol_ratio,
-            min_audio_duration_sec=args.min_audio_duration_sec,
-            max_audio_duration_sec=args.max_audio_duration_sec,
-            lowercase_transcripts=lowercase_transcripts,
             records_path=record_store_dir / "validation.jsonl",
-            hf_token=args.hf_token,
+            **common_record_store_kwargs,
         )
         if args.prevalidate_audio:
             raise ValueError(
@@ -837,35 +836,34 @@ def _load_train_val_records(
             )
         return train_records, val_records
 
+    common_load_kwargs = {
+        "seed": args.seed,
+        "min_transcript_chars": args.min_transcript_chars,
+        "max_transcript_chars": args.max_transcript_chars,
+        "max_symbol_ratio": args.max_symbol_ratio,
+        "lowercase_transcripts": lowercase_transcripts,
+        "hf_token": args.hf_token,
+    }
+    if hasattr(args, "min_audio_duration_sec"):
+        common_load_kwargs["min_audio_duration_sec"] = args.min_audio_duration_sec
+    if hasattr(args, "max_audio_duration_sec"):
+        common_load_kwargs["max_audio_duration_sec"] = args.max_audio_duration_sec
+
     train_records = _load_records_from_dataset_roots(
         train_dataset_sources,
         split="train",
-        seed=args.seed,
         val_fraction=train_val_fraction,
         test_fraction=train_test_fraction,
         max_samples=args.max_train_samples,
-        min_transcript_chars=args.min_transcript_chars,
-        max_transcript_chars=args.max_transcript_chars,
-        max_symbol_ratio=args.max_symbol_ratio,
-        min_audio_duration_sec=args.min_audio_duration_sec,
-        max_audio_duration_sec=args.max_audio_duration_sec,
-        lowercase_transcripts=lowercase_transcripts,
-        hf_token=args.hf_token,
+        **common_load_kwargs,
     )
     val_records = _load_records_from_dataset_roots(
         validation_dataset_sources or train_dataset_sources,
         split=validation_split,
-        seed=args.seed,
         val_fraction=validation_val_fraction,
         test_fraction=validation_test_fraction,
         max_samples=args.max_val_samples,
-        min_transcript_chars=args.min_transcript_chars,
-        max_transcript_chars=args.max_transcript_chars,
-        max_symbol_ratio=args.max_symbol_ratio,
-        min_audio_duration_sec=args.min_audio_duration_sec,
-        max_audio_duration_sec=args.max_audio_duration_sec,
-        lowercase_transcripts=lowercase_transcripts,
-        hf_token=args.hf_token,
+        **common_load_kwargs,
     )
     if args.prevalidate_audio:
         train_records = _prevalidate_loaded_records(
