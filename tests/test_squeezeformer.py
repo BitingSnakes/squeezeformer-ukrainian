@@ -18,8 +18,7 @@ from squeezeformer_pytorch import (
     squeezeformer_variant,
     tokenizer_from_dict,
 )
-from squeezeformer_pytorch.asr import load_lm_scorer
-from squeezeformer_pytorch.asr import prune_encoder_frames_by_blank_probability
+from squeezeformer_pytorch.asr import load_lm_scorer, prune_encoder_frames_by_blank_probability
 from squeezeformer_pytorch.checkpoints import load_checkpoint, save_checkpoint
 from squeezeformer_pytorch.data import (
     AdaptiveBatchSampler,
@@ -47,18 +46,18 @@ from train import (
     _build_fp8_recipe,
     _configure_console_logger,
     _ensure_opus_decode_support,
-    _load_train_val_records,
     _load_records_from_dataset_roots,
-    _resolve_dataset_sources,
+    _load_train_val_records,
     _resolve_dataset_roots,
+    _resolve_dataset_sources,
     _shard_records_for_rank,
     _update_top_checkpoints,
     _validate_device_argument,
     _validate_fp8_runtime,
     _variant_defaults,
-    parse_args,
     build_optimizer,
     build_paper_scheduler,
+    parse_args,
     resolve_device,
     speaker_level_metrics,
 )
@@ -244,7 +243,9 @@ def test_ctc_model_can_emit_training_only_aed_logits() -> None:
     )
 
     logits, output_lengths, hidden = model.aed_forward(features, lengths, decoder_inputs)
-    projected = model.project_aed_hidden_for_liberta(hidden, torch.tensor([3, 2], dtype=torch.int64))
+    projected = model.project_aed_hidden_for_liberta(
+        hidden, torch.tensor([3, 2], dtype=torch.int64)
+    )
 
     assert logits.shape == (2, 4, 13)
     assert hidden.shape == (2, 4, model.encoder_config.d_model)
@@ -806,8 +807,12 @@ def test_load_train_val_records_without_record_cache_uses_in_memory_loader(
     def fake_build_disk_backed_record_store(*args, **kwargs):
         raise AssertionError("disk-backed store should not be used when --no-record-cache is set")
 
-    monkeypatch.setattr("train._load_records_from_dataset_roots", fake_load_records_from_dataset_roots)
-    monkeypatch.setattr("train._build_disk_backed_record_store", fake_build_disk_backed_record_store)
+    monkeypatch.setattr(
+        "train._load_records_from_dataset_roots", fake_load_records_from_dataset_roots
+    )
+    monkeypatch.setattr(
+        "train._build_disk_backed_record_store", fake_build_disk_backed_record_store
+    )
 
     args = type(
         "Args",

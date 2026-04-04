@@ -240,10 +240,9 @@ def prune_encoder_frames_by_blank_probability(
             dim=1,
             largest=False,
         ).indices
-        topk_rank_mask = (
-            torch.arange(global_topk, device=lengths.device).unsqueeze(0)
-            < required_keep.unsqueeze(1)
-        )
+        topk_rank_mask = torch.arange(global_topk, device=lengths.device).unsqueeze(
+            0
+        ) < required_keep.unsqueeze(1)
         fallback_keep_mask = torch.zeros_like(valid_mask)
         fallback_keep_mask.scatter_(1, topk_indices, topk_rank_mask)
         threshold_keep_mask = torch.where(
@@ -269,10 +268,9 @@ def prune_encoder_frames_by_blank_probability(
         dim=1,
         index=sorted_time_indices[:, :max_pruned_length].unsqueeze(-1).expand(-1, -1, hidden_dim),
     )
-    output_mask = (
-        torch.arange(max_pruned_length, device=lengths.device).unsqueeze(0)
-        < pruned_lengths.unsqueeze(1)
-    )
+    output_mask = torch.arange(max_pruned_length, device=lengths.device).unsqueeze(
+        0
+    ) < pruned_lengths.unsqueeze(1)
     pruned_batch = pruned_batch * output_mask.unsqueeze(-1).to(dtype=x.dtype)
     return pruned_batch, pruned_lengths.to(dtype=lengths.dtype)
 
@@ -403,14 +401,18 @@ class SqueezeformerCTC(nn.Module):
             else None
         )
 
-    def _post_block_transforms(self) -> dict[int, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]]:
+    def _post_block_transforms(
+        self,
+    ) -> dict[int, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]]:
         post_block_transforms: dict[int, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]] = {}
         if self.blank_prune_layer is None or self.blank_prune_threshold <= 0.0:
             return post_block_transforms
 
         prune_layer_key = str(self.blank_prune_layer)
         if prune_layer_key not in self.intermediate_classifiers:
-            raise RuntimeError(f"Missing CTC head for blank pruning layer {self.blank_prune_layer}.")
+            raise RuntimeError(
+                f"Missing CTC head for blank pruning layer {self.blank_prune_layer}."
+            )
 
         def blank_prune_transform(x: Tensor, lengths: Tensor) -> tuple[Tensor, Tensor]:
             prune_logits = apply_linear_with_fp8_padding(
@@ -452,9 +454,8 @@ class SqueezeformerCTC(nn.Module):
         features: Tensor,
         feature_lengths: Tensor,
     ) -> tuple[Tensor, Tensor, dict[int, Tensor], dict[int, Tensor]]:
-        if (
-            not self.intermediate_classifiers
-            and (self.blank_prune_layer is None or self.blank_prune_threshold <= 0.0)
+        if not self.intermediate_classifiers and (
+            self.blank_prune_layer is None or self.blank_prune_threshold <= 0.0
         ):
             log_probs, output_lengths = self.log_probs(features, feature_lengths)
             return log_probs, output_lengths, {}, {}

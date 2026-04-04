@@ -6,11 +6,11 @@ import pytest
 import torch
 
 import inference
+from squeezeformer_pytorch import squeezeformer_variant
 from squeezeformer_pytorch.checkpoints import (
     is_torchao_quantized_checkpoint,
     should_use_transformer_engine_for_checkpoint,
 )
-from squeezeformer_pytorch import squeezeformer_variant
 from squeezeformer_pytorch.runtime_types import DTypeChoice
 
 

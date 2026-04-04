@@ -70,7 +70,7 @@ from squeezeformer_pytorch.runtime_types import (
 try:
     import transformer_engine.pytorch as te
     from transformer_engine.common.recipe import DelayedScaling, Format
-except (ImportError, OSError):
+except ImportError, OSError:
     te = None
     DelayedScaling = None
     Format = None
@@ -181,6 +181,7 @@ def _configure_console_logger(
 ) -> logging.Logger:
     logger = logging.getLogger("train")
     logger.setLevel(logging.INFO if is_main_process else logging.WARNING)
+
     class _ColorFormatter(logging.Formatter):
         _RESET = "\033[0m"
         _LEVEL_COLORS = {
@@ -227,8 +228,13 @@ def _configure_console_logger(
         handler.addFilter(_RankFilter(rank))
         handler.setFormatter(formatter)
         logger.addHandler(handler)
-    if is_main_process and log_path is not None and not any(
-        getattr(handler, "_train_file_path", None) == str(log_path) for handler in logger.handlers
+    if (
+        is_main_process
+        and log_path is not None
+        and not any(
+            getattr(handler, "_train_file_path", None) == str(log_path)
+            for handler in logger.handlers
+        )
     ):
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
         file_handler._train_file_path = str(log_path)  # type: ignore[attr-defined]
@@ -332,7 +338,9 @@ def _resolve_dataset_roots(args: argparse.Namespace) -> list[Path]:
     return dataset_roots
 
 
-def _resolve_sources(raw_sources: list[str] | None, *, fallback: str | None = None) -> list[str | Path]:
+def _resolve_sources(
+    raw_sources: list[str] | None, *, fallback: str | None = None
+) -> list[str | Path]:
     sources = list(raw_sources or [])
     if not sources:
         if fallback is None:
@@ -453,7 +461,9 @@ class DiskBackedRecordStore:
                 handle.close()
             audio_bytes = _load_cached_audio_bytes(payload, records_path=self.records_path)
             num_samples, sample_rate = probe_audio_metadata(payload["audio_path"], audio_bytes)
-            frames = max(1, int(num_samples / hop_length)) if num_samples > 0 and sample_rate > 0 else 0
+            frames = (
+                max(1, int(num_samples / hop_length)) if num_samples > 0 and sample_rate > 0 else 0
+            )
             return global_index, frames
 
         if num_workers <= 1:
@@ -476,6 +486,8 @@ def _build_disk_backed_record_store(
     min_transcript_chars: int,
     max_transcript_chars: int,
     max_symbol_ratio: float,
+    min_audio_duration_sec: float,
+    max_audio_duration_sec: float,
     lowercase_transcripts: bool,
     records_path: Path,
     hf_token: str | None = None,
@@ -503,9 +515,13 @@ def _build_disk_backed_record_store(
                     min_transcript_chars=min_transcript_chars,
                     max_transcript_chars=max_transcript_chars,
                     max_symbol_ratio=max_symbol_ratio,
+                    min_audio_duration_sec=min_audio_duration_sec,
+                    max_audio_duration_sec=max_audio_duration_sec,
                     lowercase_transcripts=lowercase_transcripts,
                 )
-                if isinstance(dataset_source, Path) and dataset_source.exists() and dataset_source.is_dir()
+                if isinstance(dataset_source, Path)
+                and dataset_source.exists()
+                and dataset_source.is_dir()
                 else iter_cv22_records_from_source(
                     dataset_source,
                     split=split,
@@ -516,6 +532,8 @@ def _build_disk_backed_record_store(
                     min_transcript_chars=min_transcript_chars,
                     max_transcript_chars=max_transcript_chars,
                     max_symbol_ratio=max_symbol_ratio,
+                    min_audio_duration_sec=min_audio_duration_sec,
+                    max_audio_duration_sec=max_audio_duration_sec,
                     lowercase_transcripts=lowercase_transcripts,
                     hf_token=hf_token,
                 )
@@ -540,15 +558,15 @@ def _build_disk_backed_record_store(
                     audio_blob_path = str(blob_path.relative_to(records_path.parent))
                 offsets.append(handle.tell())
                 payload = json.dumps(
-                        {
-                            "audio_path": record.audio_path,
-                            "audio_blob_path": audio_blob_path,
-                            "transcript": record.transcript,
-                            "utterance_id": record.utterance_id,
-                            "speaker_id": record.speaker_id,
-                            "has_speaker_id": record.has_speaker_id,
-                        },
-                        ensure_ascii=False,
+                    {
+                        "audio_path": record.audio_path,
+                        "audio_blob_path": audio_blob_path,
+                        "transcript": record.transcript,
+                        "utterance_id": record.utterance_id,
+                        "speaker_id": record.speaker_id,
+                        "has_speaker_id": record.has_speaker_id,
+                    },
+                    ensure_ascii=False,
                 )
                 handle.write(payload.encode("utf-8"))
                 handle.write(b"\n")
@@ -676,6 +694,8 @@ def _load_records_from_dataset_roots(
     min_transcript_chars: int,
     max_transcript_chars: int,
     max_symbol_ratio: float,
+    min_audio_duration_sec: float,
+    max_audio_duration_sec: float,
     lowercase_transcripts: bool,
     hf_token: str | None = None,
 ) -> list:
@@ -697,9 +717,13 @@ def _load_records_from_dataset_roots(
                 min_transcript_chars=min_transcript_chars,
                 max_transcript_chars=max_transcript_chars,
                 max_symbol_ratio=max_symbol_ratio,
+                min_audio_duration_sec=min_audio_duration_sec,
+                max_audio_duration_sec=max_audio_duration_sec,
                 lowercase_transcripts=lowercase_transcripts,
             )
-            if isinstance(dataset_source, Path) and dataset_source.exists() and dataset_source.is_dir()
+            if isinstance(dataset_source, Path)
+            and dataset_source.exists()
+            and dataset_source.is_dir()
             else iter_cv22_records_from_source(
                 dataset_source,
                 split=split,
@@ -710,6 +734,8 @@ def _load_records_from_dataset_roots(
                 min_transcript_chars=min_transcript_chars,
                 max_transcript_chars=max_transcript_chars,
                 max_symbol_ratio=max_symbol_ratio,
+                min_audio_duration_sec=min_audio_duration_sec,
+                max_audio_duration_sec=max_audio_duration_sec,
                 lowercase_transcripts=lowercase_transcripts,
                 hf_token=hf_token,
             )
@@ -766,6 +792,8 @@ def _load_train_val_records(
             min_transcript_chars=args.min_transcript_chars,
             max_transcript_chars=args.max_transcript_chars,
             max_symbol_ratio=args.max_symbol_ratio,
+            min_audio_duration_sec=args.min_audio_duration_sec,
+            max_audio_duration_sec=args.max_audio_duration_sec,
             lowercase_transcripts=lowercase_transcripts,
             records_path=record_store_dir / "train.jsonl",
             hf_token=args.hf_token,
@@ -780,6 +808,8 @@ def _load_train_val_records(
             min_transcript_chars=args.min_transcript_chars,
             max_transcript_chars=args.max_transcript_chars,
             max_symbol_ratio=args.max_symbol_ratio,
+            min_audio_duration_sec=args.min_audio_duration_sec,
+            max_audio_duration_sec=args.max_audio_duration_sec,
             lowercase_transcripts=lowercase_transcripts,
             records_path=record_store_dir / "validation.jsonl",
             hf_token=args.hf_token,
@@ -801,6 +831,8 @@ def _load_train_val_records(
         min_transcript_chars=args.min_transcript_chars,
         max_transcript_chars=args.max_transcript_chars,
         max_symbol_ratio=args.max_symbol_ratio,
+        min_audio_duration_sec=args.min_audio_duration_sec,
+        max_audio_duration_sec=args.max_audio_duration_sec,
         lowercase_transcripts=lowercase_transcripts,
         hf_token=args.hf_token,
     )
@@ -814,6 +846,8 @@ def _load_train_val_records(
         min_transcript_chars=args.min_transcript_chars,
         max_transcript_chars=args.max_transcript_chars,
         max_symbol_ratio=args.max_symbol_ratio,
+        min_audio_duration_sec=args.min_audio_duration_sec,
+        max_audio_duration_sec=args.max_audio_duration_sec,
         lowercase_transcripts=lowercase_transcripts,
         hf_token=args.hf_token,
     )
@@ -889,11 +923,7 @@ def _parse_intermediate_ctc_layers(value: object) -> tuple[int, ...]:
         normalized = value.strip()
         if not normalized:
             return ()
-        return tuple(
-            int(part.strip())
-            for part in normalized.split(",")
-            if part.strip()
-        )
+        return tuple(int(part.strip()) for part in normalized.split(",") if part.strip())
     if isinstance(value, (list, tuple)):
         return tuple(int(item) for item in value)
     raise TypeError(f"Unsupported intermediate CTC layer specification: {type(value)!r}")
@@ -927,11 +957,7 @@ def _resolve_intermediate_ctc_settings(
 
     if args.intermediate_ctc is False:
         return (), 0.0
-    if (
-        args.intermediate_ctc is None
-        and checkpoint is not None
-        and checkpoint_enabled is False
-    ):
+    if args.intermediate_ctc is None and checkpoint is not None and checkpoint_enabled is False:
         return (), 0.0
 
     if checkpoint_weight is not None:
@@ -952,9 +978,7 @@ def _resolve_intermediate_ctc_settings(
     if not layers:
         layers = _default_intermediate_ctc_layers(encoder_config)
     layers = _dedupe_sorted_layers(layers)
-    invalid_layers = [
-        layer for layer in layers if not 0 <= layer < encoder_config.num_layers
-    ]
+    invalid_layers = [layer for layer in layers if not 0 <= layer < encoder_config.num_layers]
     if invalid_layers:
         raise ValueError(
             "--intermediate-ctc-layers must be within encoder block range "
@@ -1042,8 +1066,11 @@ def _resolve_liberta_settings(
     checkpoint_enabled = checkpoint_args.get("liberta_distill")
 
     if args.liberta_distill is False:
-        return False, args.liberta_model_name, float(args.liberta_distill_weight), int(
-            args.liberta_max_length
+        return (
+            False,
+            args.liberta_model_name,
+            float(args.liberta_distill_weight),
+            int(args.liberta_max_length),
         )
     if args.liberta_distill is None and checkpoint is not None and checkpoint_enabled is not None:
         enabled = bool(checkpoint_enabled)
@@ -1061,7 +1088,9 @@ def _resolve_liberta_settings(
     if not enabled:
         return False, model_name, weight, max_length
     if weight <= 0.0:
-        raise ValueError("--liberta-distill-weight must be > 0 when LiBERTa distillation is enabled.")
+        raise ValueError(
+            "--liberta-distill-weight must be > 0 when LiBERTa distillation is enabled."
+        )
     return True, model_name, weight, max_length
 
 
@@ -1118,7 +1147,9 @@ def _compute_grad_norm(parameters, norm_type: float = 2.0) -> Tensor:
     if not grads:
         return torch.tensor(0.0)
     device = grads[0].device
-    per_param_norms = torch.stack([torch.norm(grad, p=norm_type).to(device=device) for grad in grads])
+    per_param_norms = torch.stack(
+        [torch.norm(grad, p=norm_type).to(device=device) for grad in grads]
+    )
     return torch.norm(per_param_norms, p=norm_type)
 
 
@@ -1646,6 +1677,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-transcript-chars", type=int, default=1)
     parser.add_argument("--max-transcript-chars", type=int, default=400)
     parser.add_argument("--max-symbol-ratio", type=float, default=0.5)
+    parser.add_argument("--min-audio-duration-sec", type=float, default=0.01)
+    parser.add_argument("--max-audio-duration-sec", type=float, default=30.0)
     parser.add_argument("--feature-cache-dir", default=None)
     parser.add_argument("--max-batch-frames", type=int, default=None)
     parser.add_argument(
@@ -2066,9 +2099,8 @@ def evaluate(
                     ]
                     intermediate_ctc_loss = torch.stack(intermediate_ctc_losses).mean()
                     combined_ctc_loss = (
-                        (1.0 - intermediate_ctc_weight) * main_ctc_loss
-                        + intermediate_ctc_weight * intermediate_ctc_loss
-                    )
+                        1.0 - intermediate_ctc_weight
+                    ) * main_ctc_loss + intermediate_ctc_weight * intermediate_ctc_loss
                 else:
                     intermediate_ctc_loss = None
                     combined_ctc_loss = main_ctc_loss
@@ -2088,7 +2120,11 @@ def evaluate(
                     aed_loss = None
                     aed_hidden = None
                     loss = combined_ctc_loss
-            if liberta_teacher is not None and aed_hidden is not None and decoder_target_lengths is not None:
+            if (
+                liberta_teacher is not None
+                and aed_hidden is not None
+                and decoder_target_lengths is not None
+            ):
                 teacher_embeddings = liberta_teacher.encode(batch["transcripts"])
                 student_embeddings = model.project_aed_hidden_for_liberta(
                     aed_hidden,
@@ -2530,9 +2566,13 @@ def main() -> None:
         encoder_config,
         checkpoint,
     )
-    aed_decoder_enabled, aed_decoder_layers, aed_decoder_heads, aed_decoder_dropout, aed_loss_weight = (
-        _resolve_aed_settings(args, checkpoint)
-    )
+    (
+        aed_decoder_enabled,
+        aed_decoder_layers,
+        aed_decoder_heads,
+        aed_decoder_dropout,
+        aed_loss_weight,
+    ) = _resolve_aed_settings(args, checkpoint)
     liberta_distill_enabled, liberta_model_name, liberta_distill_weight, liberta_max_length = (
         _resolve_liberta_settings(
             args,
@@ -2544,7 +2584,9 @@ def main() -> None:
         _resolve_blank_pruning_settings(args, encoder_config, checkpoint)
     )
     args.intermediate_ctc_layers = list(intermediate_ctc_layers)
-    args.intermediate_ctc_layer = intermediate_ctc_layers[0] if len(intermediate_ctc_layers) == 1 else None
+    args.intermediate_ctc_layer = (
+        intermediate_ctc_layers[0] if len(intermediate_ctc_layers) == 1 else None
+    )
     args.intermediate_ctc = bool(intermediate_ctc_layers) and intermediate_ctc_weight > 0.0
     args.intermediate_ctc_weight = intermediate_ctc_weight
     args.aed_decoder = aed_decoder_enabled
@@ -2806,7 +2848,11 @@ def main() -> None:
                 else:
                     intermediate_ctc_loss = None
                     loss = main_ctc_loss
-                if aed_decoder_enabled and decoder_inputs is not None and decoder_targets is not None:
+                if (
+                    aed_decoder_enabled
+                    and decoder_inputs is not None
+                    and decoder_targets is not None
+                ):
                     aed_logits, _, aed_hidden = forward_model.aed_forward(
                         features,
                         feature_lengths,
@@ -2821,7 +2867,11 @@ def main() -> None:
                 else:
                     aed_loss = None
                     aed_hidden = None
-            if liberta_teacher is not None and aed_hidden is not None and decoder_target_lengths is not None:
+            if (
+                liberta_teacher is not None
+                and aed_hidden is not None
+                and decoder_target_lengths is not None
+            ):
                 teacher_embeddings = liberta_teacher.encode(batch["transcripts"])
                 student_embeddings = forward_model.project_aed_hidden_for_liberta(
                     aed_hidden,
@@ -2883,12 +2933,14 @@ def main() -> None:
                         global_step,
                         float(loss.item()),
                         float(main_ctc_loss.item()),
-                        float(intermediate_ctc_loss.item() if intermediate_ctc_loss is not None else 0.0),
+                        float(
+                            intermediate_ctc_loss.item()
+                            if intermediate_ctc_loss is not None
+                            else 0.0
+                        ),
                         float(aed_loss.item() if aed_loss is not None else 0.0),
                         float(
-                            liberta_distill_loss.item()
-                            if liberta_distill_loss is not None
-                            else 0.0
+                            liberta_distill_loss.item() if liberta_distill_loss is not None else 0.0
                         ),
                         grad_norm,
                         " ".join(f"{name}={value:.6g}" for name, value in learning_rates.items()),
@@ -2904,7 +2956,9 @@ def main() -> None:
                                 if intermediate_ctc_loss is not None
                                 else 0.0
                             ),
-                            "train_aed_loss_step": float(aed_loss.item() if aed_loss is not None else 0.0),
+                            "train_aed_loss_step": float(
+                                aed_loss.item() if aed_loss is not None else 0.0
+                            ),
                             "train_liberta_distill_loss_step": float(
                                 liberta_distill_loss.item()
                                 if liberta_distill_loss is not None

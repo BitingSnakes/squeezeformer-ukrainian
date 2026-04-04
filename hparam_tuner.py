@@ -18,7 +18,7 @@ from squeezeformer_pytorch.runtime_types import DecodeStrategy, DTypeChoice, Opt
 
 try:
     import transformer_engine.pytorch as te
-except (ImportError, OSError):
+except ImportError, OSError:
     te = None
 
 DTYPE_CHOICES = ("auto",) + tuple(choice.value for choice in DTypeChoice)
@@ -126,7 +126,7 @@ def _cpu_memory_gb() -> float | None:
     try:
         page_size = os.sysconf("SC_PAGE_SIZE")
         page_count = os.sysconf("SC_PHYS_PAGES")
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
     if not isinstance(page_size, int) or not isinstance(page_count, int):
         return None

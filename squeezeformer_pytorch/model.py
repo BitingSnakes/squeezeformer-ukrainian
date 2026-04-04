@@ -11,7 +11,7 @@ from torch.utils.checkpoint import checkpoint as activation_checkpoint
 
 try:
     import transformer_engine.pytorch as te
-except (ImportError, OSError):
+except ImportError, OSError:
     te = None
 
 
@@ -785,7 +785,8 @@ class SqueezeformerEncoder(nn.Module):
         features: Tensor,
         lengths: Tensor,
         intermediate_layer_indices: tuple[int, ...] = (),
-        post_block_transforms: dict[int, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]] | None = None,
+        post_block_transforms: dict[int, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]]
+        | None = None,
     ) -> tuple[Tensor, Tensor, dict[int, Tensor], dict[int, Tensor]]:
         if features.dim() != 3:
             raise ValueError(
@@ -873,7 +874,8 @@ class SqueezeformerEncoder(nn.Module):
         features: Tensor,
         lengths: Tensor,
         intermediate_layer_indices: tuple[int, ...],
-        post_block_transforms: dict[int, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]] | None = None,
+        post_block_transforms: dict[int, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]]
+        | None = None,
     ) -> tuple[Tensor, Tensor, dict[int, Tensor], dict[int, Tensor]]:
         x, output_lengths, intermediate_xs, intermediate_lengths = self._forward_impl(
             features,
@@ -888,8 +890,7 @@ class SqueezeformerEncoder(nn.Module):
         ]
         if missing_indices:
             raise RuntimeError(
-                "Failed to capture intermediate encoder outputs for layers "
-                f"{missing_indices}."
+                f"Failed to capture intermediate encoder outputs for layers {missing_indices}."
             )
         return x, output_lengths, intermediate_xs, intermediate_lengths
 

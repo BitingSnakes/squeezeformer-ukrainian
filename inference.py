@@ -6,7 +6,6 @@ import re
 import tempfile
 from contextlib import ExitStack, nullcontext
 from pathlib import Path
-from typing import Any
 
 import gradio as gr
 import torch
@@ -30,7 +29,7 @@ from squeezeformer_pytorch.runtime_types import DTypeChoice
 try:
     import transformer_engine.pytorch as te
     from transformer_engine.common.recipe import DelayedScaling, Format
-except (ImportError, OSError):
+except ImportError, OSError:
     te = None
     DelayedScaling = None
     Format = None
@@ -38,6 +37,8 @@ except (ImportError, OSError):
 DEFAULT_CHECKPOINT = (
     "https://huggingface.co/speech-uk/squeezeformer-sm/resolve/main/checkpoint_best.pt"
 )
+
+
 class ASRInferenceSession:
     def __init__(
         self,
@@ -151,7 +152,9 @@ class ASRInferenceSession:
         if waveform.dim() == 1:
             waveform = waveform.unsqueeze(0)
         if waveform.dim() != 2:
-            raise ValueError(f"Expected waveform with shape [channels, time], got {tuple(waveform.shape)}")
+            raise ValueError(
+                f"Expected waveform with shape [channels, time], got {tuple(waveform.shape)}"
+            )
 
         target_sample_rate = self.featurizer.sample_rate
         if sample_rate != target_sample_rate:
@@ -165,7 +168,9 @@ class ASRInferenceSession:
         chunk_samples = max(1, int(round(self.chunk_duration_seconds * sample_rate)))
         overlap_samples = max(0, int(round(self.chunk_overlap_seconds * sample_rate)))
         if chunk_samples <= overlap_samples:
-            raise ValueError("--chunk-duration-seconds must be greater than --chunk-overlap-seconds.")
+            raise ValueError(
+                "--chunk-duration-seconds must be greater than --chunk-overlap-seconds."
+            )
         if total_samples <= chunk_samples:
             return self._transcribe_waveform_single_pass(waveform, sample_rate)
 

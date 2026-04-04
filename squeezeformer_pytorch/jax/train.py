@@ -145,11 +145,7 @@ def _bucket_name(reference: str) -> str:
 def _length_bucket_metrics(references: list[str], hypotheses: list[str]) -> dict[str, float]:
     metrics: dict[str, float] = {}
     for bucket in ("short", "medium", "long"):
-        bucket_refs = [
-            reference
-            for reference in references
-            if _bucket_name(reference) == bucket
-        ]
+        bucket_refs = [reference for reference in references if _bucket_name(reference) == bucket]
         bucket_hyps = [
             hypothesis
             for reference, hypothesis in zip(references, hypotheses, strict=True)
@@ -362,12 +358,11 @@ def _evaluate(
             jax_batch["feature_lengths"],
             deterministic=True,
         )
-        logit_paddings = (
-            jnp.arange(logits.shape[1])[None, :] >= output_lengths[:, None]
-        ).astype(jnp.float32)
+        logit_paddings = (jnp.arange(logits.shape[1])[None, :] >= output_lengths[:, None]).astype(
+            jnp.float32
+        )
         label_paddings = (
-            jnp.arange(jax_batch["labels"].shape[1])[None, :]
-            >= jax_batch["label_lengths"][:, None]
+            jnp.arange(jax_batch["labels"].shape[1])[None, :] >= jax_batch["label_lengths"][:, None]
         ).astype(jnp.float32)
         loss = optax.ctc_loss(
             logits=logits,
@@ -813,8 +808,7 @@ def main() -> None:
                 rng, step_rng = jax.random.split(rng)
                 state, metrics = compiled_train_step(state, single_batch, dropout_rng=step_rng)
                 metrics = {
-                    key: float(np.asarray(jax.device_get(value)))
-                    for key, value in metrics.items()
+                    key: float(np.asarray(jax.device_get(value))) for key, value in metrics.items()
                 }
 
             running_loss += metrics["loss"]

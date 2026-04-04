@@ -5,8 +5,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import torch
-
 from squeezeformer_pytorch.checkpoints import load_checkpoint
 
 
@@ -14,7 +12,9 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Inspect a checkpoint and report whether it is a full training checkpoint or an exported inference checkpoint."
     )
-    parser.add_argument("--checkpoint", required=True, help="Path to a .pt or .safetensors checkpoint.")
+    parser.add_argument(
+        "--checkpoint", required=True, help="Path to a .pt or .safetensors checkpoint."
+    )
     parser.add_argument(
         "--json",
         action="store_true",

@@ -80,6 +80,7 @@ class RelPositionMultiHeadAttention(nn.Module):
         if self.dim % self.num_heads != 0:
             raise ValueError(f"dim={self.dim} must be divisible by num_heads={self.num_heads}")
         self.head_dim = self.dim // self.num_heads
+
         def dense(*, use_bias: bool = True) -> nn.Dense:
             return nn.Dense(
                 self.dim,
@@ -159,6 +160,7 @@ class MultiHeadAttention(nn.Module):
         if self.dim % self.num_heads != 0:
             raise ValueError(f"dim={self.dim} must be divisible by num_heads={self.num_heads}")
         self.head_dim = self.dim // self.num_heads
+
         def dense() -> nn.Dense:
             return nn.Dense(
                 self.dim,
@@ -697,8 +699,7 @@ class SqueezeformerEncoder(nn.Module):
             for index in config.time_reduce_idx
         }
         self.time_recover = {
-            index: TimeRecoveryLayer(config.d_model)
-            for index in config.time_recover_idx
+            index: TimeRecoveryLayer(config.d_model) for index in config.time_recover_idx
         }
         self.blocks = tuple(
             SqueezeformerBlock(

@@ -133,7 +133,9 @@ def main() -> None:
     liberta_max_length = int(training_args.get("liberta_max_length", 256))
     if intermediate_ctc_weight > 0.0:
         if intermediate_ctc_layers is not None:
-            resolved_intermediate_ctc_layers = tuple(int(layer) for layer in intermediate_ctc_layers)
+            resolved_intermediate_ctc_layers = tuple(
+                int(layer) for layer in intermediate_ctc_layers
+            )
         elif intermediate_ctc_layer is not None:
             resolved_intermediate_ctc_layers = (int(intermediate_ctc_layer),)
         else:

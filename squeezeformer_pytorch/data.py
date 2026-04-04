@@ -38,10 +38,13 @@ class LoaderSummary:
     selected: int = 0
     skipped_missing_transcript: int = 0
     skipped_missing_audio: int = 0
+    skipped_missing_duration: int = 0
     skipped_too_short: int = 0
     skipped_too_long: int = 0
     skipped_symbol_ratio: int = 0
     skipped_no_alnum: int = 0
+    skipped_audio_too_short: int = 0
+    skipped_audio_too_long: int = 0
     skipped_split: int = 0
 
 
@@ -76,21 +79,38 @@ def _log_loader_summary(
 ) -> None:
     logger.info(
         "loader summary source=%s split=%s scanned=%s selected=%s skipped_missing_transcript=%s "
-        "skipped_missing_audio=%s skipped_too_short=%s skipped_too_long=%s "
-        "skipped_symbol_ratio=%s skipped_no_alnum=%s skipped_split=%s max_samples=%s",
+        "skipped_missing_audio=%s skipped_missing_duration=%s skipped_too_short=%s "
+        "skipped_too_long=%s skipped_symbol_ratio=%s skipped_no_alnum=%s "
+        "skipped_audio_too_short=%s skipped_audio_too_long=%s skipped_split=%s max_samples=%s",
         _source_summary_label(source),
         split,
         summary.scanned,
         summary.selected,
         summary.skipped_missing_transcript,
         summary.skipped_missing_audio,
+        summary.skipped_missing_duration,
         summary.skipped_too_short,
         summary.skipped_too_long,
         summary.skipped_symbol_ratio,
         summary.skipped_no_alnum,
+        summary.skipped_audio_too_short,
+        summary.skipped_audio_too_long,
         summary.skipped_split,
         max_samples if max_samples is not None else "none",
     )
+
+
+def _audio_duration_rejection_reason(
+    duration_seconds: float,
+    *,
+    min_duration_seconds: float,
+    max_duration_seconds: float,
+) -> str | None:
+    if duration_seconds < min_duration_seconds:
+        return "too_short"
+    if duration_seconds > max_duration_seconds:
+        return "too_long"
+    return None
 
 
 @dataclass(frozen=True)
@@ -206,7 +226,9 @@ def read_binary_source(path_or_url: str, token: str | None = None) -> bytes:
     return Path(path_or_url).read_bytes()
 
 
-def _iter_remote_rows(source_url: str, *, token: str | None, batch_size: int) -> Iterable[dict[str, Any]]:
+def _iter_remote_rows(
+    source_url: str, *, token: str | None, batch_size: int
+) -> Iterable[dict[str, Any]]:
     suffix = Path(urlparse(source_url).path).suffix.lower()
     payload = io.BytesIO(_read_remote_bytes(source_url, token=token))
     if suffix == ".tsv":
@@ -235,7 +257,9 @@ def _iter_repo_manifest_urls(repo_id: str, token: str | None) -> Iterable[str]:
     parquet_files = [repo_path for repo_path in repo_files if repo_path.endswith(".parquet")]
     manifest_files = tsv_files or parquet_files
     if not manifest_files:
-        raise FileNotFoundError(f"No TSV or Parquet manifest files found in dataset repo {repo_id}.")
+        raise FileNotFoundError(
+            f"No TSV or Parquet manifest files found in dataset repo {repo_id}."
+        )
     if parquet_files and not tsv_files:
         logger.info(
             "discovered %s parquet manifest file(s) in dataset repo %s",
@@ -525,6 +549,8 @@ def iter_cv22_records(
     min_transcript_chars: int = 1,
     max_transcript_chars: int = 400,
     max_symbol_ratio: float = 0.5,
+    min_audio_duration_sec: float = 0.01,
+    max_audio_duration_sec: float = 30.0,
     lowercase_transcripts: bool = True,
 ) -> Iterable[CVRecord]:
     summary = LoaderSummary()
@@ -543,6 +569,24 @@ def iter_cv22_records(
                 audio_path, audio_bytes = _resolve_audio(row, dataset_root=dataset_root)
             except KeyError:
                 summary.skipped_missing_audio += 1
+                continue
+            duration_seconds = (
+                row.get("duration") or row.get("duration_seconds") or row.get("audio_duration")
+            )
+            if not isinstance(duration_seconds, (float, int)):
+                summary.skipped_missing_duration += 1
+                continue
+            duration_seconds = float(duration_seconds)
+            duration_rejection_reason = _audio_duration_rejection_reason(
+                duration_seconds,
+                min_duration_seconds=min_audio_duration_sec,
+                max_duration_seconds=max_audio_duration_sec,
+            )
+            if duration_rejection_reason is not None:
+                if duration_rejection_reason == "too_short":
+                    summary.skipped_audio_too_short += 1
+                elif duration_rejection_reason == "too_long":
+                    summary.skipped_audio_too_long += 1
                 continue
             rejection_reason = _transcript_rejection_reason(
                 transcript,
@@ -564,13 +608,7 @@ def iter_cv22_records(
             utterance_id = str(row.get("id") or audio_path or summary.scanned)
             raw_speaker_id = row.get("client_id") or row.get("speaker_id") or row.get("speaker")
             speaker_id = str(raw_speaker_id) if raw_speaker_id not in {None, ""} else None
-            duration_seconds = (
-                row.get("duration") or row.get("duration_seconds") or row.get("audio_duration")
-            )
-            if isinstance(duration_seconds, (float, int)):
-                estimated_frames = max(1, int((float(duration_seconds) * 16000) / 160))
-            else:
-                estimated_frames = 0
+            estimated_frames = max(1, int((duration_seconds * 16000) / 160))
             record = CVRecord(
                 audio_path=audio_path,
                 audio_bytes=audio_bytes,
@@ -618,6 +656,8 @@ def iter_cv22_records_from_source(
     min_transcript_chars: int = 1,
     max_transcript_chars: int = 400,
     max_symbol_ratio: float = 0.5,
+    min_audio_duration_sec: float = 0.01,
+    max_audio_duration_sec: float = 30.0,
     lowercase_transcripts: bool = True,
     hf_token: str | None = None,
 ) -> Iterable[CVRecord]:
@@ -637,6 +677,24 @@ def iter_cv22_records_from_source(
                 audio_path, audio_bytes = resolve_audio_from_source(row, source=source)
             except KeyError:
                 summary.skipped_missing_audio += 1
+                continue
+            duration_seconds = (
+                row.get("duration") or row.get("duration_seconds") or row.get("audio_duration")
+            )
+            if not isinstance(duration_seconds, (float, int)):
+                summary.skipped_missing_duration += 1
+                continue
+            duration_seconds = float(duration_seconds)
+            duration_rejection_reason = _audio_duration_rejection_reason(
+                duration_seconds,
+                min_duration_seconds=min_audio_duration_sec,
+                max_duration_seconds=max_audio_duration_sec,
+            )
+            if duration_rejection_reason is not None:
+                if duration_rejection_reason == "too_short":
+                    summary.skipped_audio_too_short += 1
+                elif duration_rejection_reason == "too_long":
+                    summary.skipped_audio_too_long += 1
                 continue
             rejection_reason = _transcript_rejection_reason(
                 transcript,
@@ -658,13 +716,7 @@ def iter_cv22_records_from_source(
             utterance_id = str(row.get("id") or audio_path or summary.scanned)
             raw_speaker_id = row.get("client_id") or row.get("speaker_id") or row.get("speaker")
             speaker_id = str(raw_speaker_id) if raw_speaker_id not in {None, ""} else None
-            duration_seconds = (
-                row.get("duration") or row.get("duration_seconds") or row.get("audio_duration")
-            )
-            if isinstance(duration_seconds, (float, int)):
-                estimated_frames = max(1, int((float(duration_seconds) * 16000) / 160))
-            else:
-                estimated_frames = 0
+            estimated_frames = max(1, int((duration_seconds * 16000) / 160))
             record = CVRecord(
                 audio_path=audio_path,
                 audio_bytes=audio_bytes,
