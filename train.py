@@ -173,54 +173,68 @@ class FrozenLibertaTeacher:
         return pooled
 
 
-def _configure_console_logger(rank: int, is_main_process: bool) -> logging.Logger:
+def _configure_console_logger(
+    rank: int,
+    is_main_process: bool,
+    *,
+    log_path: Path | None = None,
+) -> logging.Logger:
     logger = logging.getLogger("train")
     logger.setLevel(logging.INFO if is_main_process else logging.WARNING)
-    if not logger.handlers:
-        class _ColorFormatter(logging.Formatter):
-            _RESET = "\033[0m"
-            _LEVEL_COLORS = {
-                logging.DEBUG: "\033[36m",
-                logging.INFO: "\033[32m",
-                logging.WARNING: "\033[33m",
-                logging.ERROR: "\033[31m",
-                logging.CRITICAL: "\033[35m",
-            }
+    class _ColorFormatter(logging.Formatter):
+        _RESET = "\033[0m"
+        _LEVEL_COLORS = {
+            logging.DEBUG: "\033[36m",
+            logging.INFO: "\033[32m",
+            logging.WARNING: "\033[33m",
+            logging.ERROR: "\033[31m",
+            logging.CRITICAL: "\033[35m",
+        }
 
-            def __init__(self, fmt: str, *, use_color: bool) -> None:
-                super().__init__(fmt)
-                self.use_color = use_color
+        def __init__(self, fmt: str, *, use_color: bool) -> None:
+            super().__init__(fmt)
+            self.use_color = use_color
 
-            def format(self, record: logging.LogRecord) -> str:
-                original_levelname = record.levelname
-                if self.use_color:
-                    color = self._LEVEL_COLORS.get(record.levelno)
-                    if color is not None:
-                        record.levelname = f"{color}{record.levelname}{self._RESET}"
-                try:
-                    return super().format(record)
-                finally:
-                    record.levelname = original_levelname
+        def format(self, record: logging.LogRecord) -> str:
+            original_levelname = record.levelname
+            if self.use_color:
+                color = self._LEVEL_COLORS.get(record.levelno)
+                if color is not None:
+                    record.levelname = f"{color}{record.levelname}{self._RESET}"
+            try:
+                return super().format(record)
+            finally:
+                record.levelname = original_levelname
 
-        class _RankFilter(logging.Filter):
-            def __init__(self, default_rank: int) -> None:
-                super().__init__()
-                self.default_rank = default_rank
+    class _RankFilter(logging.Filter):
+        def __init__(self, default_rank: int) -> None:
+            super().__init__()
+            self.default_rank = default_rank
 
-            def filter(self, record: logging.LogRecord) -> bool:
-                if not hasattr(record, "rank"):
-                    record.rank = self.default_rank
-                return True
+        def filter(self, record: logging.LogRecord) -> bool:
+            if not hasattr(record, "rank"):
+                record.rank = self.default_rank
+            return True
 
+    formatter = _ColorFormatter(
+        "%(asctime)s | %(levelname)s | rank=%(rank)s | %(message)s",
+        use_color=sys.stdout.isatty(),
+    )
+    plain_formatter = logging.Formatter("%(asctime)s | %(levelname)s | rank=%(rank)s | %(message)s")
+    if not any(getattr(handler, "_train_console_handler", False) for handler in logger.handlers):
         handler = logging.StreamHandler(sys.stdout)
+        handler._train_console_handler = True  # type: ignore[attr-defined]
         handler.addFilter(_RankFilter(rank))
-        handler.setFormatter(
-            _ColorFormatter(
-                "%(asctime)s | %(levelname)s | rank=%(rank)s | %(message)s",
-                use_color=sys.stdout.isatty(),
-            )
-        )
+        handler.setFormatter(formatter)
         logger.addHandler(handler)
+    if is_main_process and log_path is not None and not any(
+        getattr(handler, "_train_file_path", None) == str(log_path) for handler in logger.handlers
+    ):
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler._train_file_path = str(log_path)  # type: ignore[attr-defined]
+        file_handler.addFilter(_RankFilter(rank))
+        file_handler.setFormatter(plain_formatter)
+        logger.addHandler(file_handler)
     logger.propagate = False
     return logging.LoggerAdapter(logger, {"rank": rank})
 
@@ -2230,7 +2244,6 @@ def main() -> None:
     requested_device = resolve_device(args.device)
     _validate_device_ready(requested_device)
     is_main_process = rank == 0
-    logger = _configure_console_logger(rank=rank, is_main_process=is_main_process)
     if distributed:
         backend = "nccl" if torch.cuda.is_available() else "gloo"
         if not dist.is_initialized():
@@ -2241,6 +2254,11 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     if is_main_process:
         output_dir.mkdir(parents=True, exist_ok=True)
+    logger = _configure_console_logger(
+        rank=rank,
+        is_main_process=is_main_process,
+        log_path=output_dir / "training.log",
+    )
     resume_path = _resolve_resume_checkpoint_path(args, output_dir=output_dir, logger=logger)
     logger.info(
         "starting training variant=%s device=%s distributed=%s world_size=%s output_dir=%s",
