@@ -14,6 +14,46 @@ from squeezeformer_pytorch.checkpoints import (
 from squeezeformer_pytorch.runtime_types import DTypeChoice
 
 
+def test_resolve_checkpoint_path_supports_hf_repo_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_download(*, repo_id: str, filename: str) -> str:
+        captured["repo_id"] = repo_id
+        captured["filename"] = filename
+        return "/tmp/downloaded-checkpoint.pt"
+
+    monkeypatch.setattr(inference, "hf_hub_download", fake_download)
+
+    resolved = inference.resolve_checkpoint_path("speech-uk/squeezeformer-bf16-lm-sm-moredata")
+
+    assert resolved == "/tmp/downloaded-checkpoint.pt"
+    assert captured == {
+        "repo_id": "speech-uk/squeezeformer-bf16-lm-sm-moredata",
+        "filename": "checkpoint_best.pt",
+    }
+
+
+def test_resolve_checkpoint_path_supports_hf_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_download(*, repo_id: str, filename: str) -> str:
+        captured["repo_id"] = repo_id
+        captured["filename"] = filename
+        return "/tmp/downloaded-checkpoint.pt"
+
+    monkeypatch.setattr(inference, "hf_hub_download", fake_download)
+
+    resolved = inference.resolve_checkpoint_path(
+        "https://huggingface.co/speech-uk/squeezeformer-sm/resolve/main/checkpoint_best.pt"
+    )
+
+    assert resolved == "/tmp/downloaded-checkpoint.pt"
+    assert captured == {
+        "repo_id": "speech-uk/squeezeformer-sm",
+        "filename": "checkpoint_best.pt",
+    }
+
+
 def test_detects_torchao_quantized_checkpoint() -> None:
     assert is_torchao_quantized_checkpoint({"quantization": {"backend": "torchao"}})
     assert not is_torchao_quantized_checkpoint({})

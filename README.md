@@ -78,7 +78,7 @@ uv run python inference.py --gradio
 
 Useful flags:
 
-- `--checkpoint`: local checkpoint path or Hugging Face checkpoint URL
+- `--checkpoint`: local checkpoint path, Hugging Face checkpoint URL, or Hugging Face repo id
 - `--device`: inference device such as `cpu` or `cuda:0`
 - `--dtype`: autocast dtype, for example `float32`, `bfloat16`, `float16`, or `fp8`
 - `--host`: Gradio bind host, default `127.0.0.1`
@@ -90,13 +90,13 @@ Example: launch the Gradio app on all interfaces with a specific checkpoint
 ```bash
 uv run python inference.py \
   --gradio \
-  --checkpoint artifacts/squeezeformer-cv22/checkpoint_best.pt \
+  --checkpoint speech-uk/squeezeformer-bf16-lm-sm-moredata \
   --host 0.0.0.0 \
   --port 7860
 ```
 
 The Gradio UI supports both uploaded audio files and live microphone recording. You can also
-paste a different checkpoint path or Hugging Face URL into the app and reload it without
+paste a different checkpoint path, Hugging Face URL, or Hugging Face repo id into the app and reload it without
 restarting the server.
 
 ## Post-Training Quantization

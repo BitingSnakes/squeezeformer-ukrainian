@@ -252,6 +252,13 @@ def resolve_checkpoint_path(checkpoint: str) -> str:
             repo_id = f"{parts[0]}/{parts[1]}"
             filename = "/".join(parts[4:])
             return hf_hub_download(repo_id=repo_id, filename=filename)
+    normalized = checkpoint.strip()
+    if (
+        normalized.count("/") == 1
+        and not normalized.startswith((".", "/"))
+        and not Path(normalized).exists()
+    ):
+        return hf_hub_download(repo_id=normalized, filename="checkpoint_best.pt")
     return checkpoint
 
 
@@ -260,7 +267,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint",
         default=DEFAULT_CHECKPOINT,
-        help="Checkpoint path or Hugging Face URL.",
+        help="Checkpoint path, Hugging Face URL, or Hugging Face repo id.",
     )
     parser.add_argument("--audio", help="Path to an audio file to transcribe.")
     parser.add_argument(
