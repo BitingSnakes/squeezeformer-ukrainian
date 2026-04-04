@@ -16,3 +16,6 @@ logs/
 
 .DS_Store
 arXiv-2206.00888v2/
+
+checkpoint_best.json
+checkpoint_best.safetensors

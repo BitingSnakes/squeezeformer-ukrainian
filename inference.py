@@ -11,6 +11,7 @@ import gradio as gr
 import torch
 import torchaudio
 from huggingface_hub import hf_hub_download
+from huggingface_hub.errors import EntryNotFoundError
 
 from squeezeformer_pytorch.asr import SqueezeformerCTC, tokenizer_from_dict
 from squeezeformer_pytorch.checkpoints import (
@@ -39,6 +40,25 @@ DEFAULT_CHECKPOINT = (
 )
 
 
+def _download_hf_checkpoint(repo_id: str, filename: str) -> str:
+    checkpoint_path = hf_hub_download(repo_id=repo_id, filename=filename)
+    if filename.endswith(".safetensors"):
+        hf_hub_download(repo_id=repo_id, filename=str(Path(filename).with_suffix(".json")))
+    return checkpoint_path
+
+
+def _download_default_hf_checkpoint(repo_id: str) -> str:
+    for filename in ("checkpoint_best.pt", "checkpoint_best.safetensors"):
+        try:
+            return _download_hf_checkpoint(repo_id, filename)
+        except EntryNotFoundError:
+            continue
+    raise FileNotFoundError(
+        f"No supported inference checkpoint found in Hugging Face repo '{repo_id}'. "
+        "Tried checkpoint_best.pt and checkpoint_best.safetensors."
+    )
+
+
 class ASRInferenceSession:
     def __init__(
         self,
@@ -46,6 +66,7 @@ class ASRInferenceSession:
         device: torch.device,
         dtype: DTypeChoice,
         *,
+        checkpoint_metadata: str | None = None,
         fp8_recipe=None,
         chunk_duration_seconds: float = 30.0,
         chunk_overlap_seconds: float = 5.0,
@@ -58,8 +79,13 @@ class ASRInferenceSession:
         self.chunk_overlap_seconds = float(chunk_overlap_seconds)
         self.long_form_threshold_seconds = float(long_form_threshold_seconds)
         self.checkpoint_path = resolve_checkpoint_path(checkpoint)
+        self.checkpoint_metadata_path = checkpoint_metadata.strip() if checkpoint_metadata else None
 
-        checkpoint_data = load_checkpoint(self.checkpoint_path, map_location="cpu")
+        checkpoint_data = load_checkpoint(
+            self.checkpoint_path,
+            map_location="cpu",
+            metadata_path=self.checkpoint_metadata_path,
+        )
         self.tokenizer = tokenizer_from_dict(checkpoint_data["tokenizer"])
         encoder_config = SqueezeformerConfig(**checkpoint_data["encoder_config"])
         training_args = checkpoint_data.get("training_args", {})
@@ -245,20 +271,20 @@ def _merge_chunk_transcript(existing: str, new: str) -> str:
 
 def resolve_checkpoint_path(checkpoint: str) -> str:
     if checkpoint == DEFAULT_CHECKPOINT:
-        return hf_hub_download(repo_id="speech-uk/squeezeformer-sm", filename="checkpoint_best.pt")
+        return _download_default_hf_checkpoint("speech-uk/squeezeformer-sm")
     if checkpoint.startswith("https://huggingface.co/"):
         parts = checkpoint.removeprefix("https://huggingface.co/").split("/")
         if len(parts) >= 5 and parts[2] == "resolve":
             repo_id = f"{parts[0]}/{parts[1]}"
             filename = "/".join(parts[4:])
-            return hf_hub_download(repo_id=repo_id, filename=filename)
+            return _download_hf_checkpoint(repo_id, filename)
     normalized = checkpoint.strip()
     if (
         normalized.count("/") == 1
         and not normalized.startswith((".", "/"))
         and not Path(normalized).exists()
     ):
-        return hf_hub_download(repo_id=normalized, filename="checkpoint_best.pt")
+        return _download_default_hf_checkpoint(normalized)
     return checkpoint
 
 
@@ -268,6 +294,10 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint",
         default=DEFAULT_CHECKPOINT,
         help="Checkpoint path, Hugging Face URL, or Hugging Face repo id.",
+    )
+    parser.add_argument(
+        "--checkpoint-metadata",
+        help="Optional JSON metadata sidecar for .safetensors checkpoints.",
     )
     parser.add_argument("--audio", help="Path to an audio file to transcribe.")
     parser.add_argument(
@@ -414,18 +444,25 @@ def inference_autocast_context(device: torch.device, dtype: DTypeChoice, *, fp8_
 def build_app(session: ASRInferenceSession) -> gr.Blocks:
     current_session = {"value": session}
 
-    def load_session_for_checkpoint(checkpoint: str) -> str:
+    def load_session_for_checkpoint(checkpoint: str, checkpoint_metadata: str) -> str:
         checkpoint = checkpoint.strip() or DEFAULT_CHECKPOINT
+        checkpoint_metadata = checkpoint_metadata.strip()
         current_session["value"] = ASRInferenceSession(
             checkpoint,
             session.device,
             session.dtype,
+            checkpoint_metadata=checkpoint_metadata or None,
             fp8_recipe=session.fp8_recipe,
             chunk_duration_seconds=session.chunk_duration_seconds,
             chunk_overlap_seconds=session.chunk_overlap_seconds,
             long_form_threshold_seconds=session.long_form_threshold_seconds,
         )
-        return f"Loaded checkpoint: {current_session['value'].checkpoint_path}"
+        metadata_suffix = (
+            f" (metadata: {current_session['value'].checkpoint_metadata_path})"
+            if current_session["value"].checkpoint_metadata_path
+            else ""
+        )
+        return f"Loaded checkpoint: {current_session['value'].checkpoint_path}{metadata_suffix}"
 
     def transcribe_for_gradio(audio: str | tuple[int, list[float]] | None) -> str:
         if audio is None:
@@ -452,8 +489,20 @@ def build_app(session: ASRInferenceSession) -> gr.Blocks:
             label="Checkpoint",
             lines=1,
         )
+        checkpoint_metadata_input = gr.Textbox(
+            value=session.checkpoint_metadata_path or "",
+            label="Checkpoint Metadata",
+            lines=1,
+        )
         checkpoint_status = gr.Textbox(
-            value=f"Loaded checkpoint: {session.checkpoint_path}",
+            value=(
+                f"Loaded checkpoint: {session.checkpoint_path}"
+                + (
+                    f" (metadata: {session.checkpoint_metadata_path})"
+                    if session.checkpoint_metadata_path
+                    else ""
+                )
+            ),
             label="Checkpoint Status",
             interactive=False,
         )
@@ -463,7 +512,7 @@ def build_app(session: ASRInferenceSession) -> gr.Blocks:
         submit = gr.Button("Transcribe")
         load_checkpoint_button.click(
             fn=load_session_for_checkpoint,
-            inputs=checkpoint_input,
+            inputs=[checkpoint_input, checkpoint_metadata_input],
             outputs=checkpoint_status,
         )
         submit.click(fn=transcribe_for_gradio, inputs=audio_input, outputs=output)
@@ -479,6 +528,7 @@ def main() -> None:
         args.checkpoint,
         device,
         args.dtype,
+        checkpoint_metadata=args.checkpoint_metadata,
         fp8_recipe=fp8_recipe,
         chunk_duration_seconds=args.chunk_duration_seconds,
         chunk_overlap_seconds=args.chunk_overlap_seconds,

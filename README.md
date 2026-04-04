@@ -78,7 +78,8 @@ uv run python inference.py --gradio
 
 Useful flags:
 
-- `--checkpoint`: local checkpoint path, Hugging Face checkpoint URL, or Hugging Face repo id
+- `--checkpoint`: local `.pt` or `.safetensors` checkpoint path, Hugging Face checkpoint URL, or Hugging Face repo id
+- `--checkpoint-metadata`: optional JSON sidecar path for `.safetensors` checkpoints
 - `--device`: inference device such as `cpu` or `cuda:0`
 - `--dtype`: autocast dtype, for example `float32`, `bfloat16`, `float16`, or `fp8`
 - `--host`: Gradio bind host, default `127.0.0.1`
@@ -98,6 +99,20 @@ uv run python inference.py \
 The Gradio UI supports both uploaded audio files and live microphone recording. You can also
 paste a different checkpoint path, Hugging Face URL, or Hugging Face repo id into the app and reload it without
 restarting the server.
+
+When a Hugging Face repo id is provided, inference first looks for `checkpoint_best.pt` and then
+falls back to `checkpoint_best.safetensors` plus its metadata sidecar.
+
+Example: launch the Gradio app with a `.safetensors` checkpoint and explicit metadata
+
+```bash
+uv run python inference.py \
+  --gradio \
+  --checkpoint artifacts/cv22-sm/checkpoint_best.safetensors \
+  --checkpoint-metadata artifacts/cv22-sm/exported-metadata.json \
+  --host 0.0.0.0 \
+  --port 7860
+```
 
 ## Post-Training Quantization
 

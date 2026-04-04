@@ -29,19 +29,22 @@ def load_checkpoint(
     checkpoint_path: str | Path,
     *,
     map_location: str | torch.device = "cpu",
+    metadata_path: str | Path | None = None,
 ) -> dict[str, Any]:
     _register_legacy_main_aliases()
     checkpoint_path = Path(checkpoint_path)
     if checkpoint_path.suffix != ".safetensors":
         return torch.load(checkpoint_path, map_location=map_location, weights_only=False)
 
-    metadata_path = checkpoint_path.with_suffix(".json")
-    if not metadata_path.exists():
+    resolved_metadata_path = (
+        Path(metadata_path) if metadata_path is not None else checkpoint_path.with_suffix(".json")
+    )
+    if not resolved_metadata_path.exists():
         raise FileNotFoundError(
-            f"Missing metadata sidecar for safetensors checkpoint: {metadata_path}"
+            f"Missing metadata sidecar for safetensors checkpoint: {resolved_metadata_path}"
         )
 
-    checkpoint = json.loads(metadata_path.read_text(encoding="utf-8"))
+    checkpoint = json.loads(resolved_metadata_path.read_text(encoding="utf-8"))
     if "encoder_config" in checkpoint:
         from .model import SqueezeformerConfig
 
