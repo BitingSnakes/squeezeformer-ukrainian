@@ -1928,7 +1928,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--block-pattern", default="M,s,C,s")
     parser.add_argument(
         "--frontend-backend",
-        default="audioflux",
+        default="torchaudio",
         choices=["torchaudio", "audioflux"],
     )
     parser.add_argument("--n-fft", type=int, default=512)
