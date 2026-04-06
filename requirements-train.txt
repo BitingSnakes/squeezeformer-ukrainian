@@ -2,8 +2,6 @@ gradio>=5.38.0
 huggingface-hub>=0.34.0
 safetensors>=0.6.2
 sentencepiece>=0.2.0
-torch>=2.9.0,<=2.11.0
-transformer-engine[pytorch]>=2.13.0
 jiwer>=4.0.0
 polars>=1.30.0
 trackio>=0.20.2
