@@ -8,6 +8,8 @@ polars>=1.30.0
 trackio>=0.20.2
 transformers>=4.57.0
 
+transformer-engine[pytorch]>=2.13.0
+
 torch>=2.9.0,<=2.11.0
 
 torchaudio>=2.9.0,<=2.11.0
