@@ -38,6 +38,7 @@ fp8 = [
     "transformer-engine[pytorch]>=2.13.0",
 ]
 train = [
+    "pytorch-optimizer>=3.10.0",
     "jiwer>=4.0.0",
     "nvidia-npp>=13.1.0.44",
     "polars[rtcompat]>=1.39.3",
