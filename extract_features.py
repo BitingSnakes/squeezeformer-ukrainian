@@ -310,9 +310,7 @@ def _initialize_process_worker(
     waveform_augment_kwargs: dict[str, object] | None,
 ) -> None:
     global _WORKER_FEATURIZER, _WORKER_SPECAUGMENT, _WORKER_WAVEFORM_AUGMENT
-    torch.set_num_threads(1)
-    if hasattr(torch, "set_num_interop_threads"):
-        torch.set_num_interop_threads(1)
+    _configure_torch_threads()
     _WORKER_FEATURIZER = AudioFeaturizer(**featurizer_kwargs)
     _WORKER_SPECAUGMENT = SpecAugment(**specaugment_kwargs) if specaugment_kwargs else None
     _WORKER_WAVEFORM_AUGMENT = (
@@ -358,12 +356,20 @@ def iter_completed_futures(executor, records, num_workers: int, submit_task):
                 break
 
 
+def _configure_torch_threads() -> None:
+    torch.set_num_threads(1)
+    if hasattr(torch, "set_num_interop_threads"):
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError as exc:
+            if "cannot set number of interop threads" not in str(exc):
+                raise
+
+
 def main() -> None:
     global _WORKER_FEATURIZER, _WORKER_SPECAUGMENT, _WORKER_WAVEFORM_AUGMENT
     args = parse_args()
-    torch.set_num_threads(1)
-    if hasattr(torch, "set_num_interop_threads"):
-        torch.set_num_interop_threads(1)
+    _configure_torch_threads()
     dataset_sources = _resolve_sources(args.dataset_source, fallback=args.dataset_repo)
     validation_dataset_sources = _resolve_validation_dataset_sources(args)
     selected_sources, selected_split, selected_val_fraction, selected_test_fraction = (
