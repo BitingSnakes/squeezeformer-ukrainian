@@ -9,6 +9,7 @@ import logging
 import mmap
 import os
 import random
+import resource
 import struct
 import sys
 import time
@@ -253,6 +254,60 @@ def _format_elapsed_seconds(seconds: float) -> str:
         return f"{seconds:.1f}s"
     minutes, remainder = divmod(seconds, 60.0)
     return f"{int(minutes)}m {remainder:.1f}s"
+
+
+def _format_bytes(num_bytes: int) -> str:
+    value = float(num_bytes)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024.0 or unit == "TiB":
+            return f"{value:.1f}{unit}"
+        value /= 1024.0
+    return f"{num_bytes}B"
+
+
+def _read_proc_status_memory_bytes(field_name: str) -> int | None:
+    try:
+        with open("/proc/self/status", encoding="utf-8") as status_file:
+            for line in status_file:
+                if line.startswith(field_name):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return int(parts[1]) * 1024
+    except OSError:
+        return None
+    return None
+
+
+def _peak_process_memory_bytes() -> int | None:
+    try:
+        peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except (AttributeError, OSError, ValueError):
+        return None
+    if sys.platform == "darwin":
+        return int(peak_rss)
+    return int(peak_rss) * 1024
+
+
+def _format_memory_snapshot(device: torch.device) -> str:
+    memory_parts: list[str] = []
+    current_rss = _read_proc_status_memory_bytes("VmRSS:")
+    peak_rss = _read_proc_status_memory_bytes("VmHWM:")
+    if peak_rss is None:
+        peak_rss = _peak_process_memory_bytes()
+    if current_rss is not None:
+        memory_parts.append(f"cpu_rss={_format_bytes(current_rss)}")
+    if peak_rss is not None:
+        memory_parts.append(f"cpu_peak_rss={_format_bytes(peak_rss)}")
+    if device.type == "cuda" and torch.cuda.is_available():
+        memory_parts.extend(
+            (
+                f"cuda_allocated={_format_bytes(torch.cuda.memory_allocated(device))}",
+                f"cuda_reserved={_format_bytes(torch.cuda.memory_reserved(device))}",
+                f"cuda_peak_allocated={_format_bytes(torch.cuda.max_memory_allocated(device))}",
+                f"cuda_peak_reserved={_format_bytes(torch.cuda.max_memory_reserved(device))}",
+            )
+        )
+    return " ".join(memory_parts) if memory_parts else "memory=unavailable"
 
 
 def _validate_resume_checkpoint_payload(
@@ -2876,6 +2931,8 @@ def main() -> None:
 
     for epoch in range(start_epoch, args.epochs + 1):
         epoch_start_time = time.perf_counter()
+        if device.type == "cuda" and torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats(device)
         logger.info(
             "epoch %s/%s started train_batches=%s val_batches=%s grad_accumulation=%s",
             epoch,
@@ -3024,12 +3081,13 @@ def main() -> None:
                         f"learning_rate_{name}": optimizer.param_groups[0]["lr"]
                         for name, optimizer in zip(optimizer_names, optimizers, strict=True)
                     }
+                    memory_snapshot = _format_memory_snapshot(device)
                     logger.info(
                         (
                             "epoch=%s step=%s/%s global_step=%s train_loss=%.4f "
                             "train_main_ctc_loss=%.4f train_intermediate_ctc_loss=%.4f "
                             "train_aed_loss=%.4f train_liberta_distill_loss=%.4f "
-                            "grad_norm=%.4f %s"
+                            "grad_norm=%.4f %s %s"
                         ),
                         epoch,
                         batch_index,
@@ -3047,6 +3105,7 @@ def main() -> None:
                             liberta_distill_loss.item() if liberta_distill_loss is not None else 0.0
                         ),
                         grad_norm,
+                        memory_snapshot,
                         " ".join(f"{name}={value:.6g}" for name, value in learning_rates.items()),
                     )
                     trackio.log(
@@ -3070,6 +3129,32 @@ def main() -> None:
                             ),
                             "grad_norm": grad_norm,
                             "ema_decay": ema.current_decay() if ema is not None else 0.0,
+                            "cpu_rss_bytes": _read_proc_status_memory_bytes("VmRSS:") or 0,
+                            "cpu_peak_rss_bytes": (
+                                _read_proc_status_memory_bytes("VmHWM:")
+                                or _peak_process_memory_bytes()
+                                or 0
+                            ),
+                            "cuda_allocated_bytes": (
+                                torch.cuda.memory_allocated(device)
+                                if device.type == "cuda" and torch.cuda.is_available()
+                                else 0
+                            ),
+                            "cuda_reserved_bytes": (
+                                torch.cuda.memory_reserved(device)
+                                if device.type == "cuda" and torch.cuda.is_available()
+                                else 0
+                            ),
+                            "cuda_peak_allocated_bytes": (
+                                torch.cuda.max_memory_allocated(device)
+                                if device.type == "cuda" and torch.cuda.is_available()
+                                else 0
+                            ),
+                            "cuda_peak_reserved_bytes": (
+                                torch.cuda.max_memory_reserved(device)
+                                if device.type == "cuda" and torch.cuda.is_available()
+                                else 0
+                            ),
                             **learning_rates,
                         }
                     )
