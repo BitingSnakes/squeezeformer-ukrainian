@@ -422,6 +422,41 @@ class SqueezeformerCTC(nn.Module):
             else None
         )
 
+    def encode_with_intermediates(
+        self,
+        features: Tensor,
+        feature_lengths: Tensor,
+    ) -> tuple[Tensor, Tensor, dict[int, Tensor], dict[int, Tensor]]:
+        if not self.intermediate_classifiers and (
+            self.blank_prune_layer is None or self.blank_prune_threshold <= 0.0
+        ):
+            encoded, output_lengths = self.encoder(features, feature_lengths)
+            return encoded, output_lengths, {}, {}
+        return self.encoder.forward_with_intermediates(
+            features,
+            feature_lengths,
+            intermediate_layer_indices=self.intermediate_ctc_layers,
+            post_block_transforms=self._post_block_transforms(),
+        )
+
+    def ctc_log_probs_from_encoded(
+        self,
+        encoded: Tensor,
+        intermediate_encoded: dict[int, Tensor],
+    ) -> tuple[Tensor, dict[int, Tensor]]:
+        logits = apply_linear_with_fp8_padding(self.classifier, encoded)
+        intermediate_log_probs = {
+            layer_index: F.log_softmax(
+                apply_linear_with_fp8_padding(
+                    self.intermediate_classifiers[str(layer_index)],
+                    intermediate_encoded[layer_index],
+                ),
+                dim=-1,
+            )
+            for layer_index in self.intermediate_ctc_layers
+        }
+        return F.log_softmax(logits, dim=-1), intermediate_log_probs
+
     def _post_block_transforms(
         self,
     ) -> dict[int, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]]:
@@ -475,33 +510,15 @@ class SqueezeformerCTC(nn.Module):
         features: Tensor,
         feature_lengths: Tensor,
     ) -> tuple[Tensor, Tensor, dict[int, Tensor], dict[int, Tensor]]:
-        if not self.intermediate_classifiers and (
-            self.blank_prune_layer is None or self.blank_prune_threshold <= 0.0
-        ):
-            log_probs, output_lengths = self.log_probs(features, feature_lengths)
-            return log_probs, output_lengths, {}, {}
-
         encoded, output_lengths, intermediate_encoded, intermediate_lengths = (
-            self.encoder.forward_with_intermediates(
-                features,
-                feature_lengths,
-                intermediate_layer_indices=self.intermediate_ctc_layers,
-                post_block_transforms=self._post_block_transforms(),
-            )
+            self.encode_with_intermediates(features, feature_lengths)
         )
-        logits = apply_linear_with_fp8_padding(self.classifier, encoded)
-        intermediate_log_probs = {
-            layer_index: F.log_softmax(
-                apply_linear_with_fp8_padding(
-                    self.intermediate_classifiers[str(layer_index)],
-                    intermediate_encoded[layer_index],
-                ),
-                dim=-1,
-            )
-            for layer_index in self.intermediate_ctc_layers
-        }
+        log_probs, intermediate_log_probs = self.ctc_log_probs_from_encoded(
+            encoded,
+            intermediate_encoded,
+        )
         return (
-            F.log_softmax(logits, dim=-1),
+            log_probs,
             output_lengths,
             intermediate_log_probs,
             intermediate_lengths,
@@ -518,17 +535,20 @@ class SqueezeformerCTC(nn.Module):
     ) -> tuple[Tensor, Tensor, Tensor]:
         if self.aed_decoder is None:
             raise RuntimeError("AED decoder is disabled for this model.")
-        if self.blank_prune_layer is not None and self.blank_prune_threshold > 0.0:
-            encoded, output_lengths, _, _ = self.encoder.forward_with_intermediates(
-                features,
-                feature_lengths,
-                intermediate_layer_indices=(),
-                post_block_transforms=self._post_block_transforms(),
-            )
-        else:
-            encoded, output_lengths = self.encoder(features, feature_lengths)
+        encoded, output_lengths, _, _ = self.encode_with_intermediates(features, feature_lengths)
         logits, hidden = self.aed_decoder(encoded, output_lengths, decoder_inputs)
         return logits, output_lengths, hidden
+
+    def aed_from_encoded(
+        self,
+        encoded: Tensor,
+        output_lengths: Tensor,
+        decoder_inputs: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        if self.aed_decoder is None:
+            raise RuntimeError("AED decoder is disabled for this model.")
+        logits, hidden = self.aed_decoder(encoded, output_lengths, decoder_inputs)
+        return logits, hidden
 
     def project_aed_hidden_for_liberta(self, hidden: Tensor, lengths: Tensor) -> Tensor:
         if self.liberta_projection is None:

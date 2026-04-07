@@ -2534,8 +2534,12 @@ def evaluate(
                 decoder_target_lengths = None
 
             with _autocast_context(device, dtype, fp8_recipe=fp8_recipe):
-                log_probs, output_lengths, intermediate_log_probs, intermediate_output_lengths = (
-                    model.log_probs_with_intermediate(features, feature_lengths)
+                encoded, output_lengths, intermediate_encoded, intermediate_output_lengths = (
+                    model.encode_with_intermediates(features, feature_lengths)
+                )
+                log_probs, intermediate_log_probs = model.ctc_log_probs_from_encoded(
+                    encoded,
+                    intermediate_encoded,
                 )
                 main_ctc_loss = criterion(
                     log_probs.float().transpose(0, 1),
@@ -2561,9 +2565,9 @@ def evaluate(
                     intermediate_ctc_loss = None
                     combined_ctc_loss = main_ctc_loss
                 if decoder_inputs is not None and decoder_targets is not None:
-                    aed_logits, _, aed_hidden = model.aed_forward(
-                        features,
-                        feature_lengths,
+                    aed_logits, aed_hidden = model.aed_from_encoded(
+                        encoded,
+                        output_lengths,
                         decoder_inputs,
                     )
                     aed_loss = _aed_cross_entropy_loss(
@@ -3459,8 +3463,12 @@ def main() -> None:
                 decoder_target_lengths = None
 
             with _autocast_context(device, args.dtype, fp8_recipe=fp8_recipe):
-                log_probs, output_lengths, intermediate_log_probs, intermediate_output_lengths = (
-                    aux_model.log_probs_with_intermediate(features, feature_lengths)
+                encoded, output_lengths, intermediate_encoded, intermediate_output_lengths = (
+                    aux_model.encode_with_intermediates(features, feature_lengths)
+                )
+                log_probs, intermediate_log_probs = aux_model.ctc_log_probs_from_encoded(
+                    encoded,
+                    intermediate_encoded,
                 )
                 main_ctc_loss = criterion(
                     log_probs.float().transpose(0, 1),
@@ -3490,9 +3498,9 @@ def main() -> None:
                     and decoder_inputs is not None
                     and decoder_targets is not None
                 ):
-                    aed_logits, _, aed_hidden = aux_model.aed_forward(
-                        features,
-                        feature_lengths,
+                    aed_logits, aed_hidden = aux_model.aed_from_encoded(
+                        encoded,
+                        output_lengths,
                         decoder_inputs,
                     )
                     aed_loss = _aed_cross_entropy_loss(
