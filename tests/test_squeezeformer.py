@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import sys
+from io import BytesIO
 from dataclasses import asdict
 from pathlib import Path
 
@@ -1193,6 +1194,34 @@ def test_iter_manifest_rows_from_source_reads_single_manifest_file(tmp_path: Pat
         {"path": "a.wav", "sentence": "це тест", "duration": 0.3},
         {"path": "b.wav", "sentence": "мовна модель", "duration": 0.4},
     ]
+
+
+def test_iter_manifest_rows_from_source_caches_remote_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"path\tsentence\tduration\na.wav\tce test\t0.3\n"
+    calls: list[str] = []
+
+    class _FakeResponse(BytesIO):
+        def __enter__(self) -> "_FakeResponse":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            self.close()
+
+    def fake_urlopen(request):
+        calls.append(request.full_url)
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr("squeezeformer_pytorch.data.urlopen", fake_urlopen)
+    source_url = "https://example.com/train.tsv"
+
+    first_rows = list(iter_manifest_rows_from_source(source_url, cache_dir=tmp_path))
+    second_rows = list(iter_manifest_rows_from_source(source_url, cache_dir=tmp_path))
+
+    assert first_rows == [{"path": "a.wav", "sentence": "ce test", "duration": 0.3}]
+    assert second_rows == first_rows
+    assert calls == [source_url]
 
 
 def test_iter_cv22_records_from_source_matches_local_loader(tmp_path: Path) -> None:

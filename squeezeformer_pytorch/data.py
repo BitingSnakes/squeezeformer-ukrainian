@@ -4,6 +4,7 @@ import hashlib
 import io
 import logging
 import multiprocessing as mp
+import os
 import re
 import sys
 import wave
@@ -223,23 +224,67 @@ def _auth_headers(token: str | None) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
-def _read_remote_bytes(url: str, token: str | None = None) -> bytes:
+def _remote_source_cache_root(cache_dir: str | Path | None = None) -> Path:
+    if cache_dir is not None:
+        return Path(cache_dir).expanduser() / "remote_sources"
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+    base_cache_dir = (
+        Path(xdg_cache_home).expanduser()
+        if xdg_cache_home
+        else Path.home() / ".cache"
+    )
+    return base_cache_dir / "squeezeformer_pytorch" / "remote_sources"
+
+
+def _remote_source_cache_path(url: str, cache_dir: str | Path | None = None) -> Path:
+    parsed = urlparse(url)
+    suffix = Path(parsed.path).suffix
+    if not suffix:
+        suffix = ".bin"
+    cache_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
+    host_dir = parsed.netloc.replace(":", "_") or "remote"
+    return _remote_source_cache_root(cache_dir) / host_dir / f"{cache_key}{suffix}"
+
+
+def _read_remote_bytes(
+    url: str,
+    token: str | None = None,
+    *,
+    cache_dir: str | Path | None = None,
+) -> bytes:
+    cache_path = _remote_source_cache_path(url, cache_dir)
+    if cache_path.exists():
+        return cache_path.read_bytes()
     request = Request(url, headers=_auth_headers(token))
     with urlopen(request) as response:
-        return response.read()
+        payload = response.read()
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    temp_path.write_bytes(payload)
+    temp_path.replace(cache_path)
+    return payload
 
 
-def read_binary_source(path_or_url: str, token: str | None = None) -> bytes:
+def read_binary_source(
+    path_or_url: str,
+    token: str | None = None,
+    *,
+    cache_dir: str | Path | None = None,
+) -> bytes:
     if _is_url(path_or_url):
-        return _read_remote_bytes(path_or_url, token=token)
+        return _read_remote_bytes(path_or_url, token=token, cache_dir=cache_dir)
     return Path(path_or_url).read_bytes()
 
 
 def _iter_remote_rows(
-    source_url: str, *, token: str | None, batch_size: int
+    source_url: str,
+    *,
+    token: str | None,
+    batch_size: int,
+    cache_dir: str | Path | None = None,
 ) -> Iterable[dict[str, Any]]:
     suffix = Path(urlparse(source_url).path).suffix.lower()
-    payload = io.BytesIO(_read_remote_bytes(source_url, token=token))
+    payload = io.BytesIO(_read_remote_bytes(source_url, token=token, cache_dir=cache_dir))
     if suffix == ".tsv":
         reader = pl.read_csv_batched(
             payload,
@@ -322,6 +367,7 @@ def iter_manifest_rows_from_source(
     *,
     hf_token: str | None = None,
     batch_size: int = 8192,
+    cache_dir: str | Path | None = None,
 ) -> Iterable[dict[str, Any]]:
     source_path = Path(source).expanduser()
     if source_path.exists():
@@ -333,11 +379,21 @@ def iter_manifest_rows_from_source(
 
     source_text = str(source)
     if _is_url(source_text):
-        yield from _iter_remote_rows(source_text, token=hf_token, batch_size=batch_size)
+        yield from _iter_remote_rows(
+            source_text,
+            token=hf_token,
+            batch_size=batch_size,
+            cache_dir=cache_dir,
+        )
         return
     if _is_probable_hf_dataset_repo(source_text):
         for manifest_url in _iter_repo_manifest_urls(source_text, token=hf_token):
-            yield from _iter_remote_rows(manifest_url, token=hf_token, batch_size=batch_size)
+            yield from _iter_remote_rows(
+                manifest_url,
+                token=hf_token,
+                batch_size=batch_size,
+                cache_dir=cache_dir,
+            )
         return
     raise FileNotFoundError(f"Dataset source does not exist or is unsupported: {source_text}")
 
@@ -700,12 +756,17 @@ def iter_cv22_records_from_source(
     max_audio_duration_sec: float = 30.0,
     lowercase_transcripts: bool = True,
     hf_token: str | None = None,
+    cache_dir: str | Path | None = None,
 ) -> Iterable[CVRecord]:
     summary = LoaderSummary()
     found_usable_record = False
 
     try:
-        for row in iter_manifest_rows_from_source(source, hf_token=hf_token):
+        for row in iter_manifest_rows_from_source(
+            source,
+            hf_token=hf_token,
+            cache_dir=cache_dir,
+        ):
             summary.scanned += 1
             record = _build_cv_record(
                 row,

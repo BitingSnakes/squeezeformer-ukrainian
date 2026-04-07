@@ -632,6 +632,7 @@ def _build_disk_backed_record_store(
     min_audio_duration_sec: float = 0.01,
     max_audio_duration_sec: float = 30.0,
     hf_token: str | None = None,
+    cache_dir: str | None = None,
 ) -> DiskBackedRecordStore:
     records_path.parent.mkdir(parents=True, exist_ok=True)
     audio_blob_dir = records_path.parent / f"{records_path.stem}_audio_blobs"
@@ -681,13 +682,18 @@ def _build_disk_backed_record_store(
                     max_audio_duration_sec=max_audio_duration_sec,
                     lowercase_transcripts=lowercase_transcripts,
                     hf_token=hf_token,
+                    cache_dir=cache_dir,
                 )
             )
             for record in record_iterator:
                 audio_bytes = record.audio_bytes
                 if audio_bytes is None and record.audio_path is not None:
                     try:
-                        audio_bytes = read_binary_source(record.audio_path, token=hf_token)
+                        audio_bytes = read_binary_source(
+                            record.audio_path,
+                            token=hf_token,
+                            cache_dir=cache_dir,
+                        )
                     except Exception:
                         audio_bytes = None
                 preserve_audio_bytes = audio_bytes is not None and not (
@@ -854,6 +860,7 @@ def _load_records_from_dataset_roots(
     min_audio_duration_sec: float = 0.01,
     max_audio_duration_sec: float = 30.0,
     hf_token: str | None = None,
+    cache_dir: str | None = None,
 ) -> list:
     records = []
     for dataset_source in dataset_sources:
@@ -894,6 +901,7 @@ def _load_records_from_dataset_roots(
                 max_audio_duration_sec=max_audio_duration_sec,
                 lowercase_transcripts=lowercase_transcripts,
                 hf_token=hf_token,
+                cache_dir=cache_dir,
             )
         )
         records.extend(iterator)
@@ -941,6 +949,7 @@ def _load_train_val_records(
             "max_symbol_ratio": args.max_symbol_ratio,
             "lowercase_transcripts": lowercase_transcripts,
             "hf_token": args.hf_token,
+            "cache_dir": args.cache_dir,
         }
         if hasattr(args, "min_audio_duration_sec"):
             common_record_store_kwargs["min_audio_duration_sec"] = args.min_audio_duration_sec
@@ -983,6 +992,7 @@ def _load_train_val_records(
         "max_symbol_ratio": args.max_symbol_ratio,
         "lowercase_transcripts": lowercase_transcripts,
         "hf_token": args.hf_token,
+        "cache_dir": args.cache_dir,
     }
     if hasattr(args, "min_audio_duration_sec"):
         common_load_kwargs["min_audio_duration_sec"] = args.min_audio_duration_sec
