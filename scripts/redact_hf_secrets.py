@@ -67,7 +67,7 @@ def iter_target_files(paths: list[Path]) -> list[Path]:
 def scrub_file(path: Path) -> bool:
     try:
         original = path.read_text(encoding="utf-8")
-    except OSError, UnicodeDecodeError:
+    except (OSError, UnicodeDecodeError):
         return False
 
     if path.suffix.lower() == ".json":

@@ -20,7 +20,7 @@ except ImportError:
 
 try:
     import transformer_engine.pytorch as te
-except ImportError, OSError:
+except (ImportError, OSError):
     te = None
 
 
