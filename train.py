@@ -1927,7 +1927,11 @@ def _average_topk_checkpoints(output_dir: Path) -> Path | None:
     return averaged_path
 
 
-def _build_split_audit(split_records: dict[str, list]) -> dict[str, object]:
+def _build_split_audit(
+    split_records: dict[str, list[CVRecord] | DiskBackedRecordStore],
+    *,
+    hop_length: int,
+) -> dict[str, object]:
     speaker_sets = {
         split_name: {
             record.speaker_id for record in records if record.has_speaker_id and record.speaker_id
@@ -1939,6 +1943,7 @@ def _build_split_audit(split_records: dict[str, list]) -> dict[str, object]:
             "samples": len(records),
             "speakers": len(speaker_sets[split_name]),
             "records_with_speaker_id": sum(int(record.has_speaker_id) for record in records),
+            "hours": _record_store_duration_hours(records, hop_length=hop_length),
         }
         for split_name, records in split_records.items()
     }
@@ -1954,6 +1959,10 @@ def _build_split_audit(split_records: dict[str, list]) -> dict[str, object]:
     )
     return {
         "counts": counts,
+        "hours": {
+            split_name: item["hours"] for split_name, item in counts.items()
+        },
+        "total_hours": sum(float(item["hours"]) for item in counts.values()),
         "speaker_overlaps": overlaps,
         "speaker_balance_ratio": balance_ratio,
         "speaker_id_available": all(
@@ -2726,7 +2735,10 @@ def main() -> None:
     )
     _ensure_opus_decode_support(train_records, split="train")
     _ensure_opus_decode_support(val_records, split="validation")
-    split_audit = _build_split_audit({"train": train_records, "validation": val_records})
+    split_audit = _build_split_audit(
+        {"train": train_records, "validation": val_records},
+        hop_length=args.hop_length,
+    )
     if is_main_process:
         (output_dir / "split_audit.json").write_text(
             json.dumps(split_audit, indent=2),
