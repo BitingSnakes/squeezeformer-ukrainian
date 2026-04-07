@@ -21,6 +21,7 @@ from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import urlparse
 import torch
 import torch.distributed as dist
 import trackio
@@ -134,9 +135,10 @@ class SchedulerDefaults(NamedTuple):
 class FrozenLibertaTeacher:
     def __init__(
         self,
-        model_name: str,
+        model_source: str,
         *,
         device: torch.device,
+        dtype: torch.dtype,
         max_length: int = 256,
     ) -> None:
         if AutoModel is None or AutoTokenizer is None:
@@ -147,16 +149,20 @@ class FrozenLibertaTeacher:
         self.max_length = max_length
         tokenizer_kwargs = {"trust_remote_code": True}
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name, **tokenizer_kwargs)
+            self.tokenizer = AutoTokenizer.from_pretrained(model_source, **tokenizer_kwargs)
         except ValueError:
             # Some Ukrainian checkpoints expose only custom slow tokenizer code.
             self.tokenizer = AutoTokenizer.from_pretrained(
-                model_name,
+                model_source,
                 use_fast=False,
                 **tokenizer_kwargs,
             )
-        self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
-        self.model.to(device)
+        self.model = AutoModel.from_pretrained(
+            model_source,
+            trust_remote_code=True,
+            torch_dtype=dtype,
+        )
+        self.model.to(device=device, dtype=dtype)
         self.model.eval()
         for parameter in self.model.parameters():
             parameter.requires_grad_(False)
@@ -580,6 +586,12 @@ def _validate_startup_args(args: argparse.Namespace, *, world_size: int) -> None
             "--tokenizer-path",
             args.tokenizer_path,
             expected="file",
+        )
+    if args.liberta_model_path is not None:
+        _validate_existing_local_path_argument(
+            "--liberta-model-path",
+            args.liberta_model_path,
+            expected="dir",
         )
 
     for source in args.dataset_source or []:
@@ -1421,7 +1433,7 @@ def _resolve_liberta_settings(
     checkpoint: dict[str, object] | None,
     *,
     aed_enabled: bool,
-) -> tuple[bool, str, float, int]:
+) -> tuple[bool, str, str | None, float, int]:
     checkpoint_args = checkpoint.get("training_args", {}) if checkpoint is not None else {}
     checkpoint_enabled = checkpoint_args.get("liberta_distill")
 
@@ -1429,29 +1441,33 @@ def _resolve_liberta_settings(
         return (
             False,
             args.liberta_model_name,
+            args.liberta_model_path,
             float(args.liberta_distill_weight),
             int(args.liberta_max_length),
         )
     if args.liberta_distill is None and checkpoint is not None and checkpoint_enabled is not None:
         enabled = bool(checkpoint_enabled)
         model_name = str(checkpoint_args.get("liberta_model_name", args.liberta_model_name))
+        checkpoint_model_path = checkpoint_args.get("liberta_model_path", args.liberta_model_path)
+        model_path = str(checkpoint_model_path) if checkpoint_model_path is not None else None
         weight = float(checkpoint_args.get("liberta_distill_weight", args.liberta_distill_weight))
         max_length = int(checkpoint_args.get("liberta_max_length", args.liberta_max_length))
     else:
         enabled = bool(args.liberta_distill) if args.liberta_distill is not None else False
         model_name = args.liberta_model_name
+        model_path = args.liberta_model_path
         weight = float(args.liberta_distill_weight)
         max_length = int(args.liberta_max_length)
 
     if enabled and not aed_enabled:
         raise ValueError("LiBERTa distillation requires --aed-decoder.")
     if not enabled:
-        return False, model_name, weight, max_length
+        return False, model_name, model_path, weight, max_length
     if weight <= 0.0:
         raise ValueError(
             "--liberta-distill-weight must be > 0 when LiBERTa distillation is enabled."
         )
-    return True, model_name, weight, max_length
+    return True, model_name, model_path, weight, max_length
 
 
 def _build_aed_targets(
@@ -1686,6 +1702,13 @@ def _resolve_autocast_dtype(dtype: DTypeChoice) -> torch.dtype | None:
     if dtype == DTypeChoice.FP8:
         return torch.bfloat16
     raise ValueError(f"Unsupported dtype: {dtype}")
+
+
+def _resolve_model_load_dtype(dtype: DTypeChoice) -> torch.dtype:
+    autocast_dtype = _resolve_autocast_dtype(dtype)
+    if autocast_dtype is not None:
+        return autocast_dtype
+    return torch.float32
 
 
 def _resolve_fp8_format(name: str):
@@ -2164,6 +2187,14 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
     parser.add_argument("--liberta-model-name", default="Goader/liberta-large-v2")
+    parser.add_argument(
+        "--liberta-model-path",
+        default=None,
+        help=(
+            "Local directory containing a LiBERTa model/tokenizer to load with "
+            "transformers.from_pretrained(). Overrides --liberta-model-name when set."
+        ),
+    )
     parser.add_argument("--liberta-distill-weight", type=float, default=0.05)
     parser.add_argument("--liberta-max-length", type=int, default=256)
     parser.add_argument("--blank-prune-layer", type=int, default=None)
@@ -2949,12 +2980,16 @@ def main() -> None:
         aed_decoder_dropout,
         aed_loss_weight,
     ) = _resolve_aed_settings(args, checkpoint)
-    liberta_distill_enabled, liberta_model_name, liberta_distill_weight, liberta_max_length = (
-        _resolve_liberta_settings(
-            args,
-            checkpoint,
-            aed_enabled=aed_decoder_enabled,
-        )
+    (
+        liberta_distill_enabled,
+        liberta_model_name,
+        liberta_model_path,
+        liberta_distill_weight,
+        liberta_max_length,
+    ) = _resolve_liberta_settings(
+        args,
+        checkpoint,
+        aed_enabled=aed_decoder_enabled,
     )
     blank_prune_layer, blank_prune_threshold, blank_prune_min_keep_frames = (
         _resolve_blank_pruning_settings(args, encoder_config, checkpoint)
@@ -2972,6 +3007,7 @@ def main() -> None:
     args.aed_loss_weight = aed_loss_weight
     args.liberta_distill = liberta_distill_enabled
     args.liberta_model_name = liberta_model_name
+    args.liberta_model_path = liberta_model_path
     args.liberta_distill_weight = liberta_distill_weight
     args.liberta_max_length = liberta_max_length
     args.blank_prune = blank_prune_layer is not None and blank_prune_threshold > 0.0
@@ -3062,8 +3098,11 @@ def main() -> None:
     criterion = nn.CTCLoss(blank=tokenizer.blank_id, zero_infinity=True)
     liberta_teacher = (
         FrozenLibertaTeacher(
-            liberta_model_name,
+            str(Path(liberta_model_path).expanduser().resolve())
+            if liberta_model_path is not None
+            else liberta_model_name,
             device=device,
+            dtype=_resolve_model_load_dtype(args.dtype),
             max_length=liberta_max_length,
         )
         if liberta_distill_enabled
