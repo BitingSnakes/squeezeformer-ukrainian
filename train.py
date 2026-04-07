@@ -1537,7 +1537,7 @@ def _aed_cross_entropy_loss(
     pad_id: int,
 ) -> Tensor:
     loss = F.cross_entropy(
-        logits.transpose(1, 2),
+        logits.float().transpose(1, 2),
         targets,
         ignore_index=pad_id,
         reduction="sum",
@@ -2519,7 +2519,7 @@ def evaluate(
                     model.log_probs_with_intermediate(features, feature_lengths)
                 )
                 main_ctc_loss = criterion(
-                    log_probs.transpose(0, 1),
+                    log_probs.float().transpose(0, 1),
                     targets,
                     output_lengths,
                     target_lengths,
@@ -2527,7 +2527,7 @@ def evaluate(
                 if intermediate_log_probs and intermediate_output_lengths:
                     intermediate_ctc_losses = [
                         criterion(
-                            intermediate_log_probs[layer_index].transpose(0, 1),
+                            intermediate_log_probs[layer_index].float().transpose(0, 1),
                             targets,
                             intermediate_output_lengths[layer_index],
                             target_lengths,
@@ -2568,8 +2568,8 @@ def evaluate(
                     decoder_target_lengths,
                 )
                 liberta_distill_loss = F.mse_loss(
-                    F.normalize(student_embeddings, dim=-1),
-                    F.normalize(teacher_embeddings, dim=-1),
+                    F.normalize(student_embeddings.float(), dim=-1),
+                    F.normalize(teacher_embeddings.float(), dim=-1),
                 )
                 loss = loss + (liberta_distill_weight * liberta_distill_loss)
             else:
@@ -3278,7 +3278,7 @@ def main() -> None:
                     aux_model.log_probs_with_intermediate(features, feature_lengths)
                 )
                 main_ctc_loss = criterion(
-                    log_probs.transpose(0, 1),
+                    log_probs.float().transpose(0, 1),
                     targets,
                     output_lengths,
                     target_lengths,
@@ -3286,7 +3286,7 @@ def main() -> None:
                 if intermediate_log_probs and intermediate_output_lengths:
                     intermediate_ctc_losses = [
                         criterion(
-                            intermediate_log_probs[layer_index].transpose(0, 1),
+                            intermediate_log_probs[layer_index].float().transpose(0, 1),
                             targets,
                             intermediate_output_lengths[layer_index],
                             target_lengths,
@@ -3330,8 +3330,8 @@ def main() -> None:
                     decoder_target_lengths,
                 )
                 liberta_distill_loss = F.mse_loss(
-                    F.normalize(student_embeddings, dim=-1),
-                    F.normalize(teacher_embeddings, dim=-1),
+                    F.normalize(student_embeddings.float(), dim=-1),
+                    F.normalize(teacher_embeddings.float(), dim=-1),
                 )
                 loss = loss + (args.liberta_distill_weight * liberta_distill_loss)
             else:
