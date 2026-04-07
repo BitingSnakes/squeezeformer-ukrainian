@@ -3064,6 +3064,7 @@ def main() -> None:
         )
     else:
         forward_model = torch.compile(model) if args.compile else model
+    aux_model = model
     use_grad_scaler = device.type == "cuda" and args.dtype == DTypeChoice.FLOAT16
     scaler = torch.amp.GradScaler("cuda", enabled=use_grad_scaler)
 
@@ -3244,7 +3245,7 @@ def main() -> None:
 
             with _autocast_context(device, args.dtype, fp8_recipe=fp8_recipe):
                 log_probs, output_lengths, intermediate_log_probs, intermediate_output_lengths = (
-                    forward_model.log_probs_with_intermediate(features, feature_lengths)
+                    aux_model.log_probs_with_intermediate(features, feature_lengths)
                 )
                 main_ctc_loss = criterion(
                     log_probs.transpose(0, 1),
@@ -3274,7 +3275,7 @@ def main() -> None:
                     and decoder_inputs is not None
                     and decoder_targets is not None
                 ):
-                    aed_logits, _, aed_hidden = forward_model.aed_forward(
+                    aed_logits, _, aed_hidden = aux_model.aed_forward(
                         features,
                         feature_lengths,
                         decoder_inputs,
@@ -3294,7 +3295,7 @@ def main() -> None:
                 and decoder_target_lengths is not None
             ):
                 teacher_embeddings = liberta_teacher.encode(batch["transcripts"])
-                student_embeddings = forward_model.project_aed_hidden_for_liberta(
+                student_embeddings = aux_model.project_aed_hidden_for_liberta(
                     aed_hidden,
                     decoder_target_lengths,
                 )
