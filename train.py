@@ -112,6 +112,14 @@ def _distributed_min_int(value: int, *, device: torch.device, distributed: bool)
     return int(reduced.item())
 
 
+def _distributed_max_int(value: int, *, device: torch.device, distributed: bool) -> int:
+    if not distributed or not dist.is_initialized():
+        return value
+    reduced = torch.tensor(value, device=device, dtype=torch.int64)
+    dist.all_reduce(reduced, op=dist.ReduceOp.MAX)
+    return int(reduced.item())
+
+
 def main() -> None:
     args = parse_args()
     process_start_time = time.perf_counter()
@@ -237,22 +245,36 @@ def main() -> None:
         checkpoint is not None,
         args.tokenizer_path or "auto",
     )
+    tokenizer_path = output_dir / "tokenizer.json"
     if checkpoint is not None:
         tokenizer = tokenizer_from_dict(checkpoint["tokenizer"])
     elif args.tokenizer_path is not None:
         tokenizer = load_tokenizer(args.tokenizer_path)
     elif args.tokenizer == "sentencepiece":
-        tokenizer = SentencePieceTokenizer.train(
-            (record.transcript for record in train_records),
-            model_prefix=output_dir / "tokenizer",
-            vocab_size=args.spm_vocab_size,
-            model_type=args.spm_model_type,
-        )
-        tokenizer.save(output_dir / "tokenizer.model")
+        sentencepiece_model_path = output_dir / "tokenizer.model"
+        if not distributed or is_main_process:
+            tokenizer = SentencePieceTokenizer.train(
+                (record.transcript for record in train_records),
+                model_prefix=output_dir / "tokenizer",
+                vocab_size=args.spm_vocab_size,
+                model_type=args.spm_model_type,
+            )
+            tokenizer.save(sentencepiece_model_path)
+            tokenizer.save(tokenizer_path)
+        if distributed:
+            dist.barrier()
+        if distributed and not is_main_process:
+            tokenizer = load_tokenizer(sentencepiece_model_path)
     else:
-        tokenizer = CharacterTokenizer.build(record.transcript for record in train_records)
-    tokenizer_path = output_dir / "tokenizer.json"
-    tokenizer.save(tokenizer_path)
+        if not distributed or is_main_process:
+            tokenizer = CharacterTokenizer.build(record.transcript for record in train_records)
+            tokenizer.save(tokenizer_path)
+        if distributed:
+            dist.barrier()
+        if distributed and not is_main_process:
+            tokenizer = load_tokenizer(tokenizer_path)
+    if checkpoint is not None or args.tokenizer_path is not None:
+        tokenizer.save(tokenizer_path)
     logger.info(
         "tokenizer ready vocab_size=%s elapsed=%s",
         tokenizer.vocab_size,
@@ -260,18 +282,23 @@ def main() -> None:
     )
     if args.fit_shallow_fusion_lm:
         stage_start_time = time.perf_counter()
-        logger.info(
-            "training shallow-fusion LM order=%s alpha=%.3f",
-            args.shallow_fusion_lm_order,
-            args.shallow_fusion_lm_alpha,
-        )
-        shallow_fusion_lm = NGramLanguageModel.train(
-            (record.transcript for record in train_records),
-            order=args.shallow_fusion_lm_order,
-            alpha=args.shallow_fusion_lm_alpha,
-        )
         shallow_fusion_lm_path = output_dir / "shallow_fusion_lm.json"
-        shallow_fusion_lm.save(shallow_fusion_lm_path)
+        if not distributed or is_main_process:
+            logger.info(
+                "training shallow-fusion LM order=%s alpha=%.3f",
+                args.shallow_fusion_lm_order,
+                args.shallow_fusion_lm_alpha,
+            )
+            shallow_fusion_lm = NGramLanguageModel.train(
+                (record.transcript for record in train_records),
+                order=args.shallow_fusion_lm_order,
+                alpha=args.shallow_fusion_lm_alpha,
+            )
+            shallow_fusion_lm.save(shallow_fusion_lm_path)
+        if distributed:
+            dist.barrier()
+        if distributed and not is_main_process:
+            shallow_fusion_lm = NGramLanguageModel.load(shallow_fusion_lm_path)
         if lm_scorer is None:
             lm_scorer = shallow_fusion_lm.score_extension
         logger.info(
@@ -513,7 +540,7 @@ def main() -> None:
     )
     optimizer_steps_per_epoch = max(
         1,
-        (len(train_loader) + args.gradient_accumulation_steps - 1)
+        (train_batches + args.gradient_accumulation_steps - 1)
         // args.gradient_accumulation_steps,
     )
     optimizers, optimizer_names = build_optimizer(
@@ -809,39 +836,75 @@ def main() -> None:
                     )
 
                 if is_main_process and global_step % args.log_every == 0:
+                    train_loss_step = _distributed_mean(
+                        float(loss.item()),
+                        device=device,
+                        distributed=distributed,
+                    )
+                    train_main_ctc_loss_step = _distributed_mean(
+                        float(main_ctc_loss.item()),
+                        device=device,
+                        distributed=distributed,
+                    )
+                    train_intermediate_ctc_loss_step = _distributed_mean(
+                        float(intermediate_ctc_loss.item() if intermediate_ctc_loss is not None else 0.0),
+                        device=device,
+                        distributed=distributed,
+                    )
+                    train_aed_loss_step = _distributed_mean(
+                        float(aed_loss.item() if aed_loss is not None else 0.0),
+                        device=device,
+                        distributed=distributed,
+                    )
+                    train_liberta_distill_loss_step = _distributed_mean(
+                        float(
+                            liberta_distill_loss.item() if liberta_distill_loss is not None else 0.0
+                        ),
+                        device=device,
+                        distributed=distributed,
+                    )
+                    grad_norm = _distributed_mean(
+                        grad_norm,
+                        device=device,
+                        distributed=distributed,
+                    )
+                    batch_audio_minutes = _distributed_mean(
+                        _frames_to_minutes(
+                            tune_effective_frames,
+                            hop_length=args.hop_length,
+                        ),
+                        device=device,
+                        distributed=distributed,
+                    )
+                    max_feature_frames = _distributed_max_int(
+                        int(feature_lengths.max().item()),
+                        device=device,
+                        distributed=distributed,
+                    )
                     learning_rates = {
                         f"learning_rate_{name}": optimizer.param_groups[0]["lr"]
                         for name, optimizer in zip(optimizer_names, optimizers, strict=True)
                     }
                     memory_snapshot = _format_memory_snapshot(device)
-                    batch_audio_minutes = _frames_to_minutes(
-                        tune_effective_frames,
-                        hop_length=args.hop_length,
-                    )
                     logger.info(
                         (
                             "epoch=%s step=%s/%s global_step=%s train_loss=%.4f "
                             "train_main_ctc_loss=%.4f train_intermediate_ctc_loss=%.4f "
                             "train_aed_loss=%.4f train_liberta_distill_loss=%.4f "
-                            "batch_audio_minutes=%.2f grad_norm=%.4f %s %s"
+                            "batch_audio_minutes=%.2f grad_norm=%.4f max_feature_frames=%s %s %s"
                         ),
                         epoch,
                         batch_index,
                         train_batches,
                         global_step,
-                        float(loss.item()),
-                        float(main_ctc_loss.item()),
-                        float(
-                            intermediate_ctc_loss.item()
-                            if intermediate_ctc_loss is not None
-                            else 0.0
-                        ),
-                        float(aed_loss.item() if aed_loss is not None else 0.0),
-                        float(
-                            liberta_distill_loss.item() if liberta_distill_loss is not None else 0.0
-                        ),
+                        train_loss_step,
+                        train_main_ctc_loss_step,
+                        train_intermediate_ctc_loss_step,
+                        train_aed_loss_step,
+                        train_liberta_distill_loss_step,
                         batch_audio_minutes,
                         grad_norm,
+                        max_feature_frames,
                         memory_snapshot,
                         " ".join(f"{name}={value:.6g}" for name, value in learning_rates.items()),
                     )
@@ -849,22 +912,13 @@ def main() -> None:
                         {
                             "epoch": epoch,
                             "global_step": global_step,
-                            "train_loss_step": float(loss.item()),
-                            "train_main_ctc_loss_step": float(main_ctc_loss.item()),
-                            "train_intermediate_ctc_loss_step": float(
-                                intermediate_ctc_loss.item()
-                                if intermediate_ctc_loss is not None
-                                else 0.0
-                            ),
-                            "train_aed_loss_step": float(
-                                aed_loss.item() if aed_loss is not None else 0.0
-                            ),
-                            "train_liberta_distill_loss_step": float(
-                                liberta_distill_loss.item()
-                                if liberta_distill_loss is not None
-                                else 0.0
-                            ),
+                            "train_loss_step": train_loss_step,
+                            "train_main_ctc_loss_step": train_main_ctc_loss_step,
+                            "train_intermediate_ctc_loss_step": train_intermediate_ctc_loss_step,
+                            "train_aed_loss_step": train_aed_loss_step,
+                            "train_liberta_distill_loss_step": train_liberta_distill_loss_step,
                             "grad_norm": grad_norm,
+                            "train_max_feature_frames_step": max_feature_frames,
                             "ema_decay": ema.current_decay() if ema is not None else 0.0,
                             "cpu_rss_bytes": _read_proc_status_memory_bytes("VmRSS:") or 0,
                             "cpu_peak_rss_bytes": (
