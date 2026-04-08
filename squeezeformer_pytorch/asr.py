@@ -467,18 +467,37 @@ class SqueezeformerCTC(nn.Module):
         encoded: Tensor,
         intermediate_encoded: dict[int, Tensor],
     ) -> tuple[Tensor, dict[int, Tensor]]:
-        logits = apply_linear_with_fp8_padding(self.classifier, encoded)
         intermediate_log_probs = {
-            layer_index: F.log_softmax(
-                apply_linear_with_fp8_padding(
-                    self.intermediate_classifiers[str(layer_index)],
-                    intermediate_encoded[layer_index],
-                ),
-                dim=-1,
+            layer_index: self._chunked_log_probs_from_classifier(
+                self.intermediate_classifiers[str(layer_index)],
+                intermediate_encoded[layer_index],
             )
             for layer_index in self.intermediate_ctc_layers
         }
-        return F.log_softmax(logits, dim=-1), intermediate_log_probs
+        return self._chunked_log_probs_from_classifier(self.classifier, encoded), intermediate_log_probs
+
+    def _chunked_log_probs_from_classifier(self, classifier: nn.Module, x: Tensor) -> Tensor:
+        batch, time, _ = x.shape
+        vocab_size = getattr(classifier, "out_features", None)
+        if not isinstance(vocab_size, int) or vocab_size <= 0:
+            logits = apply_linear_with_fp8_padding(classifier, x)
+            return F.log_softmax(logits, dim=-1)
+
+        bytes_per_element = max(1, x.element_size())
+        target_elements = max(1, _BLANK_PRUNE_TARGET_BYTES // bytes_per_element)
+        chunk_batch = max(1, target_elements // max(1, time * vocab_size))
+        if chunk_batch >= batch:
+            logits = apply_linear_with_fp8_padding(classifier, x)
+            return F.log_softmax(logits, dim=-1)
+
+        log_probs = x.new_empty((batch, time, vocab_size))
+        start = 0
+        for chunk in x.split(chunk_batch, dim=0):
+            stop = start + chunk.size(0)
+            chunk_logits = apply_linear_with_fp8_padding(classifier, chunk)
+            log_probs[start:stop] = F.log_softmax(chunk_logits, dim=-1)
+            start = stop
+        return log_probs
 
     def _post_block_transforms(
         self,

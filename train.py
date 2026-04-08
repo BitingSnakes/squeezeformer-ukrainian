@@ -33,7 +33,6 @@ from squeezeformer_pytorch.data import (
 from squeezeformer_pytorch.lm import NGramLanguageModel
 from squeezeformer_pytorch.model import (
     SqueezeformerConfig,
-    apply_linear_with_fp8_padding,
     squeezeformer_variant,
 )
 from squeezeformer_pytorch.runtime_types import DTypeChoice
@@ -667,9 +666,10 @@ def main() -> None:
                 encoded, output_lengths, intermediate_encoded, intermediate_output_lengths = (
                     aux_model.encode_with_intermediates(features, feature_lengths)
                 )
-                main_logits = apply_linear_with_fp8_padding(aux_model.classifier, encoded)
-                main_log_probs = F.log_softmax(main_logits, dim=-1)
-                del main_logits
+                main_log_probs, intermediate_log_probs_map = aux_model.ctc_log_probs_from_encoded(
+                    encoded,
+                    intermediate_encoded,
+                )
                 main_ctc_loss = criterion(
                     main_log_probs.float().transpose(0, 1),
                     targets,
@@ -680,12 +680,7 @@ def main() -> None:
                 if intermediate_encoded and intermediate_output_lengths:
                     intermediate_ctc_losses = []
                     for layer_index in intermediate_ctc_layers:
-                        intermediate_logits = apply_linear_with_fp8_padding(
-                            aux_model.intermediate_classifiers[str(layer_index)],
-                            intermediate_encoded[layer_index],
-                        )
-                        intermediate_log_probs = F.log_softmax(intermediate_logits, dim=-1)
-                        del intermediate_logits
+                        intermediate_log_probs = intermediate_log_probs_map[layer_index]
                         intermediate_ctc_losses.append(
                             criterion(
                                 intermediate_log_probs.float().transpose(0, 1),
