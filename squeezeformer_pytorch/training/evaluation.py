@@ -222,23 +222,22 @@ def evaluate(
                 decoder_target_lengths = None
 
             with _autocast_context(device, dtype, fp8_recipe=fp8_recipe):
-                encoded, output_lengths, intermediate_encoded, intermediate_output_lengths = (
-                    model.encode_with_intermediates(features, feature_lengths)
-                )
-                log_probs, _ = model.ctc_log_probs_from_encoded(
-                    encoded,
-                    {},
-                )
-                main_ctc_loss, intermediate_ctc_losses_map = model.ctc_loss_from_encoded(
-                    encoded,
-                    output_lengths,
-                    targets,
-                    target_lengths,
+                forward_outputs = model(
+                    features,
+                    feature_lengths,
+                    return_training_outputs=True,
+                    targets=targets,
+                    target_lengths=target_lengths,
                     blank_id=tokenizer.blank_id,
-                    intermediate_encoded=intermediate_encoded,
-                    intermediate_output_lengths=intermediate_output_lengths,
+                    return_main_log_probs=True,
+                    decoder_inputs=decoder_inputs,
                 )
-                if intermediate_ctc_losses_map and intermediate_output_lengths:
+                encoded = forward_outputs["encoded"]
+                output_lengths = forward_outputs["output_lengths"]
+                log_probs = forward_outputs["main_log_probs"]
+                main_ctc_loss = forward_outputs["main_ctc_loss"]
+                intermediate_ctc_losses_map = forward_outputs["intermediate_ctc_losses"]
+                if intermediate_ctc_losses_map:
                     intermediate_ctc_loss = torch.stack(
                         [intermediate_ctc_losses_map[layer_index] for layer_index in model.intermediate_ctc_layers]
                     ).mean()
@@ -248,12 +247,9 @@ def evaluate(
                 else:
                     intermediate_ctc_loss = None
                     combined_ctc_loss = main_ctc_loss
-                if decoder_inputs is not None and decoder_targets is not None:
-                    aed_logits, aed_hidden = model.aed_from_encoded(
-                        encoded,
-                        output_lengths,
-                        decoder_inputs,
-                    )
+                aed_logits = forward_outputs.get("aed_logits")
+                aed_hidden = forward_outputs.get("aed_hidden")
+                if aed_logits is not None and decoder_targets is not None:
                     aed_loss = _aed_cross_entropy_loss(
                         aed_logits,
                         decoder_targets,

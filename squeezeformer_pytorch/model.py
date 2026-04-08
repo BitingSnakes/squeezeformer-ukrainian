@@ -988,6 +988,7 @@ class SqueezeformerEncoder(nn.Module):
         features: Tensor,
         lengths: Tensor,
         intermediate_layer_indices: tuple[int, ...] = (),
+        intermediate_layer_callback: Callable[[int, Tensor, Tensor], None] | None = None,
         post_block_transforms: dict[int, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]]
         | None = None,
     ) -> tuple[Tensor, Tensor, dict[int, Tensor], dict[int, Tensor]]:
@@ -1060,8 +1061,11 @@ class SqueezeformerEncoder(nn.Module):
                 x = block(x, pos=pos, attn_mask=attn_mask, pad_mask=pad_mask)
             x = x[:, : int(lengths.max().item()), :]
             if layer_index in intermediate_layer_indices:
-                intermediate_xs[layer_index] = x
-                intermediate_lengths[layer_index] = lengths
+                if intermediate_layer_callback is not None:
+                    intermediate_layer_callback(layer_index, x, lengths)
+                else:
+                    intermediate_xs[layer_index] = x
+                    intermediate_lengths[layer_index] = lengths
             if layer_index in post_block_transforms:
                 x, lengths = post_block_transforms[layer_index](x, lengths)
                 x = x[:, : int(lengths.max().item()), :]
@@ -1071,6 +1075,24 @@ class SqueezeformerEncoder(nn.Module):
     def forward(self, features: Tensor, lengths: Tensor) -> tuple[Tensor, Tensor]:
         x, lengths, _, _ = self._forward_impl(features, lengths)
         return x, lengths
+
+    def forward_with_intermediate_callback(
+        self,
+        features: Tensor,
+        lengths: Tensor,
+        intermediate_layer_indices: tuple[int, ...],
+        intermediate_layer_callback: Callable[[int, Tensor, Tensor], None],
+        post_block_transforms: dict[int, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]]
+        | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        x, output_lengths, _, _ = self._forward_impl(
+            features,
+            lengths,
+            intermediate_layer_indices=intermediate_layer_indices,
+            intermediate_layer_callback=intermediate_layer_callback,
+            post_block_transforms=post_block_transforms,
+        )
+        return x, output_lengths
 
     def forward_with_intermediates(
         self,
@@ -1084,6 +1106,7 @@ class SqueezeformerEncoder(nn.Module):
             features,
             lengths,
             intermediate_layer_indices=intermediate_layer_indices,
+            intermediate_layer_callback=None,
             post_block_transforms=post_block_transforms,
         )
         missing_indices = [

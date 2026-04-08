@@ -462,6 +462,41 @@ class SqueezeformerCTC(nn.Module):
             post_block_transforms=self._post_block_transforms(),
         )
 
+    def encode_with_online_intermediate_ctc_losses(
+        self,
+        features: Tensor,
+        feature_lengths: Tensor,
+        targets: Tensor,
+        target_lengths: Tensor,
+        *,
+        blank_id: int,
+    ) -> tuple[Tensor, Tensor, dict[int, Tensor]]:
+        intermediate_ctc_losses: dict[int, Tensor] = {}
+        if not self.intermediate_classifiers and (
+            self.blank_prune_layer is None or self.blank_prune_threshold <= 0.0
+        ):
+            encoded, output_lengths = self.encoder(features, feature_lengths)
+            return encoded, output_lengths, intermediate_ctc_losses
+
+        def accumulate_intermediate_ctc_loss(layer_index: int, x: Tensor, lengths: Tensor) -> None:
+            intermediate_ctc_losses[layer_index] = self._chunked_ctc_loss_from_classifier(
+                self.intermediate_classifiers[str(layer_index)],
+                x,
+                lengths,
+                targets,
+                target_lengths,
+                blank_id=blank_id,
+            )
+
+        encoded, output_lengths = self.encoder.forward_with_intermediate_callback(
+            features,
+            feature_lengths,
+            intermediate_layer_indices=self.intermediate_ctc_layers,
+            intermediate_layer_callback=accumulate_intermediate_ctc_loss,
+            post_block_transforms=self._post_block_transforms(),
+        )
+        return encoded, output_lengths, intermediate_ctc_losses
+
     def ctc_log_probs_from_encoded(
         self,
         encoded: Tensor,
@@ -662,18 +697,48 @@ class SqueezeformerCTC(nn.Module):
         feature_lengths: Tensor,
         *,
         return_training_outputs: bool = False,
+        targets: Tensor | None = None,
+        target_lengths: Tensor | None = None,
+        blank_id: int | None = None,
+        return_main_log_probs: bool = False,
         decoder_inputs: Tensor | None = None,
     ) -> tuple[Tensor, Tensor] | dict[str, Any]:
         if return_training_outputs or decoder_inputs is not None:
-            encoded, output_lengths, intermediate_encoded, intermediate_output_lengths = (
-                self.encode_with_intermediates(features, feature_lengths)
-            )
+            if targets is not None and target_lengths is not None and blank_id is not None:
+                encoded, output_lengths, intermediate_ctc_losses = (
+                    self.encode_with_online_intermediate_ctc_losses(
+                        features,
+                        feature_lengths,
+                        targets,
+                        target_lengths,
+                        blank_id=blank_id,
+                    )
+                )
+                main_ctc_loss = self._chunked_ctc_loss_from_classifier(
+                    self.classifier,
+                    encoded,
+                    output_lengths,
+                    targets,
+                    target_lengths,
+                    blank_id=blank_id,
+                )
+            else:
+                encoded, output_lengths, intermediate_encoded, intermediate_output_lengths = (
+                    self.encode_with_intermediates(features, feature_lengths)
+                )
+                intermediate_ctc_losses = {}
+                main_ctc_loss = None
             output: dict[str, Any] = {
                 "encoded": encoded,
                 "output_lengths": output_lengths,
-                "intermediate_encoded": intermediate_encoded,
-                "intermediate_output_lengths": intermediate_output_lengths,
+                "main_ctc_loss": main_ctc_loss,
+                "intermediate_ctc_losses": intermediate_ctc_losses,
             }
+            if return_main_log_probs:
+                output["main_log_probs"] = self._chunked_log_probs_from_classifier(
+                    self.classifier,
+                    encoded,
+                )
             if decoder_inputs is not None:
                 if self.aed_decoder is None:
                     raise RuntimeError("AED decoder is disabled for this model.")

@@ -677,24 +677,18 @@ def main() -> None:
                         features,
                         feature_lengths,
                         return_training_outputs=True,
+                        targets=targets,
+                        target_lengths=target_lengths,
+                        blank_id=tokenizer.blank_id,
                         decoder_inputs=decoder_inputs,
                     )
                     encoded = forward_outputs["encoded"]
                     output_lengths = forward_outputs["output_lengths"]
-                    intermediate_encoded = forward_outputs["intermediate_encoded"]
-                    intermediate_output_lengths = forward_outputs["intermediate_output_lengths"]
+                    main_ctc_loss = forward_outputs["main_ctc_loss"]
+                    intermediate_ctc_losses_map = forward_outputs["intermediate_ctc_losses"]
                     aed_logits = forward_outputs.get("aed_logits")
                     aed_hidden = forward_outputs.get("aed_hidden")
-                    main_ctc_loss, intermediate_ctc_losses_map = model.ctc_loss_from_encoded(
-                        encoded,
-                        output_lengths,
-                        targets,
-                        target_lengths,
-                        blank_id=tokenizer.blank_id,
-                        intermediate_encoded=intermediate_encoded,
-                        intermediate_output_lengths=intermediate_output_lengths,
-                    )
-                    if intermediate_encoded and intermediate_output_lengths:
+                    if intermediate_ctc_losses_map:
                         intermediate_ctc_loss = torch.stack(
                             [intermediate_ctc_losses_map[layer_index] for layer_index in intermediate_ctc_layers]
                         ).mean()
