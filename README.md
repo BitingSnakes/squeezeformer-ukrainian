@@ -428,6 +428,7 @@ uv run python hparam_tuner.py \
 depend on hardware or runtime pressure:
 
 - `--batch-size`
+- `--max-batch-duration-sec`
 - `--max-batch-frames`
 - `--gradient-accumulation-steps`
 - `--num-workers`
@@ -492,6 +493,7 @@ Additional data-quality and batching controls:
 - `--max-transcript-chars`
 - `--max-symbol-ratio`
 - `--max-batch-frames`
+- `--max-batch-duration-sec`
 - `--adaptive-batch-unit frames|tokens`
 - `--adaptive-batch-budget`
 - `--metadata-workers`

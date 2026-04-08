@@ -141,6 +141,10 @@ def _validate_startup_args(args: argparse.Namespace, *, world_size: int) -> None
     for name, value in nonnegative_float_arguments.items():
         if value is not None and value < 0:
             raise ValueError(f"{name} must be >= 0, got {value}.")
+    if args.max_batch_duration_sec is not None and args.max_batch_duration_sec <= 0:
+        raise ValueError(
+            f"--max-batch-duration-sec must be > 0, got {args.max_batch_duration_sec}."
+        )
 
     probability_arguments = {
         "--val-fraction": args.val_fraction,
@@ -310,6 +314,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-audio-duration-sec", type=float, default=0.01)
     parser.add_argument("--max-audio-duration-sec", type=float, default=30.0)
     parser.add_argument("--feature-cache-dir", default=None)
+    parser.add_argument(
+        "--max-batch-duration-sec",
+        type=float,
+        default=None,
+        help=(
+            "Cap each length-aware batch by summed audio duration in seconds. "
+            "Works with --longest-batches-first."
+        ),
+    )
     parser.add_argument("--max-batch-frames", type=int, default=None)
     parser.add_argument(
         "--adaptive-batch-unit",

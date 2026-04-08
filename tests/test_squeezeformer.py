@@ -28,6 +28,7 @@ from squeezeformer_pytorch.data import (
     ASRDataset,
     AudioFeaturizer,
     AudioRecord,
+    DurationBatchSampler,
     MaxFramesBatchSampler,
     SpecAugment,
     WaveformAugment,
@@ -809,6 +810,18 @@ def test_parse_args_supports_no_record_cache(monkeypatch: pytest.MonkeyPatch) ->
     assert args.record_cache is False
 
 
+def test_parse_args_supports_max_batch_duration_sec(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["train.py", "--device", "cpu", "--max-batch-duration-sec", "12.5"],
+    )
+
+    args = parse_args()
+
+    assert args.max_batch_duration_sec == 12.5
+
+
 def test_load_records_from_dataset_roots_combines_sources_with_global_limit(tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -1320,6 +1333,124 @@ def test_max_frames_batch_sampler_respects_frame_budget() -> None:
     for batch in batches:
         max_frames = max(records[index].estimated_frames for index in batch)
         assert len(batch) * max_frames <= 90
+
+
+def test_duration_batch_sampler_respects_duration_budget() -> None:
+    records = [
+        AudioRecord(
+            None,
+            None,
+            "a",
+            "0",
+            estimated_frames=20,
+            speaker_id="s0",
+            has_speaker_id=True,
+            num_samples=16_000,
+            sample_rate=16_000,
+        ),
+        AudioRecord(
+            None,
+            None,
+            "b",
+            "1",
+            estimated_frames=25,
+            speaker_id="s1",
+            has_speaker_id=True,
+            num_samples=24_000,
+            sample_rate=16_000,
+        ),
+        AudioRecord(
+            None,
+            None,
+            "c",
+            "2",
+            estimated_frames=40,
+            speaker_id="s2",
+            has_speaker_id=True,
+            num_samples=32_000,
+            sample_rate=16_000,
+        ),
+        AudioRecord(
+            None,
+            None,
+            "d",
+            "3",
+            estimated_frames=45,
+            speaker_id="s3",
+            has_speaker_id=True,
+            num_samples=48_000,
+            sample_rate=16_000,
+        ),
+    ]
+    sampler = DurationBatchSampler(records, max_batch_duration_sec=3.0, shuffle=False)
+    batches = list(iter(sampler))
+    assert batches
+    for batch in batches:
+        total_duration = sum(records[index].num_samples / records[index].sample_rate for index in batch)
+        assert total_duration <= 3.0
+
+
+def test_duration_batch_sampler_longest_first_orders_heaviest_batches_first() -> None:
+    records = [
+        AudioRecord(
+            None,
+            None,
+            "a",
+            "0",
+            estimated_frames=10,
+            speaker_id="s0",
+            has_speaker_id=True,
+            num_samples=16_000,
+            sample_rate=16_000,
+        ),
+        AudioRecord(
+            None,
+            None,
+            "b",
+            "1",
+            estimated_frames=20,
+            speaker_id="s1",
+            has_speaker_id=True,
+            num_samples=16_000,
+            sample_rate=16_000,
+        ),
+        AudioRecord(
+            None,
+            None,
+            "c",
+            "2",
+            estimated_frames=30,
+            speaker_id="s2",
+            has_speaker_id=True,
+            num_samples=48_000,
+            sample_rate=16_000,
+        ),
+        AudioRecord(
+            None,
+            None,
+            "d",
+            "3",
+            estimated_frames=40,
+            speaker_id="s3",
+            has_speaker_id=True,
+            num_samples=48_000,
+            sample_rate=16_000,
+        ),
+    ]
+    sampler = DurationBatchSampler(
+        records,
+        max_batch_duration_sec=3.0,
+        shuffle=False,
+        longest_first=True,
+    )
+
+    batches = list(iter(sampler))
+
+    observed = [
+        sum(records[index].num_samples / records[index].sample_rate for index in batch)
+        for batch in batches
+    ]
+    assert observed == sorted(observed, reverse=True)
 
 
 def test_adaptive_batch_sampler_respects_token_budget() -> None:

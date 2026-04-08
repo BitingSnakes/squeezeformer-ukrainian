@@ -1129,6 +1129,67 @@ class MaxFramesBatchSampler(BatchSampler):
         return self._num_batches
 
 
+class DurationBatchSampler(BatchSampler):
+    def __init__(
+        self,
+        records: list[AudioRecord],
+        max_batch_duration_sec: float,
+        shuffle: bool,
+        longest_first: bool = False,
+    ) -> None:
+        self.records = records
+        self.max_batch_duration_sec = max_batch_duration_sec
+        self.shuffle = shuffle
+        self.longest_first = longest_first
+        self._sorted_indices = sorted(
+            range(len(self.records)),
+            key=lambda index: (
+                self._record_duration_seconds(self.records[index]),
+                self.records[index].estimated_frames,
+            ),
+        )
+        self._num_batches = self._count_batches()
+
+    def _record_duration_seconds(self, record: AudioRecord) -> float:
+        if record.num_samples > 0 and record.sample_rate > 0:
+            return max(0.0, record.num_samples / record.sample_rate)
+        return 0.0
+
+    def _batch_order_key(self, batch: list[int]) -> tuple[float, int]:
+        total_duration = sum(self._record_duration_seconds(self.records[index]) for index in batch)
+        max_frames = max(max(1, self.records[index].estimated_frames) for index in batch)
+        return total_duration, max_frames
+
+    def _iter_batches(self) -> Iterable[list[int]]:
+        current_batch: list[int] = []
+        current_duration = 0.0
+        for index in self._sorted_indices:
+            duration = self._record_duration_seconds(self.records[index])
+            if current_batch and current_duration + duration > self.max_batch_duration_sec:
+                yield current_batch
+                current_batch = []
+                current_duration = 0.0
+            current_batch.append(index)
+            current_duration += duration
+        if current_batch:
+            yield current_batch
+
+    def _count_batches(self) -> int:
+        return sum(1 for _ in self._iter_batches())
+
+    def __iter__(self):
+        batches = list(self._iter_batches())
+        if self.longest_first:
+            batches.sort(key=self._batch_order_key, reverse=True)
+        elif self.shuffle:
+            order = torch.randperm(len(batches)).tolist()
+            batches = [batches[index] for index in order]
+        yield from batches
+
+    def __len__(self) -> int:
+        return self._num_batches
+
+
 class AdaptiveBatchSampler(BatchSampler):
     def __init__(
         self,
@@ -1303,6 +1364,7 @@ def create_dataloader(
     shuffle: bool,
     num_workers: int,
     bucket_by_length: bool = False,
+    max_batch_duration_sec: float | None = None,
     max_batch_frames: int | None = None,
     adaptive_batch_unit: str | None = None,
     adaptive_batch_budget: int | None = None,
@@ -1343,6 +1405,14 @@ def create_dataloader(
             dataset.records,
             target_batch_units=adaptive_batch_budget,
             unit=adaptive_batch_unit,
+            shuffle=shuffle,
+            longest_first=longest_batches_first,
+        )
+        return DataLoader(dataset, batch_sampler=batch_sampler, **dataloader_kwargs)
+    if max_batch_duration_sec is not None:
+        batch_sampler = DurationBatchSampler(
+            dataset.records,
+            max_batch_duration_sec=max_batch_duration_sec,
             shuffle=shuffle,
             longest_first=longest_batches_first,
         )
