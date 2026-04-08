@@ -120,6 +120,15 @@ def _distributed_max_int(value: int, *, device: torch.device, distributed: bool)
     return int(reduced.item())
 
 
+def _distributed_barrier() -> None:
+    if not dist.is_initialized():
+        return
+    if torch.cuda.is_available() and dist.get_backend() == "nccl":
+        dist.barrier(device_ids=[torch.cuda.current_device()])
+        return
+    dist.barrier()
+
+
 def main() -> None:
     args = parse_args()
     process_start_time = time.perf_counter()
@@ -137,6 +146,8 @@ def main() -> None:
     is_main_process = rank == 0
     if distributed:
         backend = "nccl" if torch.cuda.is_available() else "gloo"
+        if backend == "nccl":
+            torch.cuda.set_device(local_rank)
         if not dist.is_initialized():
             dist.init_process_group(backend=backend)
     torch.manual_seed(args.seed)
@@ -262,7 +273,7 @@ def main() -> None:
             tokenizer.save(sentencepiece_model_path)
             tokenizer.save(tokenizer_path)
         if distributed:
-            dist.barrier()
+            _distributed_barrier()
         if distributed and not is_main_process:
             tokenizer = load_tokenizer(sentencepiece_model_path)
     else:
@@ -270,7 +281,7 @@ def main() -> None:
             tokenizer = CharacterTokenizer.build(record.transcript for record in train_records)
             tokenizer.save(tokenizer_path)
         if distributed:
-            dist.barrier()
+            _distributed_barrier()
         if distributed and not is_main_process:
             tokenizer = load_tokenizer(tokenizer_path)
     if (checkpoint is not None or args.tokenizer_path is not None) and (
@@ -278,7 +289,7 @@ def main() -> None:
     ):
         tokenizer.save(tokenizer_path)
     if distributed and (checkpoint is not None or args.tokenizer_path is not None):
-        dist.barrier()
+        _distributed_barrier()
     logger.info(
         "tokenizer ready vocab_size=%s elapsed=%s",
         tokenizer.vocab_size,
@@ -300,7 +311,7 @@ def main() -> None:
             )
             shallow_fusion_lm.save(shallow_fusion_lm_path)
         if distributed:
-            dist.barrier()
+            _distributed_barrier()
         if distributed and not is_main_process:
             shallow_fusion_lm = NGramLanguageModel.load(shallow_fusion_lm_path)
         if lm_scorer is None:
@@ -1004,7 +1015,7 @@ def main() -> None:
                         ),
                     }
                     if distributed:
-                        dist.barrier()
+                        _distributed_barrier()
                     if is_main_process:
                         logger.info(
                             (
@@ -1057,7 +1068,7 @@ def main() -> None:
                         distributed=distributed,
                     )
                     if distributed:
-                        dist.barrier()
+                        _distributed_barrier()
 
         train_loss = _distributed_mean(
             running_loss / max(1, train_batches),
@@ -1085,7 +1096,7 @@ def main() -> None:
             distributed=distributed,
         )
         if distributed:
-            dist.barrier()
+            _distributed_barrier()
         if is_main_process:
             logger.info(
                 "epoch %s training complete train_loss=%.4f train_main_ctc_loss=%.4f train_intermediate_ctc_loss=%.4f train_aed_loss=%.4f train_liberta_distill_loss=%.4f elapsed=%s, starting validation",
@@ -1144,7 +1155,7 @@ def main() -> None:
             distributed=distributed,
         )
         if distributed:
-            dist.barrier()
+            _distributed_barrier()
 
     if is_main_process:
         (output_dir / "train_summary.json").write_text(
@@ -1169,7 +1180,7 @@ def main() -> None:
             output_dir / "train_summary.json",
         )
     if distributed and dist.is_initialized():
-        dist.barrier()
+        _distributed_barrier()
         dist.destroy_process_group()
 
 

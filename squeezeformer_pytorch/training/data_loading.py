@@ -581,6 +581,15 @@ def _prevalidate_loaded_records(
     return validated_records
 
 
+def _distributed_barrier() -> None:
+    if not dist.is_initialized():
+        return
+    if torch.cuda.is_available() and dist.get_backend() == "nccl":
+        dist.barrier(device_ids=[torch.cuda.current_device()])
+        return
+    dist.barrier()
+
+
 def _load_train_val_records(
     args: argparse.Namespace,
     train_dataset_sources: list[str | Path],
@@ -625,7 +634,7 @@ def _load_train_val_records(
                 raise RuntimeError(
                     "Distributed record cache loading requires initialized process group."
                 )
-            dist.barrier()
+            _distributed_barrier()
             train_records = _open_disk_backed_record_store(train_records_path)
             val_records = _open_disk_backed_record_store(val_records_path)
         else:
@@ -648,7 +657,7 @@ def _load_train_val_records(
                 **common_record_store_kwargs,
             )
             if distributed and dist.is_initialized():
-                dist.barrier()
+                _distributed_barrier()
         if args.prevalidate_audio:
             raise ValueError(
                 "--prevalidate-audio is not supported with the disk-backed training record store. "
