@@ -14,9 +14,12 @@ from squeezeformer_pytorch.data import (
     AudioFeaturizer,
     SpecAugment,
     WaveformAugment,
+    feature_tensor_is_plausible,
     feature_cache_path,
     iter_records_from_source,
     load_audio,
+    max_reasonable_feature_frames,
+    normalize_feature_tensor,
     prevalidate_records,
 )
 
@@ -300,6 +303,18 @@ def extract_record_features(
     features = featurizer(waveform, sample_rate)
     if specaugment is not None:
         features = specaugment(features)
+    features = normalize_feature_tensor(features, featurizer.n_mels)
+    if features is None or not feature_tensor_is_plausible(
+        record,
+        features,
+        expected_feature_bins=featurizer.n_mels,
+    ):
+        raise RuntimeError(
+            "Refusing to cache invalid features for "
+            f"{record.utterance_id}: shape={tuple(features.shape) if features is not None else None} "
+            f"estimated_frames={int(record.estimated_frames)} "
+            f"max_reasonable_frames={max_reasonable_feature_frames(record)}"
+        )
     torch.save(features, cache_path)
     return "written"
 

@@ -905,6 +905,33 @@ def feature_cache_path(
     return feature_cache_path / f"{safe_utterance_id}_{frontend_hash}.pt"
 
 
+def max_reasonable_feature_frames(record: CVRecord) -> int:
+    estimated_frames = max(1, int(record.estimated_frames))
+    return max(20_000, estimated_frames * 4, estimated_frames + 1_024)
+
+
+def normalize_feature_tensor(features: Tensor, expected_feature_bins: int) -> Tensor | None:
+    if features.dim() != 2:
+        return None
+    if features.size(1) == expected_feature_bins:
+        return features
+    if features.size(0) == expected_feature_bins and features.size(1) > 0:
+        return features.transpose(0, 1).contiguous()
+    return None
+
+
+def feature_tensor_is_plausible(
+    record: CVRecord,
+    features: Tensor,
+    *,
+    expected_feature_bins: int,
+) -> bool:
+    normalized = normalize_feature_tensor(features, expected_feature_bins)
+    if normalized is None:
+        return False
+    return 0 < normalized.size(0) <= max_reasonable_feature_frames(record)
+
+
 class ASRDataset(Dataset[dict[str, Any]]):
     def __init__(
         self,
@@ -926,25 +953,6 @@ class ASRDataset(Dataset[dict[str, Any]]):
 
     def _feature_cache_path(self, record: CVRecord) -> Path | None:
         return feature_cache_path(self.feature_cache_dir, record.utterance_id, self.featurizer)
-
-    def _max_reasonable_feature_frames(self, record: CVRecord) -> int:
-        estimated_frames = max(1, int(record.estimated_frames))
-        return max(20_000, estimated_frames * 4, estimated_frames + 1_024)
-
-    def _normalize_feature_tensor(self, features: Tensor) -> Tensor | None:
-        if features.dim() != 2:
-            return None
-        if features.size(1) == self.featurizer.n_mels:
-            return features
-        if features.size(0) == self.featurizer.n_mels and features.size(1) > 0:
-            return features.transpose(0, 1).contiguous()
-        return None
-
-    def _features_are_plausible(self, record: CVRecord, features: Tensor) -> bool:
-        normalized = self._normalize_feature_tensor(features)
-        if normalized is None:
-            return False
-        return 0 < normalized.size(0) <= self._max_reasonable_feature_frames(record)
 
     def _compute_features(
         self,
@@ -969,7 +977,11 @@ class ASRDataset(Dataset[dict[str, Any]]):
         use_cache = cache_path is not None and not waveform_augment_enabled
         if use_cache and cache_path.exists():
             features = torch.load(cache_path, map_location="cpu")
-            if not self._features_are_plausible(record, features):
+            if not feature_tensor_is_plausible(
+                record,
+                features,
+                expected_feature_bins=self.featurizer.n_mels,
+            ):
                 logger.warning(
                     "discarding suspicious cached features for utterance_id=%s shape=%s "
                     "estimated_frames=%s",
@@ -991,15 +1003,19 @@ class ASRDataset(Dataset[dict[str, Any]]):
             )
             if use_cache:
                 torch.save(features, cache_path)
-        features = self._normalize_feature_tensor(features)
-        if features is None or not self._features_are_plausible(record, features):
+        features = normalize_feature_tensor(features, self.featurizer.n_mels)
+        if features is None or not feature_tensor_is_plausible(
+            record,
+            features,
+            expected_feature_bins=self.featurizer.n_mels,
+        ):
             logger.warning(
                 "skipping utterance_id=%s due to invalid feature shape/length shape=%s "
                 "estimated_frames=%s max_reasonable_frames=%s",
                 record.utterance_id,
                 tuple(features.shape) if features is not None else None,
                 int(record.estimated_frames),
-                self._max_reasonable_feature_frames(record),
+                max_reasonable_feature_frames(record),
             )
             return None
         if self.specaugment is not None:

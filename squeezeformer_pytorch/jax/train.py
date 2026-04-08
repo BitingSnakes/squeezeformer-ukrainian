@@ -351,6 +351,9 @@ def _evaluate(
     )
 
     for batch in dataloader:
+        if batch is None:
+            logger.warning("skipping empty validation batch after dataset filtering")
+            continue
         jax_batch = _to_jax_batch(batch)
         logits, output_lengths = model.apply(
             {"params": infer_state.params, "batch_stats": infer_state.batch_stats},
@@ -782,6 +785,9 @@ def main() -> None:
         logger.info("epoch %s/%s started", epoch, args.epochs)
         running_loss = 0.0
         for batch_index, batch in enumerate(train_loader, start=1):
+            if batch is None:
+                logger.warning("skipping empty training batch after dataset filtering")
+                continue
             host_batch = _to_jax_batch(batch)
             if use_pmap:
                 host_batch, original_size = _pad_batch_for_devices(host_batch, device_count)
