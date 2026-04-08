@@ -12,6 +12,7 @@ import sentencepiece as spm
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint as activation_checkpoint
 
 from .masking import make_padding_mask, make_sequence_mask
 from .model import (
@@ -306,6 +307,7 @@ class TrainingOnlyAEDDecoder(nn.Module):
         num_heads: int = 4,
         dropout: float = 0.1,
         max_target_length: int = 512,
+        activation_checkpointing: bool = False,
     ) -> None:
         super().__init__()
         self.pad_id = 0
@@ -330,6 +332,7 @@ class TrainingOnlyAEDDecoder(nn.Module):
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
         self.output_projection = nn.Linear(model_dim, self.decoder_vocab_size)
         self.dropout = nn.Dropout(dropout)
+        self.activation_checkpointing = activation_checkpointing
 
     def forward(
         self,
@@ -347,13 +350,30 @@ class TrainingOnlyAEDDecoder(nn.Module):
         )
         target_padding_mask = decoder_inputs.eq(self.pad_id)
         memory_padding_mask = make_padding_mask(memory_lengths, memory.size(1))
-        hidden = self.decoder(
-            x,
-            memory,
-            tgt_mask=causal_mask,
-            tgt_key_padding_mask=target_padding_mask,
-            memory_key_padding_mask=memory_padding_mask,
-        )
+        if self.activation_checkpointing and self.training:
+            hidden = activation_checkpoint(
+                lambda a, b, c, d, e: self.decoder(
+                    a,
+                    b,
+                    tgt_mask=c,
+                    tgt_key_padding_mask=d,
+                    memory_key_padding_mask=e,
+                ),
+                x,
+                memory,
+                causal_mask,
+                target_padding_mask,
+                memory_padding_mask,
+                use_reentrant=False,
+            )
+        else:
+            hidden = self.decoder(
+                x,
+                memory,
+                tgt_mask=causal_mask,
+                tgt_key_padding_mask=target_padding_mask,
+                memory_key_padding_mask=memory_padding_mask,
+            )
         return self.output_projection(hidden), hidden
 
 
@@ -412,6 +432,7 @@ class SqueezeformerCTC(nn.Module):
                 num_layers=aed_decoder_layers,
                 num_heads=aed_decoder_heads,
                 dropout=aed_decoder_dropout,
+                activation_checkpointing=encoder_config.activation_checkpointing,
             )
             if aed_decoder_enabled
             else None
@@ -475,8 +496,8 @@ class SqueezeformerCTC(nn.Module):
                 self.intermediate_classifiers[prune_layer_key],
                 x,
             )
-            prune_log_probs = F.log_softmax(prune_logits, dim=-1)
-            blank_probabilities = prune_log_probs[..., 0].exp()
+            blank_log_probabilities = prune_logits[..., 0] - torch.logsumexp(prune_logits, dim=-1)
+            blank_probabilities = blank_log_probabilities.exp()
             return prune_encoder_frames_by_blank_probability(
                 x,
                 lengths,
