@@ -1335,6 +1335,18 @@ def _record_store_duration_hours(
     return total_seconds / 3600.0
 
 
+def _frames_to_minutes(
+    total_frames: int,
+    *,
+    hop_length: int,
+    sample_rate: int = 16000,
+) -> float:
+    if sample_rate <= 0:
+        return 0.0
+    total_seconds = (float(total_frames) * float(hop_length)) / float(sample_rate)
+    return total_seconds / 60.0
+
+
 def resolve_device(device: str) -> torch.device:
     return torch.device(device)
 
@@ -3679,12 +3691,16 @@ def main() -> None:
                         for name, optimizer in zip(optimizer_names, optimizers, strict=True)
                     }
                     memory_snapshot = _format_memory_snapshot(device)
+                    batch_audio_minutes = _frames_to_minutes(
+                        tune_effective_frames,
+                        hop_length=args.hop_length,
+                    )
                     logger.info(
                         (
                             "epoch=%s step=%s/%s global_step=%s train_loss=%.4f "
                             "train_main_ctc_loss=%.4f train_intermediate_ctc_loss=%.4f "
                             "train_aed_loss=%.4f train_liberta_distill_loss=%.4f "
-                            "grad_norm=%.4f %s %s"
+                            "batch_audio_minutes=%.2f grad_norm=%.4f %s %s"
                         ),
                         epoch,
                         batch_index,
@@ -3701,6 +3717,7 @@ def main() -> None:
                         float(
                             liberta_distill_loss.item() if liberta_distill_loss is not None else 0.0
                         ),
+                        batch_audio_minutes,
                         grad_norm,
                         memory_snapshot,
                         " ".join(f"{name}={value:.6g}" for name, value in learning_rates.items()),
