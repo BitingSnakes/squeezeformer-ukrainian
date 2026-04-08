@@ -83,6 +83,8 @@ class DiskBackedRecordStore:
         records_path: Path,
         offsets: array.array,
         estimated_frames: array.array,
+        num_samples: array.array | None = None,
+        sample_rates: array.array | None = None,
         *,
         start: int = 0,
         step: int = 1,
@@ -91,6 +93,8 @@ class DiskBackedRecordStore:
         self.records_path = records_path
         self.offsets = offsets
         self.estimated_frames = estimated_frames
+        self.num_samples = num_samples
+        self.sample_rates = sample_rates
         self.start = start
         self.step = step
         self.count = count
@@ -153,6 +157,12 @@ class DiskBackedRecordStore:
             estimated_frames=int(self.estimated_frames[global_index]),
             speaker_id=payload["speaker_id"],
             has_speaker_id=bool(payload["has_speaker_id"]),
+            num_samples=(
+                int(self.num_samples[global_index]) if self.num_samples is not None else 0
+            ),
+            sample_rate=(
+                int(self.sample_rates[global_index]) if self.sample_rates is not None else 0
+            ),
         )
 
     def __iter__(self):
@@ -169,6 +179,8 @@ class DiskBackedRecordStore:
             self.records_path,
             self.offsets,
             self.estimated_frames,
+            self.num_samples,
+            self.sample_rates,
             start=self.start + rank,
             step=self.step * world_size,
             count=local_count,
@@ -178,12 +190,18 @@ class DiskBackedRecordStore:
         global_indices = [
             self._global_index(index)
             for index in range(len(self))
-            if int(self.estimated_frames[self._global_index(index)]) <= 0
+            if (
+                int(self.estimated_frames[self._global_index(index)]) <= 0
+                or self.num_samples is None
+                or int(self.num_samples[self._global_index(index)]) <= 0
+                or self.sample_rates is None
+                or int(self.sample_rates[self._global_index(index)]) <= 0
+            )
         ]
         if not global_indices:
             return
 
-        def populate(global_index: int) -> tuple[int, int]:
+        def populate(global_index: int) -> tuple[int, int, int, int]:
             handle = self.records_path.open("rb")
             try:
                 handle.seek(self.offsets[global_index])
@@ -195,15 +213,19 @@ class DiskBackedRecordStore:
             frames = (
                 max(1, int(num_samples / hop_length)) if num_samples > 0 and sample_rate > 0 else 0
             )
-            return global_index, frames
+            return global_index, frames, num_samples, sample_rate
 
         if num_workers <= 1:
             populated = [populate(global_index) for global_index in global_indices]
         else:
             with ThreadPoolExecutor(max_workers=num_workers) as executor:
                 populated = list(executor.map(populate, global_indices))
-        for global_index, frames in populated:
+        for global_index, frames, num_samples, sample_rate in populated:
             self.estimated_frames[global_index] = max(0, int(frames))
+            if self.num_samples is not None:
+                self.num_samples[global_index] = max(0, int(num_samples))
+            if self.sample_rates is not None:
+                self.sample_rates[global_index] = max(0, int(sample_rate))
 
 
 class _BinaryIndexView:
@@ -313,11 +335,15 @@ def _build_disk_backed_record_store(
     audio_blob_dir = records_path.parent / f"{records_path.stem}_audio_blobs"
     offsets_path = _record_index_path(records_path, ".offsets.u64")
     estimated_frames_path = _record_index_path(records_path, ".estimated_frames.u32")
+    num_samples_path = _record_index_path(records_path, ".num_samples.u64")
+    sample_rates_path = _record_index_path(records_path, ".sample_rates.u32")
     written = 0
     with (
         records_path.open("wb") as handle,
         offsets_path.open("wb") as offsets_handle,
         estimated_frames_path.open("wb") as estimated_frames_handle,
+        num_samples_path.open("wb") as num_samples_handle,
+        sample_rates_path.open("wb") as sample_rates_handle,
     ):
         for dataset_source in dataset_sources:
             remaining_samples = None
@@ -399,6 +425,8 @@ def _build_disk_backed_record_store(
                 estimated_frames_handle.write(
                     struct.pack("<I", max(0, int(record.estimated_frames)))
                 )
+                num_samples_handle.write(struct.pack("<Q", max(0, int(record.num_samples))))
+                sample_rates_handle.write(struct.pack("<I", max(0, int(record.sample_rate))))
                 written += 1
     if written == 0:
         raise RuntimeError(
@@ -414,12 +442,26 @@ def _build_disk_backed_record_store(
             fmt="<I",
             writable=True,
         ),
+        _BinaryIndexView(
+            num_samples_path,
+            item_size=8,
+            fmt="<Q",
+            writable=True,
+        ),
+        _BinaryIndexView(
+            sample_rates_path,
+            item_size=4,
+            fmt="<I",
+            writable=True,
+        ),
     )
 
 
 def _open_disk_backed_record_store(records_path: Path) -> DiskBackedRecordStore:
     offsets_path = _record_index_path(records_path, ".offsets.u64")
     estimated_frames_path = _record_index_path(records_path, ".estimated_frames.u32")
+    num_samples_path = _record_index_path(records_path, ".num_samples.u64")
+    sample_rates_path = _record_index_path(records_path, ".sample_rates.u32")
     return DiskBackedRecordStore(
         records_path,
         _BinaryIndexView(offsets_path, item_size=8, fmt="<Q"),
@@ -428,6 +470,26 @@ def _open_disk_backed_record_store(records_path: Path) -> DiskBackedRecordStore:
             item_size=4,
             fmt="<I",
             writable=True,
+        ),
+        (
+            _BinaryIndexView(
+                num_samples_path,
+                item_size=8,
+                fmt="<Q",
+                writable=True,
+            )
+            if num_samples_path.exists()
+            else None
+        ),
+        (
+            _BinaryIndexView(
+                sample_rates_path,
+                item_size=4,
+                fmt="<I",
+                writable=True,
+            )
+            if sample_rates_path.exists()
+            else None
         ),
     )
 

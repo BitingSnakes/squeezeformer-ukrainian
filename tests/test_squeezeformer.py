@@ -893,6 +893,10 @@ def test_build_disk_backed_record_store_combines_sources_with_global_limit(tmp_p
     assert [record.utterance_id for record in store] == ["utt0", "utt1", "utt2"]
     assert (tmp_path / "records" / "train.jsonl.offsets.u64").exists()
     assert (tmp_path / "records" / "train.jsonl.estimated_frames.u32").exists()
+    assert (tmp_path / "records" / "train.jsonl.num_samples.u64").exists()
+    assert (tmp_path / "records" / "train.jsonl.sample_rates.u32").exists()
+    assert all(record.num_samples > 0 for record in store)
+    assert all(record.sample_rate > 0 for record in store)
 
 
 def test_build_disk_backed_record_store_reads_parquet_manifest_file(tmp_path: Path) -> None:
@@ -1057,7 +1061,13 @@ def test_ensure_opus_decode_support_checks_disk_backed_record_store(
         "has_speaker_id": False,
     }
     records_path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
-    store = DiskBackedRecordStore(records_path, array.array("Q", [0]), array.array("I", [1]))
+    store = DiskBackedRecordStore(
+        records_path,
+        array.array("Q", [0]),
+        array.array("I", [1]),
+        array.array("Q", [16]),
+        array.array("I", [16_000]),
+    )
     observed: list[tuple[str | None, bytes | None]] = []
 
     def fake_load_audio(audio_path: str | None, audio_bytes: bytes | None):
@@ -1104,6 +1114,8 @@ def test_disk_backed_record_store_shard_views_rows(tmp_path: Path) -> None:
         records_path,
         array.array("Q", offsets),
         array.array("I", [10, 20, 30, 40]),
+        array.array("Q", [160, 320, 480, 640]),
+        array.array("I", [16_000, 16_000, 16_000, 16_000]),
     )
 
     shard = store.shard(rank=1, world_size=2)
@@ -1807,7 +1819,9 @@ def test_disk_backed_record_store_is_pickle_safe_after_open(tmp_path: Path) -> N
 
     offsets = array.array("Q", [0])
     estimated_frames = array.array("I", [2])
-    store = DiskBackedRecordStore(records_path, offsets, estimated_frames)
+    num_samples = array.array("Q", [3200])
+    sample_rates = array.array("I", [16_000])
+    store = DiskBackedRecordStore(records_path, offsets, estimated_frames, num_samples, sample_rates)
 
     # Force the store to open its underlying file handle before pickling.
     record = store[0]

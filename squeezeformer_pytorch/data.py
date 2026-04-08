@@ -575,6 +575,8 @@ def _build_cv_record(
         speaker_id=speaker_id,
         has_speaker_id=speaker_id is not None,
         estimated_frames=estimated_frames,
+        num_samples=max(1, int(round(duration_seconds * 16_000))),
+        sample_rate=16_000,
     )
 
 
