@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse
 
+import torch
 import torch.distributed as dist
 
 from squeezeformer_pytorch.data import (
