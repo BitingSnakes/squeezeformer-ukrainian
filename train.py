@@ -129,6 +129,59 @@ def _distributed_barrier() -> None:
     dist.barrier()
 
 
+def _maybe_downshift_adaptive_batch_budget(
+    args,
+    *,
+    device: torch.device,
+    distributed: bool,
+    liberta_distill_enabled: bool,
+    logger,
+) -> None:
+    if (
+        not distributed
+        or not liberta_distill_enabled
+        or device.type != "cuda"
+        or args.adaptive_batch_unit is None
+        or args.adaptive_batch_budget is None
+    ):
+        return
+    original_budget = int(args.adaptive_batch_budget)
+    adjusted_budget = original_budget
+    reason = "distributed LiBERTa distillation safety margin"
+    if args.adaptive_batch_unit == "frames":
+        total_memory_gib = (
+            float(torch.cuda.get_device_properties(device).total_memory) / float(1024**3)
+        )
+        free_memory_gib = total_memory_gib
+        try:
+            free_bytes, _ = torch.cuda.mem_get_info(device)
+            free_memory_gib = min(free_memory_gib, float(free_bytes) / float(1024**3))
+        except RuntimeError:
+            pass
+        adjusted_budget = max(1000, int(free_memory_gib * 2500.0))
+        adjusted_budget = max(1000, (adjusted_budget // 1000) * 1000)
+        reason = (
+            f"{reason} total_gpu_memory={total_memory_gib:.2f}GiB "
+            f"free_gpu_memory={free_memory_gib:.2f}GiB"
+        )
+    else:
+        adjusted_budget = max(1, int(original_budget * 0.75))
+    adjusted_budget = _distributed_min_int(
+        adjusted_budget,
+        device=device,
+        distributed=distributed,
+    )
+    if adjusted_budget >= original_budget:
+        return
+    args.adaptive_batch_budget = adjusted_budget
+    logger.warning(
+        "downshifting adaptive batch budget from %s to %s for %s",
+        original_budget,
+        adjusted_budget,
+        reason,
+    )
+
+
 def main() -> None:
     args = parse_args()
     process_start_time = time.perf_counter()
@@ -138,14 +191,19 @@ def main() -> None:
     rank = int(os.environ.get("RANK", "0"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     requested_device = resolve_device(args.device)
-    sync_device = (
-        torch.device(f"cuda:{local_rank}")
-        if distributed and torch.cuda.is_available()
-        else requested_device
-    )
+    if distributed and requested_device.type == "cuda":
+        if requested_device.index not in {None, local_rank}:
+            raise ValueError(
+                f"--device {args.device} conflicts with LOCAL_RANK={local_rank}. "
+                "Use --device cuda or the matching cuda:<local_rank>."
+            )
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        device = requested_device
+    sync_device = device
     is_main_process = rank == 0
     if distributed:
-        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        backend = "nccl" if device.type == "cuda" else "gloo"
         if backend == "nccl":
             torch.cuda.set_device(local_rank)
         if not dist.is_initialized():
@@ -249,6 +307,24 @@ def main() -> None:
             resume_path,
             _format_elapsed_seconds(time.perf_counter() - stage_start_time),
         )
+    (
+        aed_decoder_enabled,
+        aed_decoder_layers,
+        aed_decoder_heads,
+        aed_decoder_dropout,
+        aed_loss_weight,
+    ) = _resolve_aed_settings(args, checkpoint)
+    (
+        liberta_distill_enabled,
+        liberta_model_name,
+        liberta_model_path,
+        liberta_distill_weight,
+        liberta_max_length,
+    ) = _resolve_liberta_settings(
+        args,
+        checkpoint,
+        aed_enabled=aed_decoder_enabled,
+    )
     stage_start_time = time.perf_counter()
     logger.info(
         "preparing tokenizer mode=%s resume=%s tokenizer_path=%s",
@@ -360,6 +436,13 @@ def main() -> None:
     val_feature_cache_dir = (
         Path(args.feature_cache_dir) / "validation" if args.feature_cache_dir is not None else None
     )
+    _maybe_downshift_adaptive_batch_budget(
+        args,
+        device=device,
+        distributed=distributed,
+        liberta_distill_enabled=liberta_distill_enabled,
+        logger=logger,
+    )
     local_train_records = _shard_records_for_rank(
         train_records,
         rank=rank,
@@ -452,24 +535,6 @@ def main() -> None:
         encoder_config,
         checkpoint,
     )
-    (
-        aed_decoder_enabled,
-        aed_decoder_layers,
-        aed_decoder_heads,
-        aed_decoder_dropout,
-        aed_loss_weight,
-    ) = _resolve_aed_settings(args, checkpoint)
-    (
-        liberta_distill_enabled,
-        liberta_model_name,
-        liberta_model_path,
-        liberta_distill_weight,
-        liberta_max_length,
-    ) = _resolve_liberta_settings(
-        args,
-        checkpoint,
-        aed_enabled=aed_decoder_enabled,
-    )
     blank_prune_layer, blank_prune_threshold, blank_prune_min_keep_frames = (
         _resolve_blank_pruning_settings(args, encoder_config, checkpoint)
     )
@@ -494,15 +559,6 @@ def main() -> None:
     args.blank_prune_threshold = blank_prune_threshold
     args.blank_prune_min_keep_frames = blank_prune_min_keep_frames
     fp8_recipe = _build_fp8_recipe(args)
-    if distributed and requested_device.type == "cuda":
-        if requested_device.index not in {None, local_rank}:
-            raise ValueError(
-                f"--device {args.device} conflicts with LOCAL_RANK={local_rank}. "
-                "Use --device cuda or the matching cuda:<local_rank>."
-            )
-        device = torch.device(f"cuda:{local_rank}")
-    else:
-        device = requested_device
     if args.dtype == DTypeChoice.FP8:
         _validate_fp8_runtime(device, encoder_config)
     stage_start_time = time.perf_counter()
