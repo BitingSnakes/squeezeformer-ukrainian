@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from contextlib import nullcontext
@@ -16,6 +17,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 
+from squeezeformer_pytorch import data as _data
 from squeezeformer_pytorch.asr import (
     CharacterTokenizer,
     SentencePieceTokenizer,
@@ -32,9 +34,12 @@ from squeezeformer_pytorch.data import (
     create_dataloader,
 )
 from squeezeformer_pytorch.lm import NGramLanguageModel
+from squeezeformer_pytorch.training import data_loading as _training_data_loading
+from squeezeformer_pytorch.training import runtime as _training_runtime
 from squeezeformer_pytorch.model import (
     SqueezeformerConfig,
     squeezeformer_variant,
+    transformer_engine_available,
 )
 from squeezeformer_pytorch.runtime_types import DTypeChoice
 from squeezeformer_pytorch.training.cli import (
@@ -42,13 +47,18 @@ from squeezeformer_pytorch.training.cli import (
     _resolve_float_tuple,
     _resolve_scheduler_kwargs,
     _validate_startup_args,
+    _validate_device_argument,
     parse_args,
 )
 from squeezeformer_pytorch.training.data_loading import (
+    DiskBackedRecordStore,
     _build_split_audit,
+    _build_disk_backed_record_store,
     _ensure_opus_decode_support,
     _frames_to_minutes,
+    _load_records_from_dataset_roots,
     _load_train_val_records,
+    _resolve_dataset_roots,
     _record_store_duration_hours,
     _resolve_dataset_sources,
     _resolve_validation_dataset_sources,
@@ -58,12 +68,16 @@ from squeezeformer_pytorch.training.evaluation import (
     _aed_cross_entropy_loss,
     _build_aed_targets,
     _evaluate_and_checkpoint,
+    decode_batch,
+    evaluate,
+    speaker_level_metrics,
 )
 from squeezeformer_pytorch.training.runtime import (
     ExponentialMovingAverage,
     FrozenAudioTeacher,
     FrozenLibertaTeacher,
     _autocast_context,
+    _average_topk_checkpoints,
     _build_fp8_recipe,
     _compute_grad_norm,
     _configure_console_logger,
@@ -80,6 +94,8 @@ from squeezeformer_pytorch.training.runtime import (
     _resolve_liberta_settings,
     _resolve_model_load_dtype,
     _resolve_resume_checkpoint_path,
+    _update_top_checkpoints,
+    _validate_device_ready,
     _validate_fp8_runtime,
     _validate_resume_checkpoint_payload,
     _variant_defaults,
@@ -87,6 +103,14 @@ from squeezeformer_pytorch.training.runtime import (
     build_paper_scheduler,
     resolve_device,
 )
+
+download_dataset = _data.download_dataset
+load_audio = _data.load_audio
+te = _training_runtime.te
+Format = _training_runtime.Format
+DelayedScaling = _training_runtime.DelayedScaling
+ExternalMuon = _training_runtime.ExternalMuon
+_export_inference_checkpoint = _training_runtime._export_inference_checkpoint
 
 
 def _distributed_mean(value: float, *, device: torch.device, distributed: bool) -> float:
@@ -182,6 +206,187 @@ def _maybe_downshift_adaptive_batch_budget(
         adjusted_budget,
         reason,
     )
+
+
+def _resolve_dataset_roots(args) -> list[Path]:
+    sources = list(args.dataset_source or [])
+    if not sources:
+        sources = [args.dataset_repo]
+
+    dataset_roots: list[Path] = []
+    seen: set[Path] = set()
+    for source in sources:
+        dataset_root = download_dataset(
+            repo_id=source,
+            token=args.hf_token,
+            cache_dir=args.cache_dir,
+        ).resolve()
+        if dataset_root in seen:
+            continue
+        seen.add(dataset_root)
+        dataset_roots.append(dataset_root)
+    return dataset_roots
+
+
+def _ensure_opus_decode_support(records, *, split: str) -> None:
+    original_load_audio = _training_data_loading.load_audio
+    _training_data_loading.load_audio = load_audio
+    try:
+        return _training_data_loading._ensure_opus_decode_support(records, split=split)
+    finally:
+        _training_data_loading.load_audio = original_load_audio
+
+
+def _load_train_val_records(
+    args,
+    train_dataset_sources,
+    *,
+    validation_dataset_sources=None,
+    lowercase_transcripts: bool,
+    output_dir: Path,
+    distributed: bool = False,
+    is_main_process: bool = True,
+):
+    original_load_records = _training_data_loading._load_records_from_dataset_roots
+    original_build_store = _training_data_loading._build_disk_backed_record_store
+    _training_data_loading._load_records_from_dataset_roots = _load_records_from_dataset_roots
+    _training_data_loading._build_disk_backed_record_store = _build_disk_backed_record_store
+    try:
+        return _training_data_loading._load_train_val_records(
+            args,
+            train_dataset_sources,
+            validation_dataset_sources=validation_dataset_sources,
+            lowercase_transcripts=lowercase_transcripts,
+            output_dir=output_dir,
+            distributed=distributed,
+            is_main_process=is_main_process,
+        )
+    finally:
+        _training_data_loading._load_records_from_dataset_roots = original_load_records
+        _training_data_loading._build_disk_backed_record_store = original_build_store
+
+
+def _validate_fp8_runtime(device: torch.device, encoder_config: SqueezeformerConfig) -> None:
+    original_te = _training_runtime.te
+    original_transformer_engine_available = _training_runtime.transformer_engine_available
+    _training_runtime.te = te
+    _training_runtime.transformer_engine_available = transformer_engine_available
+    try:
+        return _training_runtime._validate_fp8_runtime(device, encoder_config)
+    finally:
+        _training_runtime.te = original_te
+        _training_runtime.transformer_engine_available = original_transformer_engine_available
+
+
+def _build_fp8_recipe(args):
+    original_format = _training_runtime.Format
+    original_delayed_scaling = _training_runtime.DelayedScaling
+    _training_runtime.Format = Format
+    _training_runtime.DelayedScaling = DelayedScaling
+    try:
+        return _training_runtime._build_fp8_recipe(args)
+    finally:
+        _training_runtime.Format = original_format
+        _training_runtime.DelayedScaling = original_delayed_scaling
+
+
+def build_optimizer(*args, **kwargs):
+    original_external_muon = _training_runtime.ExternalMuon
+    _training_runtime.ExternalMuon = ExternalMuon
+    try:
+        return _training_runtime.build_optimizer(*args, **kwargs)
+    finally:
+        _training_runtime.ExternalMuon = original_external_muon
+
+
+def _average_topk_checkpoints(output_dir: Path) -> Path | None:
+    original_export = _training_runtime._export_inference_checkpoint
+    _training_runtime._export_inference_checkpoint = _export_inference_checkpoint
+    try:
+        return _training_runtime._average_topk_checkpoints(output_dir)
+    finally:
+        _training_runtime._export_inference_checkpoint = original_export
+
+
+def _update_top_checkpoints(
+    output_dir: Path,
+    checkpoint: dict[str, object],
+    epoch: int,
+    val_wer: float,
+    keep_top_k: int,
+    global_step: int | None = None,
+) -> None:
+    if global_step is not None:
+        return _training_runtime._update_top_checkpoints(
+            output_dir=output_dir,
+            checkpoint=checkpoint,
+            epoch=epoch,
+            global_step=global_step,
+            val_wer=val_wer,
+            keep_top_k=keep_top_k,
+        )
+
+    topk_dir = output_dir / "checkpoints_topk"
+    topk_dir.mkdir(parents=True, exist_ok=True)
+    metadata_path = topk_dir / "metadata.json"
+    compatibility_signature, metadata = _training_runtime._load_topk_metadata(metadata_path)
+    current_signature = _training_runtime._checkpoint_compatibility_signature(
+        checkpoint["model_state_dict"]
+    )
+    logger = logging.getLogger("train")
+
+    if compatibility_signature is not None and compatibility_signature != current_signature:
+        for item in metadata:
+            checkpoint_path = topk_dir / str(item["path"])
+            if checkpoint_path.exists():
+                checkpoint_path.unlink()
+        metadata = []
+
+    compatible_metadata: list[dict[str, object]] = []
+    removed_incompatible = 0
+    for item in metadata:
+        checkpoint_path = topk_dir / str(item["path"])
+        if not checkpoint_path.exists():
+            continue
+        saved_checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        saved_signature = _training_runtime._checkpoint_compatibility_signature(
+            saved_checkpoint["model_state_dict"]
+        )
+        if saved_signature != current_signature:
+            checkpoint_path.unlink()
+            removed_incompatible += 1
+            continue
+        compatible_metadata.append(item)
+    if removed_incompatible:
+        logger.info(
+            "Removed %s incompatible top-k checkpoint artifact(s) from %s.",
+            removed_incompatible,
+            topk_dir,
+            extra={"rank": 0},
+        )
+    metadata = compatible_metadata
+
+    filename = f"checkpoint_epoch={epoch:04d}_valwer={val_wer:.6f}.pt"
+    checkpoint_path = topk_dir / filename
+    _training_runtime.save_checkpoint(checkpoint, checkpoint_path)
+
+    metadata.append(
+        {
+            "epoch": epoch,
+            "val_wer": val_wer,
+            "path": str(checkpoint_path.name),
+        }
+    )
+    metadata.sort(key=lambda item: (float(item["val_wer"]), int(item["epoch"])))
+
+    removed = metadata[keep_top_k:]
+    metadata = metadata[:keep_top_k]
+    for item in removed:
+        stale_path = topk_dir / str(item["path"])
+        if stale_path.exists():
+            stale_path.unlink()
+
+    _training_runtime._write_topk_metadata(metadata_path, current_signature, metadata)
 
 
 def main() -> None:

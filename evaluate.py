@@ -196,7 +196,7 @@ def main() -> None:
         pin_memory=args.pin_memory,
         persistent_workers=args.persistent_workers,
         prefetch_factor=args.prefetch_factor,
-        multiprocessing_context=args.dataloader_mp_context,
+        multiprocessing_context=getattr(args, "dataloader_mp_context", "auto"),
     )
     criterion = nn.CTCLoss(blank=tokenizer.blank_id, zero_infinity=True)
     lm_scorer = load_lm_scorer(args.lm_scorer)

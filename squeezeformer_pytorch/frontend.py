@@ -85,6 +85,8 @@ class AudioFeaturizer(torch.nn.Module):
                 [waveform[:1], waveform[1:] - self.preemphasis * waveform[:-1]],
                 dim=0,
             )
+        if waveform.numel() < self.n_fft:
+            waveform = F.pad(waveform, (0, self.n_fft - waveform.numel()))
         if self.backend == "torchaudio":
             features = self.mel(waveform)
             features = torch.log(features.clamp_min(1e-5)).transpose(0, 1)

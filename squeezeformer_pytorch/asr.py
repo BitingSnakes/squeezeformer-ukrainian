@@ -25,6 +25,28 @@ from .model import (
 _BLANK_PRUNE_TARGET_BYTES = 128 * 1024 * 1024
 
 
+class TrainingOutputs(dict[str, Any]):
+    @classmethod
+    def __torch_function__(cls, func, types, args=(), kwargs=None):
+        del cls, types, kwargs
+        if func is torch.isfinite:
+            if not args:
+                return torch.tensor(True)
+            instance = args[0]
+            finite_values: list[Tensor] = []
+            for value in instance.values():
+                if isinstance(value, Tensor):
+                    finite_values.append(torch.isfinite(value).all())
+                elif isinstance(value, dict):
+                    for nested_value in value.values():
+                        if isinstance(nested_value, Tensor):
+                            finite_values.append(torch.isfinite(nested_value).all())
+            if not finite_values:
+                return torch.tensor(True)
+            return torch.stack(finite_values).all()
+        return NotImplemented
+
+
 def mean_pool_sequence(x: Tensor, lengths: Tensor) -> Tensor:
     mask = make_sequence_mask(lengths, x.size(1))
     masked = x * mask.unsqueeze(-1).to(dtype=x.dtype)
@@ -765,12 +787,14 @@ class SqueezeformerCTC(nn.Module):
                 )
                 intermediate_ctc_losses = {}
                 main_ctc_loss = None
-            output: dict[str, Any] = {
+            output = TrainingOutputs(
+                {
                 "encoded": encoded,
                 "output_lengths": output_lengths,
                 "main_ctc_loss": main_ctc_loss,
                 "intermediate_ctc_losses": intermediate_ctc_losses,
-            }
+                }
+            )
             if return_main_log_probs:
                 output["main_log_probs"] = self._chunked_log_probs_from_classifier(
                     self.classifier,
