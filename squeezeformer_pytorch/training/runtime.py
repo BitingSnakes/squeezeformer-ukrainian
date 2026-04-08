@@ -115,7 +115,7 @@ class FrozenLibertaTeacher:
         self.model = AutoModel.from_pretrained(
             model_source,
             trust_remote_code=True,
-            torch_dtype=dtype,
+            dtype=dtype,
         )
         self.model.to(device=device, dtype=dtype)
         self.model.eval()
