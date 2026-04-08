@@ -25,6 +25,11 @@ from squeezeformer_pytorch.data import (
     load_records,
     prevalidate_records,
 )
+from squeezeformer_pytorch.evaluation_runtime import (
+    build_evaluation_payload,
+    resolve_evaluation_checkpoint_settings,
+    resolve_lowercase_transcripts,
+)
 from squeezeformer_pytorch.model import SqueezeformerConfig
 from squeezeformer_pytorch.runtime_types import DecodeStrategy, DTypeChoice
 from train import (
@@ -115,49 +120,19 @@ def main() -> None:
     tokenizer = tokenizer_from_dict(checkpoint["tokenizer"])
     checkpoint_tokenizer_type = str(checkpoint["tokenizer"].get("type", ""))
     encoder_config = SqueezeformerConfig(**checkpoint["encoder_config"])
-    training_args = checkpoint.get("training_args", {})
-    intermediate_ctc_weight = float(training_args.get("intermediate_ctc_weight", 0.0))
-    intermediate_ctc_layers = training_args.get("intermediate_ctc_layers")
-    intermediate_ctc_layer = training_args.get("intermediate_ctc_layer")
-    blank_prune_threshold = float(training_args.get("blank_prune_threshold", 0.0))
-    blank_prune_layer = training_args.get("blank_prune_layer")
-    blank_prune_min_keep_frames = int(training_args.get("blank_prune_min_keep_frames", 1))
-    aed_decoder_enabled = bool(training_args.get("aed_decoder", False))
-    aed_decoder_layers = int(training_args.get("aed_decoder_layers", 1))
-    aed_decoder_heads = int(training_args.get("aed_decoder_heads", 4))
-    aed_decoder_dropout = float(training_args.get("aed_decoder_dropout", 0.1))
-    aed_loss_weight = float(training_args.get("aed_loss_weight", 0.3))
-    liberta_distill_enabled = bool(training_args.get("liberta_distill", False))
-    liberta_model_name = str(training_args.get("liberta_model_name", "Yehor/Liberta"))
-    liberta_distill_weight = float(training_args.get("liberta_distill_weight", 0.05))
-    liberta_max_length = int(training_args.get("liberta_max_length", 256))
-    if intermediate_ctc_weight > 0.0:
-        if intermediate_ctc_layers is not None:
-            resolved_intermediate_ctc_layers = tuple(
-                int(layer) for layer in intermediate_ctc_layers
-            )
-        elif intermediate_ctc_layer is not None:
-            resolved_intermediate_ctc_layers = (int(intermediate_ctc_layer),)
-        else:
-            resolved_intermediate_ctc_layers = ()
-    else:
-        resolved_intermediate_ctc_layers = ()
+    checkpoint_settings = resolve_evaluation_checkpoint_settings(checkpoint)
     model = SqueezeformerCTC(
         encoder_config=encoder_config,
         vocab_size=tokenizer.vocab_size,
-        intermediate_ctc_layers=resolved_intermediate_ctc_layers,
-        blank_prune_layer=(
-            int(blank_prune_layer)
-            if blank_prune_threshold > 0.0 and blank_prune_layer is not None
-            else None
-        ),
-        blank_prune_threshold=blank_prune_threshold,
-        blank_prune_min_keep_frames=blank_prune_min_keep_frames,
-        aed_decoder_enabled=aed_decoder_enabled,
-        aed_decoder_layers=aed_decoder_layers,
-        aed_decoder_heads=aed_decoder_heads,
-        aed_decoder_dropout=aed_decoder_dropout,
-        liberta_distill_enabled=liberta_distill_enabled,
+        intermediate_ctc_layers=checkpoint_settings["resolved_intermediate_ctc_layers"],
+        blank_prune_layer=checkpoint_settings["blank_prune_layer"],
+        blank_prune_threshold=checkpoint_settings["blank_prune_threshold"],
+        blank_prune_min_keep_frames=checkpoint_settings["blank_prune_min_keep_frames"],
+        aed_decoder_enabled=checkpoint_settings["aed_decoder_enabled"],
+        aed_decoder_layers=checkpoint_settings["aed_decoder_layers"],
+        aed_decoder_heads=checkpoint_settings["aed_decoder_heads"],
+        aed_decoder_dropout=checkpoint_settings["aed_decoder_dropout"],
+        liberta_distill_enabled=checkpoint_settings["liberta_distill_enabled"],
         use_transformer_engine=should_use_transformer_engine_for_checkpoint(
             checkpoint,
             requested_dtype=args.dtype,
@@ -168,10 +143,9 @@ def main() -> None:
     _validate_device_ready(device)
     model.to(device)
     model.eval()
-    lowercase_transcripts = (
-        args.lowercase_transcripts
-        if args.lowercase_transcripts is not None
-        else checkpoint_tokenizer_type != "sentencepiece"
+    lowercase_transcripts = resolve_lowercase_transcripts(
+        args.lowercase_transcripts,
+        checkpoint_tokenizer_type=checkpoint_tokenizer_type,
     )
 
     dataset_root = download_dataset(
@@ -218,11 +192,11 @@ def main() -> None:
     lm_scorer = load_lm_scorer(args.lm_scorer)
     liberta_teacher = (
         FrozenLibertaTeacher(
-            liberta_model_name,
+            checkpoint_settings["liberta_model_name"],
             device=device,
-            max_length=liberta_max_length,
+            max_length=checkpoint_settings["liberta_max_length"],
         )
-        if liberta_distill_enabled
+        if checkpoint_settings["liberta_distill_enabled"]
         else None
     )
     result = evaluate(
@@ -237,22 +211,19 @@ def main() -> None:
         lm_scorer=lm_scorer,
         lm_weight=args.lm_weight,
         example_limit=args.example_limit,
-        intermediate_ctc_weight=intermediate_ctc_weight,
-        aed_loss_weight=aed_loss_weight,
+        intermediate_ctc_weight=checkpoint_settings["intermediate_ctc_weight"],
+        aed_loss_weight=checkpoint_settings["aed_loss_weight"],
         liberta_teacher=liberta_teacher,
-        liberta_distill_weight=liberta_distill_weight,
+        liberta_distill_weight=checkpoint_settings["liberta_distill_weight"],
     )
-    metrics = result["metrics"] | {
-        "split": args.split,
-        "samples": len(records),
-        "decode_strategy": args.decode_strategy,
-    }
-    payload = {
-        "metrics": metrics,
-        "hardest_examples": result["hardest_examples"],
-        "random_examples": result["random_examples"],
-        "speaker_metrics": result["speaker_metrics"],
-    }
+    payload = build_evaluation_payload(
+        metrics=result["metrics"],
+        result=result,
+        split=args.split,
+        samples=len(records),
+        decode_strategy=args.decode_strategy,
+    )
+    metrics = payload["metrics"]
     print(
         "losses:",
         " ".join(

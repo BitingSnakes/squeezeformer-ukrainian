@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import re
 import tempfile
 from contextlib import ExitStack, nullcontext
 from pathlib import Path
@@ -20,6 +19,12 @@ from squeezeformer_pytorch.checkpoints import (
     should_use_transformer_engine_for_checkpoint,
 )
 from squeezeformer_pytorch.frontend import AudioFeaturizer
+from squeezeformer_pytorch.inference_runtime import (
+    join_transcripts as _join_transcripts,
+    merge_chunk_transcript as _merge_chunk_transcript,
+    normalize_transcript_whitespace as _normalize_whitespace,
+    resolve_inference_checkpoint_settings,
+)
 from squeezeformer_pytorch.model import (
     FP8_SHAPE_ALIGNMENT,
     SqueezeformerConfig,
@@ -88,30 +93,8 @@ class ASRInferenceSession:
         )
         self.tokenizer = tokenizer_from_dict(checkpoint_data["tokenizer"])
         encoder_config = SqueezeformerConfig(**checkpoint_data["encoder_config"])
-        training_args = checkpoint_data.get("training_args", {})
-        intermediate_ctc_weight = float(training_args.get("intermediate_ctc_weight", 0.0))
-        intermediate_ctc_layers = training_args.get("intermediate_ctc_layers")
-        intermediate_ctc_layer = training_args.get("intermediate_ctc_layer")
-        blank_prune_threshold = float(training_args.get("blank_prune_threshold", 0.0))
-        blank_prune_layer = training_args.get("blank_prune_layer")
-        blank_prune_min_keep_frames = int(training_args.get("blank_prune_min_keep_frames", 1))
-        aed_decoder_enabled = bool(training_args.get("aed_decoder", False))
-        aed_decoder_layers = int(training_args.get("aed_decoder_layers", 1))
-        aed_decoder_heads = int(training_args.get("aed_decoder_heads", 4))
-        aed_decoder_dropout = float(training_args.get("aed_decoder_dropout", 0.1))
-        liberta_distill_enabled = bool(training_args.get("liberta_distill", False))
+        checkpoint_settings = resolve_inference_checkpoint_settings(checkpoint_data)
         is_torchao_quantized = is_torchao_quantized_checkpoint(checkpoint_data)
-        if intermediate_ctc_weight > 0.0:
-            if intermediate_ctc_layers is not None:
-                resolved_intermediate_ctc_layers = tuple(
-                    int(layer) for layer in intermediate_ctc_layers
-                )
-            elif intermediate_ctc_layer is not None:
-                resolved_intermediate_ctc_layers = (int(intermediate_ctc_layer),)
-            else:
-                resolved_intermediate_ctc_layers = ()
-        else:
-            resolved_intermediate_ctc_layers = ()
         use_transformer_engine = should_use_transformer_engine_for_checkpoint(
             checkpoint_data,
             requested_dtype=dtype,
@@ -124,19 +107,15 @@ class ASRInferenceSession:
         self.model = SqueezeformerCTC(
             encoder_config=encoder_config,
             vocab_size=self.tokenizer.vocab_size,
-            intermediate_ctc_layers=resolved_intermediate_ctc_layers,
-            blank_prune_layer=(
-                int(blank_prune_layer)
-                if blank_prune_threshold > 0.0 and blank_prune_layer is not None
-                else None
-            ),
-            blank_prune_threshold=blank_prune_threshold,
-            blank_prune_min_keep_frames=blank_prune_min_keep_frames,
-            aed_decoder_enabled=aed_decoder_enabled,
-            aed_decoder_layers=aed_decoder_layers,
-            aed_decoder_heads=aed_decoder_heads,
-            aed_decoder_dropout=aed_decoder_dropout,
-            liberta_distill_enabled=liberta_distill_enabled,
+            intermediate_ctc_layers=checkpoint_settings["resolved_intermediate_ctc_layers"],
+            blank_prune_layer=checkpoint_settings["blank_prune_layer"],
+            blank_prune_threshold=checkpoint_settings["blank_prune_threshold"],
+            blank_prune_min_keep_frames=checkpoint_settings["blank_prune_min_keep_frames"],
+            aed_decoder_enabled=checkpoint_settings["aed_decoder_enabled"],
+            aed_decoder_layers=checkpoint_settings["aed_decoder_layers"],
+            aed_decoder_heads=checkpoint_settings["aed_decoder_heads"],
+            aed_decoder_dropout=checkpoint_settings["aed_decoder_dropout"],
+            liberta_distill_enabled=checkpoint_settings["liberta_distill_enabled"],
             use_transformer_engine=use_transformer_engine,
         )
         if is_torchao_quantized:
@@ -226,48 +205,6 @@ class ASRInferenceSession:
             return False
         duration_seconds = total_samples / float(sample_rate)
         return duration_seconds > self.long_form_threshold_seconds
-
-
-def _normalize_whitespace(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def _join_transcripts(left: str, right: str) -> str:
-    if not left:
-        return right
-    if not right:
-        return left
-    if left.endswith((" ", "\n")) or right.startswith((" ", "\n", ",", ".", "!", "?", ":", ";")):
-        return f"{left}{right}"
-    return f"{left} {right}"
-
-
-def _merge_chunk_transcript(existing: str, new: str) -> str:
-    existing = _normalize_whitespace(existing)
-    new = _normalize_whitespace(new)
-    if not existing:
-        return new
-    if not new:
-        return existing
-    if new in existing:
-        return existing
-    if existing in new:
-        return new
-
-    existing_words = existing.split(" ")
-    new_words = new.split(" ")
-    max_word_overlap = min(len(existing_words), len(new_words), 20)
-    for overlap in range(max_word_overlap, 0, -1):
-        if existing_words[-overlap:] == new_words[:overlap]:
-            return " ".join(existing_words + new_words[overlap:])
-
-    max_char_overlap = min(len(existing), len(new), 120)
-    for overlap in range(max_char_overlap, 8, -1):
-        if existing[-overlap:] == new[:overlap]:
-            return f"{existing}{new[overlap:]}"
-
-    return _join_transcripts(existing, new)
-
 
 def resolve_checkpoint_path(checkpoint: str) -> str:
     if checkpoint == DEFAULT_CHECKPOINT:
