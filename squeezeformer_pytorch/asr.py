@@ -22,6 +22,8 @@ from .model import (
     make_linear,
 )
 
+_BLANK_PRUNE_TARGET_BYTES = 128 * 1024 * 1024
+
 
 def mean_pool_sequence(x: Tensor, lengths: Tensor) -> Tensor:
     mask = make_sequence_mask(lengths, x.size(1))
@@ -491,13 +493,11 @@ class SqueezeformerCTC(nn.Module):
                 f"Missing CTC head for blank pruning layer {self.blank_prune_layer}."
             )
 
+        prune_classifier = self.intermediate_classifiers[prune_layer_key]
+
         def blank_prune_transform(x: Tensor, lengths: Tensor) -> tuple[Tensor, Tensor]:
-            prune_logits = apply_linear_with_fp8_padding(
-                self.intermediate_classifiers[prune_layer_key],
-                x,
-            )
-            blank_log_probabilities = prune_logits[..., 0] - torch.logsumexp(prune_logits, dim=-1)
-            blank_probabilities = blank_log_probabilities.exp()
+            with torch.no_grad():
+                blank_probabilities = self._blank_probabilities_for_pruning(x, prune_classifier)
             return prune_encoder_frames_by_blank_probability(
                 x,
                 lengths,
@@ -508,6 +508,26 @@ class SqueezeformerCTC(nn.Module):
 
         post_block_transforms[self.blank_prune_layer] = blank_prune_transform
         return post_block_transforms
+
+    def _blank_probabilities_for_pruning(self, x: Tensor, classifier: nn.Module) -> Tensor:
+        batch, time, _ = x.shape
+        vocab_size = getattr(classifier, "out_features", None)
+        if not isinstance(vocab_size, int) or vocab_size <= 0:
+            logits = apply_linear_with_fp8_padding(classifier, x)
+            return (logits[..., 0] - torch.logsumexp(logits, dim=-1)).exp()
+        bytes_per_element = max(1, x.element_size())
+        target_elements = max(1, _BLANK_PRUNE_TARGET_BYTES // bytes_per_element)
+        chunk_batch = max(1, target_elements // max(1, time * vocab_size))
+        if chunk_batch >= batch:
+            logits = apply_linear_with_fp8_padding(classifier, x)
+            return (logits[..., 0] - torch.logsumexp(logits, dim=-1)).exp()
+        blank_probability_chunks = []
+        for chunk in x.split(chunk_batch, dim=0):
+            logits = apply_linear_with_fp8_padding(classifier, chunk)
+            blank_probability_chunks.append(
+                (logits[..., 0] - torch.logsumexp(logits, dim=-1)).exp()
+            )
+        return torch.cat(blank_probability_chunks, dim=0)
 
     def forward(self, features: Tensor, feature_lengths: Tensor) -> tuple[Tensor, Tensor]:
         if self.blank_prune_layer is not None and self.blank_prune_threshold > 0.0:

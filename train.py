@@ -31,7 +31,11 @@ from squeezeformer_pytorch.data import (
     create_dataloader,
 )
 from squeezeformer_pytorch.lm import NGramLanguageModel
-from squeezeformer_pytorch.model import SqueezeformerConfig, squeezeformer_variant
+from squeezeformer_pytorch.model import (
+    SqueezeformerConfig,
+    apply_linear_with_fp8_padding,
+    squeezeformer_variant,
+)
 from squeezeformer_pytorch.runtime_types import DTypeChoice
 from squeezeformer_pytorch.training.cli import (
     _resolve_block_pattern,
@@ -663,26 +667,34 @@ def main() -> None:
                 encoded, output_lengths, intermediate_encoded, intermediate_output_lengths = (
                     aux_model.encode_with_intermediates(features, feature_lengths)
                 )
-                log_probs, intermediate_log_probs = aux_model.ctc_log_probs_from_encoded(
-                    encoded,
-                    intermediate_encoded,
-                )
+                main_logits = apply_linear_with_fp8_padding(aux_model.classifier, encoded)
+                main_log_probs = F.log_softmax(main_logits, dim=-1)
+                del main_logits
                 main_ctc_loss = criterion(
-                    log_probs.float().transpose(0, 1),
+                    main_log_probs.float().transpose(0, 1),
                     targets,
                     output_lengths,
                     target_lengths,
                 )
-                if intermediate_log_probs and intermediate_output_lengths:
-                    intermediate_ctc_losses = [
-                        criterion(
-                            intermediate_log_probs[layer_index].float().transpose(0, 1),
-                            targets,
-                            intermediate_output_lengths[layer_index],
-                            target_lengths,
+                del main_log_probs
+                if intermediate_encoded and intermediate_output_lengths:
+                    intermediate_ctc_losses = []
+                    for layer_index in intermediate_ctc_layers:
+                        intermediate_logits = apply_linear_with_fp8_padding(
+                            aux_model.intermediate_classifiers[str(layer_index)],
+                            intermediate_encoded[layer_index],
                         )
-                        for layer_index in intermediate_ctc_layers
-                    ]
+                        intermediate_log_probs = F.log_softmax(intermediate_logits, dim=-1)
+                        del intermediate_logits
+                        intermediate_ctc_losses.append(
+                            criterion(
+                                intermediate_log_probs.float().transpose(0, 1),
+                                targets,
+                                intermediate_output_lengths[layer_index],
+                                target_lengths,
+                            )
+                        )
+                        del intermediate_log_probs
                     intermediate_ctc_loss = torch.stack(intermediate_ctc_losses).mean()
                     loss = (
                         1.0 - intermediate_ctc_weight
