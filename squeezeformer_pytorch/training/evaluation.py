@@ -182,6 +182,7 @@ def evaluate(
     liberta_teacher: FrozenLibertaTeacher | None = None,
     liberta_distill_weight: float = 0.0,
 ) -> dict[str, object]:
+    was_training = model.training
     model.eval()
     total_loss = 0.0
     total_main_ctc_loss = 0.0
@@ -195,113 +196,117 @@ def evaluate(
     utterance_ids: list[str] = []
     speaker_ids: list[str | None] = []
     has_speaker_ids: list[bool] = []
-    with torch.no_grad():
-        for batch in dataloader:
-            if batch is None:
-                logger.warning("skipping empty validation batch after dataset filtering")
-                continue
-            features = batch["features"].to(device)
-            feature_lengths = batch["feature_lengths"].to(device)
-            targets = batch["targets"].to(device)
-            target_lengths = batch["target_lengths"].to(device)
-            if model.aed_decoder is not None:
-                decoder_inputs, decoder_targets, decoder_target_lengths = _build_aed_targets(
-                    targets,
-                    target_lengths,
-                    bos_id=model.aed_decoder.bos_id,
-                    eos_id=model.aed_decoder.eos_id,
-                    token_offset=model.aed_decoder.token_offset,
-                    pad_id=model.aed_decoder.pad_id,
-                )
-                decoder_inputs = decoder_inputs.to(device)
-                decoder_targets = decoder_targets.to(device)
-                decoder_target_lengths = decoder_target_lengths.to(device)
-            else:
-                decoder_inputs = None
-                decoder_targets = None
-                decoder_target_lengths = None
-
-            with _autocast_context(device, dtype, fp8_recipe=fp8_recipe):
-                forward_outputs = model(
-                    features,
-                    feature_lengths,
-                    return_training_outputs=True,
-                    targets=targets,
-                    target_lengths=target_lengths,
-                    blank_id=tokenizer.blank_id,
-                    return_main_log_probs=True,
-                    decoder_inputs=decoder_inputs,
-                    liberta_lengths=decoder_target_lengths,
-                )
-                encoded = forward_outputs["encoded"]
-                output_lengths = forward_outputs["output_lengths"]
-                log_probs = forward_outputs["main_log_probs"]
-                main_ctc_loss = forward_outputs["main_ctc_loss"]
-                intermediate_ctc_losses_map = forward_outputs["intermediate_ctc_losses"]
-                if intermediate_ctc_losses_map:
-                    intermediate_ctc_loss = torch.stack(
-                        [intermediate_ctc_losses_map[layer_index] for layer_index in model.intermediate_ctc_layers]
-                    ).mean()
-                    combined_ctc_loss = (
-                        1.0 - intermediate_ctc_weight
-                    ) * main_ctc_loss + intermediate_ctc_weight * intermediate_ctc_loss
-                else:
-                    intermediate_ctc_loss = None
-                    combined_ctc_loss = main_ctc_loss
-                aed_logits = forward_outputs.get("aed_logits")
-                aed_hidden = forward_outputs.get("aed_hidden")
-                liberta_student_embeddings = forward_outputs.get("liberta_student_embeddings")
-                if aed_logits is not None and decoder_targets is not None:
-                    aed_loss = _aed_cross_entropy_loss(
-                        aed_logits,
-                        decoder_targets,
+    try:
+        with torch.no_grad():
+            for batch in dataloader:
+                if batch is None:
+                    logger.warning("skipping empty validation batch after dataset filtering")
+                    continue
+                features = batch["features"].to(device)
+                feature_lengths = batch["feature_lengths"].to(device)
+                targets = batch["targets"].to(device)
+                target_lengths = batch["target_lengths"].to(device)
+                if model.aed_decoder is not None:
+                    decoder_inputs, decoder_targets, decoder_target_lengths = _build_aed_targets(
+                        targets,
+                        target_lengths,
+                        bos_id=model.aed_decoder.bos_id,
+                        eos_id=model.aed_decoder.eos_id,
+                        token_offset=model.aed_decoder.token_offset,
                         pad_id=model.aed_decoder.pad_id,
                     )
-                    loss = (1.0 - aed_loss_weight) * combined_ctc_loss + aed_loss_weight * aed_loss
+                    decoder_inputs = decoder_inputs.to(device)
+                    decoder_targets = decoder_targets.to(device)
+                    decoder_target_lengths = decoder_target_lengths.to(device)
                 else:
-                    aed_loss = None
-                    aed_hidden = None
-                    loss = combined_ctc_loss
-            if (
-                liberta_teacher is not None
-                and liberta_student_embeddings is not None
-            ):
-                teacher_embeddings = liberta_teacher.encode(batch["transcripts"]).to(
-                    device=liberta_student_embeddings.device,
-                    dtype=liberta_student_embeddings.dtype,
+                    decoder_inputs = None
+                    decoder_targets = None
+                    decoder_target_lengths = None
+
+                with _autocast_context(device, dtype, fp8_recipe=fp8_recipe):
+                    forward_outputs = model(
+                        features,
+                        feature_lengths,
+                        return_training_outputs=True,
+                        targets=targets,
+                        target_lengths=target_lengths,
+                        blank_id=tokenizer.blank_id,
+                        return_main_log_probs=True,
+                        decoder_inputs=decoder_inputs,
+                        liberta_lengths=decoder_target_lengths,
+                    )
+                    encoded = forward_outputs["encoded"]
+                    output_lengths = forward_outputs["output_lengths"]
+                    log_probs = forward_outputs["main_log_probs"]
+                    main_ctc_loss = forward_outputs["main_ctc_loss"]
+                    intermediate_ctc_losses_map = forward_outputs["intermediate_ctc_losses"]
+                    if intermediate_ctc_losses_map:
+                        intermediate_ctc_loss = torch.stack(
+                            [intermediate_ctc_losses_map[layer_index] for layer_index in model.intermediate_ctc_layers]
+                        ).mean()
+                        combined_ctc_loss = (
+                            1.0 - intermediate_ctc_weight
+                        ) * main_ctc_loss + intermediate_ctc_weight * intermediate_ctc_loss
+                    else:
+                        intermediate_ctc_loss = None
+                        combined_ctc_loss = main_ctc_loss
+                    aed_logits = forward_outputs.get("aed_logits")
+                    aed_hidden = forward_outputs.get("aed_hidden")
+                    liberta_student_embeddings = forward_outputs.get("liberta_student_embeddings")
+                    if aed_logits is not None and decoder_targets is not None:
+                        aed_loss = _aed_cross_entropy_loss(
+                            aed_logits,
+                            decoder_targets,
+                            pad_id=model.aed_decoder.pad_id,
+                        )
+                        loss = (1.0 - aed_loss_weight) * combined_ctc_loss + aed_loss_weight * aed_loss
+                    else:
+                        aed_loss = None
+                        aed_hidden = None
+                        loss = combined_ctc_loss
+                if (
+                    liberta_teacher is not None
+                    and liberta_student_embeddings is not None
+                ):
+                    teacher_embeddings = liberta_teacher.encode(batch["transcripts"]).to(
+                        device=liberta_student_embeddings.device,
+                        dtype=liberta_student_embeddings.dtype,
+                    )
+                    liberta_distill_loss = F.mse_loss(
+                        F.normalize(liberta_student_embeddings.float(), dim=-1),
+                        F.normalize(teacher_embeddings.float(), dim=-1),
+                    )
+                    loss = loss + (liberta_distill_weight * liberta_distill_loss)
+                else:
+                    liberta_distill_loss = None
+                total_loss += float(loss.item())
+                total_main_ctc_loss += float(main_ctc_loss.item())
+                total_intermediate_ctc_loss += float(
+                    intermediate_ctc_loss.item() if intermediate_ctc_loss is not None else 0.0
                 )
-                liberta_distill_loss = F.mse_loss(
-                    F.normalize(liberta_student_embeddings.float(), dim=-1),
-                    F.normalize(teacher_embeddings.float(), dim=-1),
+                total_combined_ctc_loss += float(combined_ctc_loss.item())
+                total_aed_loss += float(aed_loss.item() if aed_loss is not None else 0.0)
+                total_liberta_distill_loss += float(
+                    liberta_distill_loss.item() if liberta_distill_loss is not None else 0.0
                 )
-                loss = loss + (liberta_distill_weight * liberta_distill_loss)
-            else:
-                liberta_distill_loss = None
-            total_loss += float(loss.item())
-            total_main_ctc_loss += float(main_ctc_loss.item())
-            total_intermediate_ctc_loss += float(
-                intermediate_ctc_loss.item() if intermediate_ctc_loss is not None else 0.0
-            )
-            total_combined_ctc_loss += float(combined_ctc_loss.item())
-            total_aed_loss += float(aed_loss.item() if aed_loss is not None else 0.0)
-            total_liberta_distill_loss += float(
-                liberta_distill_loss.item() if liberta_distill_loss is not None else 0.0
-            )
-            total_batches += 1
-            references.extend(batch["transcripts"])
-            utterance_ids.extend(batch["utterance_ids"])
-            speaker_ids.extend(batch["speaker_ids"])
-            has_speaker_ids.extend(batch["has_speaker_ids"])
-            hypotheses.extend(
-                decode_batch(
-                    log_probs,
-                    tokenizer=tokenizer,
-                    strategy=decode_strategy,
-                    beam_size=beam_size,
-                    lm_scorer=lm_scorer,
-                    lm_weight=lm_weight,
+                total_batches += 1
+                references.extend(batch["transcripts"])
+                utterance_ids.extend(batch["utterance_ids"])
+                speaker_ids.extend(batch["speaker_ids"])
+                has_speaker_ids.extend(batch["has_speaker_ids"])
+                hypotheses.extend(
+                    decode_batch(
+                        log_probs,
+                        tokenizer=tokenizer,
+                        strategy=decode_strategy,
+                        beam_size=beam_size,
+                        lm_scorer=lm_scorer,
+                        lm_weight=lm_weight,
+                    )
                 )
-            )
+    finally:
+        if was_training:
+            model.train()
     metrics = {
         "loss": total_loss / max(1, total_batches),
         "main_ctc_loss": total_main_ctc_loss / max(1, total_batches),
