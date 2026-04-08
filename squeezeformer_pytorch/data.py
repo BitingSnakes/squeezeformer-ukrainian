@@ -33,6 +33,15 @@ AUDIO_COLUMNS = ("path", "audio")
 logger = logging.getLogger("train")
 
 
+def _dataloader_multiprocessing_context(num_workers: int):
+    if num_workers <= 0 or not sys.platform.startswith("linux"):
+        return None
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        # Avoid forking a process that already owns distributed/CUDA runtime state.
+        return mp.get_context("spawn")
+    return mp.get_context("fork")
+
+
 @dataclass
 class LoaderSummary:
     scanned: int = 0
@@ -1317,8 +1326,9 @@ def create_dataloader(
     }
     if num_workers > 0:
         dataloader_kwargs["prefetch_factor"] = prefetch_factor
-        if sys.platform.startswith("linux"):
-            dataloader_kwargs["multiprocessing_context"] = mp.get_context("fork")
+        multiprocessing_context = _dataloader_multiprocessing_context(num_workers)
+        if multiprocessing_context is not None:
+            dataloader_kwargs["multiprocessing_context"] = multiprocessing_context
     if adaptive_batch_unit is not None and adaptive_batch_budget is not None:
         batch_sampler = AdaptiveBatchSampler(
             dataset.records,
