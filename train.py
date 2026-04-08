@@ -491,6 +491,7 @@ def main() -> None:
         prefetch_factor=args.prefetch_factor,
         metadata_workers=args.metadata_workers,
         longest_batches_first=args.longest_batches_first,
+        multiprocessing_context=args.dataloader_mp_context,
     )
     val_loader = create_dataloader(
         val_dataset,
@@ -506,6 +507,7 @@ def main() -> None:
         prefetch_factor=args.prefetch_factor,
         metadata_workers=args.metadata_workers,
         longest_batches_first=False,
+        multiprocessing_context=args.dataloader_mp_context,
     )
     train_batches = len(train_loader)
     val_batches = len(val_loader)

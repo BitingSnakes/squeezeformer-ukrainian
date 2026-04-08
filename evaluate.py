@@ -79,6 +79,15 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    parser.add_argument(
+        "--dataloader-mp-context",
+        choices=["auto", "fork", "forkserver", "spawn"],
+        default="auto",
+        help=(
+            "Multiprocessing start method for DataLoader workers. 'auto' keeps the current "
+            "platform-aware default and uses 'spawn' when distributed training is initialized."
+        ),
+    )
     parser.add_argument("--prefetch-factor", type=int, default=2)
     parser.add_argument(
         "--prevalidate-audio",
@@ -187,6 +196,7 @@ def main() -> None:
         pin_memory=args.pin_memory,
         persistent_workers=args.persistent_workers,
         prefetch_factor=args.prefetch_factor,
+        multiprocessing_context=args.dataloader_mp_context,
     )
     criterion = nn.CTCLoss(blank=tokenizer.blank_id, zero_infinity=True)
     lm_scorer = load_lm_scorer(args.lm_scorer)

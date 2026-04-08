@@ -33,9 +33,14 @@ AUDIO_COLUMNS = ("path", "audio")
 logger = logging.getLogger("train")
 
 
-def _dataloader_multiprocessing_context(num_workers: int):
+def _dataloader_multiprocessing_context(
+    num_workers: int,
+    multiprocessing_context: str | None = None,
+):
     if num_workers <= 0 or not sys.platform.startswith("linux"):
         return None
+    if multiprocessing_context is not None and multiprocessing_context != "auto":
+        return mp.get_context(multiprocessing_context)
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         # Avoid forking a process that already owns distributed/CUDA runtime state.
         return mp.get_context("spawn")
@@ -1306,6 +1311,7 @@ def create_dataloader(
     prefetch_factor: int = 2,
     metadata_workers: int = 4,
     longest_batches_first: bool = False,
+    multiprocessing_context: str | None = None,
 ) -> DataLoader[dict[str, Any]]:
     if hasattr(dataset.records, "populate_metadata"):
         dataset.records.populate_metadata(
@@ -1326,9 +1332,12 @@ def create_dataloader(
     }
     if num_workers > 0:
         dataloader_kwargs["prefetch_factor"] = prefetch_factor
-        multiprocessing_context = _dataloader_multiprocessing_context(num_workers)
-        if multiprocessing_context is not None:
-            dataloader_kwargs["multiprocessing_context"] = multiprocessing_context
+        resolved_multiprocessing_context = _dataloader_multiprocessing_context(
+            num_workers,
+            multiprocessing_context=multiprocessing_context,
+        )
+        if resolved_multiprocessing_context is not None:
+            dataloader_kwargs["multiprocessing_context"] = resolved_multiprocessing_context
     if adaptive_batch_unit is not None and adaptive_batch_budget is not None:
         batch_sampler = AdaptiveBatchSampler(
             dataset.records,

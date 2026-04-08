@@ -333,6 +333,15 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    parser.add_argument(
+        "--dataloader-mp-context",
+        choices=["auto", "fork", "forkserver", "spawn"],
+        default="auto",
+        help=(
+            "Multiprocessing start method for DataLoader workers. 'auto' keeps the current "
+            "platform-aware default and uses 'spawn' when distributed training is initialized."
+        ),
+    )
     parser.add_argument("--prefetch-factor", type=int, default=2)
     parser.add_argument("--metadata-workers", type=int, default=4)
     parser.add_argument(
