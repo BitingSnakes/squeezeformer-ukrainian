@@ -4,6 +4,7 @@ from dataclasses import asdict
 
 import evaluate
 from squeezeformer_pytorch import squeezeformer_variant
+from squeezeformer_pytorch.evaluation_runtime import resolve_evaluation_checkpoint_settings
 from squeezeformer_pytorch.runtime_types import DTypeChoice
 
 
@@ -225,3 +226,29 @@ def test_evaluate_respects_lowercase_transcripts_override(monkeypatch) -> None:
     evaluate.main()
 
     assert captured["lowercase_transcripts"] is False
+
+
+def test_evaluation_runtime_resolves_audio_teacher_metadata() -> None:
+    settings = resolve_evaluation_checkpoint_settings(
+        {
+            "training_args": {
+                "audio_teacher": True,
+                "audio_teacher_model_name": "facebook/wav2vec2-bert-2.0",
+                "audio_teacher_weight": 0.2,
+                "audio_teacher_objective": "hidden_cosine",
+                "audio_teacher_target": "encoder",
+                "audio_teacher_layer": 6,
+                "audio_teacher_sample_rate": 16_000,
+                "audio_teacher_max_seconds": 12.5,
+            }
+        }
+    )
+
+    assert settings["audio_teacher_enabled"] is True
+    assert settings["audio_teacher_model_name"] == "facebook/wav2vec2-bert-2.0"
+    assert settings["audio_teacher_weight"] == 0.2
+    assert settings["audio_teacher_objective"] == "hidden_cosine"
+    assert settings["audio_teacher_target"] == "encoder"
+    assert settings["audio_teacher_layer"] == 6
+    assert settings["audio_teacher_sample_rate"] == 16_000
+    assert settings["audio_teacher_max_seconds"] == 12.5

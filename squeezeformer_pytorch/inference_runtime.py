@@ -39,6 +39,8 @@ def resolve_inference_checkpoint_settings(checkpoint_data: dict[str, Any]) -> di
         "aed_decoder_heads": int(training_args.get("aed_decoder_heads", 4)),
         "aed_decoder_dropout": float(training_args.get("aed_decoder_dropout", 0.1)),
         "liberta_distill_enabled": bool(training_args.get("liberta_distill", False)),
+        "audio_teacher_enabled": bool(training_args.get("audio_teacher", False)),
+        "audio_teacher_target": str(training_args.get("audio_teacher_target", "encoder")),
     }
 
 

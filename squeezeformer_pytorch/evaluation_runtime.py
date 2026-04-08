@@ -43,6 +43,18 @@ def resolve_evaluation_checkpoint_settings(checkpoint: dict[str, Any]) -> dict[s
         "liberta_model_name": str(training_args.get("liberta_model_name", "Yehor/Liberta")),
         "liberta_distill_weight": float(training_args.get("liberta_distill_weight", 0.05)),
         "liberta_max_length": int(training_args.get("liberta_max_length", 256)),
+        "audio_teacher_enabled": bool(training_args.get("audio_teacher", False)),
+        "audio_teacher_model_name": str(
+            training_args.get("audio_teacher_model_name", "facebook/wav2vec2-bert-2.0")
+        ),
+        "audio_teacher_weight": float(training_args.get("audio_teacher_weight", 0.05)),
+        "audio_teacher_objective": str(
+            training_args.get("audio_teacher_objective", "hidden_mse")
+        ),
+        "audio_teacher_target": str(training_args.get("audio_teacher_target", "encoder")),
+        "audio_teacher_layer": int(training_args.get("audio_teacher_layer", -1)),
+        "audio_teacher_sample_rate": int(training_args.get("audio_teacher_sample_rate", 16000)),
+        "audio_teacher_max_seconds": float(training_args.get("audio_teacher_max_seconds", 30.0)),
     }
 
 

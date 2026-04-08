@@ -12,7 +12,9 @@ from squeezeformer_pytorch.checkpoints import (
     is_torchao_quantized_checkpoint,
     should_use_transformer_engine_for_checkpoint,
 )
+from squeezeformer_pytorch.inference_runtime import resolve_inference_checkpoint_settings
 from squeezeformer_pytorch.runtime_types import DTypeChoice
+from squeezeformer_pytorch.training.runtime import _inference_checkpoint_payload
 
 
 def test_resolve_checkpoint_path_supports_hf_repo_id(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -258,6 +260,39 @@ def test_asr_session_uses_assign_for_torchao_checkpoint(monkeypatch: pytest.Monk
     assert captured["strict"] is True
     assert captured["device"] == torch.device("cpu")
     assert captured["eval_called"] is True
+
+
+def test_inference_runtime_resolves_audio_teacher_metadata() -> None:
+    settings = resolve_inference_checkpoint_settings(
+        {
+            "training_args": {
+                "audio_teacher": True,
+                "audio_teacher_target": "encoder",
+            }
+        }
+    )
+
+    assert settings["audio_teacher_enabled"] is True
+    assert settings["audio_teacher_target"] == "encoder"
+
+
+def test_inference_checkpoint_payload_strips_audio_teacher_projection() -> None:
+    payload = _inference_checkpoint_payload(
+        {
+            "model_state_dict": {
+                "encoder.weight": torch.zeros(1),
+                "audio_teacher_projection.weight": torch.zeros(1, 1),
+                "audio_teacher_projection.bias": torch.zeros(1),
+            },
+            "encoder_config": asdict(squeezeformer_variant("xs")),
+            "tokenizer": {"type": "character", "symbols": ["а"]},
+            "training_args": {"audio_teacher": True},
+        }
+    )
+
+    assert "audio_teacher_projection.weight" not in payload["model_state_dict"]
+    assert "audio_teacher_projection.bias" not in payload["model_state_dict"]
+    assert payload["training_args"]["audio_teacher"] is False
 
 
 def test_asr_session_uses_transformer_engine_for_fp8_checkpoint(
