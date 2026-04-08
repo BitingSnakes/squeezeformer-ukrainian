@@ -273,8 +273,12 @@ def main() -> None:
             dist.barrier()
         if distributed and not is_main_process:
             tokenizer = load_tokenizer(tokenizer_path)
-    if checkpoint is not None or args.tokenizer_path is not None:
+    if (checkpoint is not None or args.tokenizer_path is not None) and (
+        not distributed or is_main_process
+    ):
         tokenizer.save(tokenizer_path)
+    if distributed and (checkpoint is not None or args.tokenizer_path is not None):
+        dist.barrier()
     logger.info(
         "tokenizer ready vocab_size=%s elapsed=%s",
         tokenizer.vocab_size,
@@ -835,7 +839,8 @@ def main() -> None:
                         device=device,
                     )
 
-                if is_main_process and global_step % args.log_every == 0:
+                should_log_step = global_step % args.log_every == 0
+                if should_log_step:
                     train_loss_step = _distributed_mean(
                         float(loss.item()),
                         device=device,
@@ -881,6 +886,7 @@ def main() -> None:
                         device=device,
                         distributed=distributed,
                     )
+                if is_main_process and should_log_step:
                     learning_rates = {
                         f"learning_rate_{name}": optimizer.param_groups[0]["lr"]
                         for name, optimizer in zip(optimizer_names, optimizers, strict=True)
