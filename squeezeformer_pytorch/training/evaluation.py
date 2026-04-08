@@ -511,6 +511,12 @@ def _examples_table(
     return trackio.Table(data=rows)
 
 
+def _checkpoint_safe_metrics(metrics: dict[str, object]) -> dict[str, object]:
+    return {
+        key: value for key, value in metrics.items() if not isinstance(value, trackio.Table)
+    }
+
+
 def _evaluate_and_checkpoint(
     *,
     model: SqueezeformerCTC,
@@ -643,7 +649,7 @@ def _evaluate_and_checkpoint(
         epoch=epoch,
         global_step=global_step,
         best_val_wer=updated_best_val_wer,
-        metrics=log_payload,
+        metrics=_checkpoint_safe_metrics(log_payload),
         optimizers=optimizers,
         optimizer_names=optimizer_names,
         schedulers=schedulers,
