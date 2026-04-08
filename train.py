@@ -684,31 +684,19 @@ def main() -> None:
                     intermediate_output_lengths = forward_outputs["intermediate_output_lengths"]
                     aed_logits = forward_outputs.get("aed_logits")
                     aed_hidden = forward_outputs.get("aed_hidden")
-                    main_log_probs, intermediate_log_probs_map = model.ctc_log_probs_from_encoded(
+                    main_ctc_loss, intermediate_ctc_losses_map = model.ctc_loss_from_encoded(
                         encoded,
-                        intermediate_encoded,
-                    )
-                    main_ctc_loss = criterion(
-                        main_log_probs.float().transpose(0, 1),
-                        targets,
                         output_lengths,
+                        targets,
                         target_lengths,
+                        blank_id=tokenizer.blank_id,
+                        intermediate_encoded=intermediate_encoded,
+                        intermediate_output_lengths=intermediate_output_lengths,
                     )
-                    del main_log_probs
                     if intermediate_encoded and intermediate_output_lengths:
-                        intermediate_ctc_losses = []
-                        for layer_index in intermediate_ctc_layers:
-                            intermediate_log_probs = intermediate_log_probs_map[layer_index]
-                            intermediate_ctc_losses.append(
-                                criterion(
-                                    intermediate_log_probs.float().transpose(0, 1),
-                                    targets,
-                                    intermediate_output_lengths[layer_index],
-                                    target_lengths,
-                                )
-                            )
-                            del intermediate_log_probs
-                        intermediate_ctc_loss = torch.stack(intermediate_ctc_losses).mean()
+                        intermediate_ctc_loss = torch.stack(
+                            [intermediate_ctc_losses_map[layer_index] for layer_index in intermediate_ctc_layers]
+                        ).mean()
                         loss = (
                             1.0 - intermediate_ctc_weight
                         ) * main_ctc_loss + intermediate_ctc_weight * intermediate_ctc_loss

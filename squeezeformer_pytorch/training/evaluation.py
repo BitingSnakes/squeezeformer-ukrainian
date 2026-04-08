@@ -225,27 +225,23 @@ def evaluate(
                 encoded, output_lengths, intermediate_encoded, intermediate_output_lengths = (
                     model.encode_with_intermediates(features, feature_lengths)
                 )
-                log_probs, intermediate_log_probs = model.ctc_log_probs_from_encoded(
+                log_probs, _ = model.ctc_log_probs_from_encoded(
                     encoded,
-                    intermediate_encoded,
+                    {},
                 )
-                main_ctc_loss = criterion(
-                    log_probs.float().transpose(0, 1),
-                    targets,
+                main_ctc_loss, intermediate_ctc_losses_map = model.ctc_loss_from_encoded(
+                    encoded,
                     output_lengths,
+                    targets,
                     target_lengths,
+                    blank_id=tokenizer.blank_id,
+                    intermediate_encoded=intermediate_encoded,
+                    intermediate_output_lengths=intermediate_output_lengths,
                 )
-                if intermediate_log_probs and intermediate_output_lengths:
-                    intermediate_ctc_losses = [
-                        criterion(
-                            intermediate_log_probs[layer_index].float().transpose(0, 1),
-                            targets,
-                            intermediate_output_lengths[layer_index],
-                            target_lengths,
-                        )
-                        for layer_index in model.intermediate_ctc_layers
-                    ]
-                    intermediate_ctc_loss = torch.stack(intermediate_ctc_losses).mean()
+                if intermediate_ctc_losses_map and intermediate_output_lengths:
+                    intermediate_ctc_loss = torch.stack(
+                        [intermediate_ctc_losses_map[layer_index] for layer_index in model.intermediate_ctc_layers]
+                    ).mean()
                     combined_ctc_loss = (
                         1.0 - intermediate_ctc_weight
                     ) * main_ctc_loss + intermediate_ctc_weight * intermediate_ctc_loss

@@ -499,6 +499,114 @@ class SqueezeformerCTC(nn.Module):
             start = stop
         return log_probs
 
+    def ctc_loss_from_encoded(
+        self,
+        encoded: Tensor,
+        output_lengths: Tensor,
+        targets: Tensor,
+        target_lengths: Tensor,
+        *,
+        blank_id: int,
+        intermediate_encoded: dict[int, Tensor] | None = None,
+        intermediate_output_lengths: dict[int, Tensor] | None = None,
+    ) -> tuple[Tensor, dict[int, Tensor]]:
+        main_ctc_loss = self._chunked_ctc_loss_from_classifier(
+            self.classifier,
+            encoded,
+            output_lengths,
+            targets,
+            target_lengths,
+            blank_id=blank_id,
+        )
+        intermediate_ctc_losses: dict[int, Tensor] = {}
+        if intermediate_encoded is None or intermediate_output_lengths is None:
+            return main_ctc_loss, intermediate_ctc_losses
+        for layer_index in self.intermediate_ctc_layers:
+            if (
+                layer_index not in intermediate_encoded
+                or layer_index not in intermediate_output_lengths
+            ):
+                continue
+            intermediate_ctc_losses[layer_index] = self._chunked_ctc_loss_from_classifier(
+                self.intermediate_classifiers[str(layer_index)],
+                intermediate_encoded[layer_index],
+                intermediate_output_lengths[layer_index],
+                targets,
+                target_lengths,
+                blank_id=blank_id,
+            )
+        return main_ctc_loss, intermediate_ctc_losses
+
+    def _chunked_ctc_loss_from_classifier(
+        self,
+        classifier: nn.Module,
+        x: Tensor,
+        output_lengths: Tensor,
+        targets: Tensor,
+        target_lengths: Tensor,
+        *,
+        blank_id: int,
+    ) -> Tensor:
+        batch, time, _ = x.shape
+        vocab_size = getattr(classifier, "out_features", None)
+        if not isinstance(vocab_size, int) or vocab_size <= 0:
+            logits = apply_linear_with_fp8_padding(classifier, x)
+            log_probs = F.log_softmax(logits, dim=-1)
+            per_sample_losses = F.ctc_loss(
+                log_probs.float().transpose(0, 1),
+                targets,
+                output_lengths,
+                target_lengths,
+                blank=blank_id,
+                reduction="none",
+                zero_infinity=True,
+            )
+            return (per_sample_losses / target_lengths.clamp_min(1)).mean()
+
+        bytes_per_element = max(1, x.element_size())
+        target_elements = max(1, _BLANK_PRUNE_TARGET_BYTES // bytes_per_element)
+        chunk_batch = max(1, target_elements // max(1, time * vocab_size))
+        if chunk_batch >= batch:
+            logits = apply_linear_with_fp8_padding(classifier, x)
+            log_probs = F.log_softmax(logits, dim=-1)
+            per_sample_losses = F.ctc_loss(
+                log_probs.float().transpose(0, 1),
+                targets,
+                output_lengths,
+                target_lengths,
+                blank=blank_id,
+                reduction="none",
+                zero_infinity=True,
+            )
+            return (per_sample_losses / target_lengths.clamp_min(1)).mean()
+
+        target_lengths_list = [int(length) for length in target_lengths.tolist()]
+        target_offsets = [0]
+        for length in target_lengths_list:
+            target_offsets.append(target_offsets[-1] + length)
+
+        weighted_loss_sum = x.new_zeros((), dtype=torch.float32)
+        for start in range(0, batch, chunk_batch):
+            stop = min(batch, start + chunk_batch)
+            chunk_logits = apply_linear_with_fp8_padding(classifier, x[start:stop])
+            chunk_log_probs = F.log_softmax(chunk_logits, dim=-1)
+            chunk_targets = targets[target_offsets[start] : target_offsets[stop]]
+            chunk_output_lengths = output_lengths[start:stop]
+            chunk_target_lengths = target_lengths[start:stop]
+            per_sample_losses = F.ctc_loss(
+                chunk_log_probs.float().transpose(0, 1),
+                chunk_targets,
+                chunk_output_lengths,
+                chunk_target_lengths,
+                blank=blank_id,
+                reduction="none",
+                zero_infinity=True,
+            )
+            weighted_loss_sum = weighted_loss_sum + (
+                per_sample_losses / chunk_target_lengths.clamp_min(1)
+            ).sum()
+        return weighted_loss_sum / max(1, batch)
+
     def _post_block_transforms(
         self,
     ) -> dict[int, Callable[[Tensor, Tensor], tuple[Tensor, Tensor]]]:
