@@ -349,6 +349,7 @@ def _evaluate(
         if hasattr(state, "params") and jax.local_device_count() > 1
         else state
     )
+    logger = logging.getLogger("train")
 
     for batch in dataloader:
         if batch is None:

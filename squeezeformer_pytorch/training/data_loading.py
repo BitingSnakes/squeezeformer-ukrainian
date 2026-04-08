@@ -25,6 +25,7 @@ from squeezeformer_pytorch.data import (
     read_binary_source,
 )
 
+
 def _resolve_dataset_roots(args: argparse.Namespace) -> list[Path]:
     sources = list(args.dataset_source or [])
     if not sources:
@@ -614,7 +615,9 @@ def _load_train_val_records(
         val_records_path = record_store_dir / "validation.jsonl"
         if distributed and not is_main_process:
             if not dist.is_initialized():
-                raise RuntimeError("Distributed record cache loading requires initialized process group.")
+                raise RuntimeError(
+                    "Distributed record cache loading requires initialized process group."
+                )
             dist.barrier()
             train_records = _open_disk_backed_record_store(train_records_path)
             val_records = _open_disk_backed_record_store(val_records_path)
@@ -732,7 +735,6 @@ def _frames_to_minutes(
     return total_seconds / 60.0
 
 
-
 def _build_split_audit(
     split_records: dict[str, list[CVRecord] | DiskBackedRecordStore],
     *,
@@ -765,9 +767,7 @@ def _build_split_audit(
     )
     return {
         "counts": counts,
-        "hours": {
-            split_name: item["hours"] for split_name, item in counts.items()
-        },
+        "hours": {split_name: item["hours"] for split_name, item in counts.items()},
         "total_hours": sum(float(item["hours"]) for item in counts.values()),
         "speaker_overlaps": overlaps,
         "speaker_balance_ratio": balance_ratio,
@@ -775,5 +775,3 @@ def _build_split_audit(
             item["records_with_speaker_id"] == item["samples"] for item in counts.values()
         ),
     }
-
-

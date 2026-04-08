@@ -10,10 +10,10 @@ from pathlib import Path
 
 import torch
 import trackio
-from torch import Tensor, nn
+from torch import nn
 from torch.nn import functional as F
 
-from squeezeformer_pytorch.asr import Tokenizer, SqueezeformerCTC, ctc_prefix_beam_search
+from squeezeformer_pytorch.asr import SqueezeformerCTC, Tokenizer, ctc_prefix_beam_search
 from squeezeformer_pytorch.checkpoints import save_checkpoint
 from squeezeformer_pytorch.data import AudioFeaturizer
 from squeezeformer_pytorch.metrics import char_error_rate, word_error_rate
@@ -22,12 +22,17 @@ from squeezeformer_pytorch.runtime_types import DecodeStrategy, DTypeChoice
 from squeezeformer_pytorch.training.runtime import (
     ExponentialMovingAverage,
     FrozenLibertaTeacher,
+    _aed_cross_entropy_loss,
     _autocast_context,
     _average_topk_checkpoints,
+    _build_aed_targets,
     _export_inference_checkpoint,
     _safetensors_path,
     _update_top_checkpoints,
 )
+
+logger = logging.getLogger("train")
+
 
 def greedy_decode(log_probs: torch.Tensor, tokenizer: Tokenizer) -> list[str]:
     token_ids = log_probs.argmax(dim=-1).cpu().tolist()
@@ -590,5 +595,3 @@ def _build_checkpoint(
         "ema_state_dict": ema.state_dict() if ema is not None else None,
         "training_args": vars(args),
     }
-
-

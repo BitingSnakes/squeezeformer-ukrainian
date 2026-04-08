@@ -44,6 +44,7 @@ try:
 except ImportError:
     ExternalMuon = None
 
+
 def _checkpoint_name(epoch: int, global_step: int, val_wer: float) -> str:
     return f"checkpoint_epoch={epoch:04d}_step={global_step:08d}_valwer={val_wer:.6f}.pt"
 
@@ -383,7 +384,6 @@ def _resolve_resume_checkpoint_path(
         checkpoint.get("global_step"),
     )
     return checkpoint_path
-
 
 
 def resolve_device(device: str) -> torch.device:
@@ -1091,5 +1091,3 @@ def _average_topk_checkpoints(output_dir: Path) -> Path | None:
     save_checkpoint(averaged_checkpoint, averaged_path)
     _export_inference_checkpoint(averaged_checkpoint, averaged_path)
     return averaged_path
-
-

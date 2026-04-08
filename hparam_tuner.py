@@ -350,7 +350,9 @@ def estimate_training_hparams(args: argparse.Namespace) -> TrainingEstimate:
         parameter_scale=parameter_scale,
         available_memory_gb=profile.memory_gb,
         target_effective_frames=target_effective_frames,
-        estimated_effective_frames=per_rank_effective_frames * gradient_accumulation_steps * world_size,
+        estimated_effective_frames=per_rank_effective_frames
+        * gradient_accumulation_steps
+        * world_size,
         estimated_per_rank_effective_frames=per_rank_effective_frames * gradient_accumulation_steps,
         resolved_dtype=resolved_dtype,
         resolved_compile=resolved_compile,

@@ -228,11 +228,7 @@ def _remote_source_cache_root(cache_dir: str | Path | None = None) -> Path:
     if cache_dir is not None:
         return Path(cache_dir).expanduser() / "remote_sources"
     xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
-    base_cache_dir = (
-        Path(xdg_cache_home).expanduser()
-        if xdg_cache_home
-        else Path.home() / ".cache"
-    )
+    base_cache_dir = Path(xdg_cache_home).expanduser() if xdg_cache_home else Path.home() / ".cache"
     return base_cache_dir / "squeezeformer_pytorch" / "remote_sources"
 
 
@@ -889,15 +885,12 @@ def feature_cache_path(
     feature_cache_path = Path(feature_cache_dir)
     feature_cache_path.mkdir(parents=True, exist_ok=True)
     safe_utterance_id = "".join(
-        char if char.isalnum() or char in {"-", "_", "."} else "_"
-        for char in utterance_id
+        char if char.isalnum() or char in {"-", "_", "."} else "_" for char in utterance_id
     ).strip("._")
     if not safe_utterance_id:
         safe_utterance_id = hashlib.sha256(utterance_id.encode("utf-8")).hexdigest()[:16]
     elif safe_utterance_id != utterance_id:
-        safe_utterance_id = (
-            f"{safe_utterance_id[:96]}_{hashlib.sha256(utterance_id.encode('utf-8')).hexdigest()[:8]}"
-        )
+        safe_utterance_id = f"{safe_utterance_id[:96]}_{hashlib.sha256(utterance_id.encode('utf-8')).hexdigest()[:8]}"
     cache_config: dict[str, object] = {"featurizer": featurizer.config_dict()}
     if cache_key_extra:
         cache_config["extra"] = cache_key_extra

@@ -12,7 +12,8 @@ from squeezeformer_pytorch.runtime_types import (
     DTypeChoice,
     OptimizerChoice,
 )
-from squeezeformer_pytorch.training.runtime import resolve_device, _validate_device_ready
+from squeezeformer_pytorch.training.runtime import _validate_device_ready, resolve_device
+
 
 def _validate_device_argument(device: str) -> str:
     try:
@@ -221,7 +222,6 @@ def _validate_startup_args(args: argparse.Namespace, *, world_size: int) -> None
         _validate_existing_local_path_argument("--dataset-source", source)
     for source in args.validation_dataset_source or []:
         _validate_existing_local_path_argument("--validation-dataset-source", source)
-
 
 
 def parse_args() -> argparse.Namespace:
@@ -555,6 +555,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--example-limit", type=int, default=5)
     return parser.parse_args()
 
+
 def _resolve_block_pattern(block_pattern: str) -> tuple[str, ...]:
     tokens = tuple(token.strip() for token in block_pattern.split(",") if token.strip())
     if not tokens or any(token not in {"M", "C", "s"} for token in tokens):
@@ -599,5 +600,3 @@ def _resolve_scheduler_kwargs(args: argparse.Namespace, optimizer_name: str) -> 
             else args.decay_exponent
         ),
     }
-
-

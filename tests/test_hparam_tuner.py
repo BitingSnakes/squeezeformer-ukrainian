@@ -108,9 +108,18 @@ def test_distributed_reduces_gradient_accumulation(monkeypatch) -> None:
     estimate_single = estimate_training_hparams(args_single)
     estimate_distributed = estimate_training_hparams(args_distributed)
 
-    assert estimate_distributed.gradient_accumulation_steps <= estimate_single.gradient_accumulation_steps
-    assert estimate_distributed.estimated_per_rank_effective_frames <= estimate_single.estimated_effective_frames
-    assert estimate_distributed.estimated_effective_frames >= estimate_distributed.estimated_per_rank_effective_frames
+    assert (
+        estimate_distributed.gradient_accumulation_steps
+        <= estimate_single.gradient_accumulation_steps
+    )
+    assert (
+        estimate_distributed.estimated_per_rank_effective_frames
+        <= estimate_single.estimated_effective_frames
+    )
+    assert (
+        estimate_distributed.estimated_effective_frames
+        >= estimate_distributed.estimated_per_rank_effective_frames
+    )
 
 
 def test_distributed_requires_at_least_two_processes() -> None:

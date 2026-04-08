@@ -20,9 +20,9 @@ from squeezeformer_pytorch.checkpoints import (
 )
 from squeezeformer_pytorch.frontend import AudioFeaturizer
 from squeezeformer_pytorch.inference_runtime import (
-    join_transcripts as _join_transcripts,
     merge_chunk_transcript as _merge_chunk_transcript,
-    normalize_transcript_whitespace as _normalize_whitespace,
+)
+from squeezeformer_pytorch.inference_runtime import (
     resolve_inference_checkpoint_settings,
 )
 from squeezeformer_pytorch.model import (
@@ -205,6 +205,7 @@ class ASRInferenceSession:
             return False
         duration_seconds = total_samples / float(sample_rate)
         return duration_seconds > self.long_form_threshold_seconds
+
 
 def resolve_checkpoint_path(checkpoint: str) -> str:
     if checkpoint == DEFAULT_CHECKPOINT:

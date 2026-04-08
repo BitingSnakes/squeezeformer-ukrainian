@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import argparse
-from functools import partial
 import json
 import os
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
+from functools import partial
 from pathlib import Path
 
 import torch
@@ -14,8 +14,8 @@ from squeezeformer_pytorch.data import (
     AudioFeaturizer,
     SpecAugment,
     WaveformAugment,
-    feature_tensor_is_plausible,
     feature_cache_path,
+    feature_tensor_is_plausible,
     iter_records_from_source,
     load_audio,
     max_reasonable_feature_frames,
@@ -446,7 +446,9 @@ def main() -> None:
         "normalize_per_frame": args.normalize_per_frame,
     }
     specaugment_kwargs = _specaugment_kwargs(args) if specaugment is not None else None
-    waveform_augment_kwargs = _waveform_augment_kwargs(args) if waveform_augment is not None else None
+    waveform_augment_kwargs = (
+        _waveform_augment_kwargs(args) if waveform_augment is not None else None
+    )
     num_workers = max(1, args.num_workers)
     split_cache_dir_str = str(split_cache_dir)
     try:
@@ -468,7 +470,9 @@ def main() -> None:
             if not saw_record:
                 raise RuntimeError("No records were selected for feature extraction.")
         else:
-            executor_cls = ProcessPoolExecutor if args.parallelism == "process" else ThreadPoolExecutor
+            executor_cls = (
+                ProcessPoolExecutor if args.parallelism == "process" else ThreadPoolExecutor
+            )
             executor_kwargs = {"max_workers": num_workers}
             if args.parallelism == "process":
                 executor_kwargs["initializer"] = _initialize_process_worker

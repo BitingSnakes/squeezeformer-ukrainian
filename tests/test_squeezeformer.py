@@ -33,9 +33,9 @@ from squeezeformer_pytorch.data import (
     collate_asr_batch,
     create_dataloader,
     iter_corpus_texts,
+    iter_manifest_rows_from_source,
     iter_records,
     iter_records_from_source,
-    iter_manifest_rows_from_source,
     load_corpus_texts,
     load_records,
     normalize_transcript,
@@ -51,8 +51,8 @@ from squeezeformer_pytorch.secrets import REDACTED, sanitize_for_serialization
 from train import (
     DiskBackedRecordStore,
     ExponentialMovingAverage,
-    _average_topk_checkpoints,
     _aed_cross_entropy_loss,
+    _average_topk_checkpoints,
     _build_disk_backed_record_store,
     _build_fp8_recipe,
     _configure_console_logger,
@@ -1479,7 +1479,9 @@ def test_feature_cache_is_used_when_waveform_augment_is_effectively_disabled(
     assert torch.equal(first_item["features"], second_item["features"])
 
 
-def test_invalid_cached_features_are_recomputed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_invalid_cached_features_are_recomputed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     class DummyTokenizer:
         def encode(self, text: str) -> list[int]:
             return [len(text)]

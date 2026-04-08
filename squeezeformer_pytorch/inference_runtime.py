@@ -12,7 +12,9 @@ def resolve_inference_checkpoint_settings(checkpoint_data: dict[str, Any]) -> di
 
     if intermediate_ctc_weight > 0.0:
         if intermediate_ctc_layers is not None:
-            resolved_intermediate_ctc_layers = tuple(int(layer) for layer in intermediate_ctc_layers)
+            resolved_intermediate_ctc_layers = tuple(
+                int(layer) for layer in intermediate_ctc_layers
+            )
         elif intermediate_ctc_layer is not None:
             resolved_intermediate_ctc_layers = (int(intermediate_ctc_layer),)
         else:
