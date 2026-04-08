@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import NamedTuple
 
 import torch
-import trackio
 import torchaudio
+import trackio
 from torch import Tensor, nn
 from torch.nn import functional as F
 

@@ -34,51 +34,60 @@ from squeezeformer_pytorch.data import (
     create_dataloader,
 )
 from squeezeformer_pytorch.lm import NGramLanguageModel
-from squeezeformer_pytorch.training import data_loading as _training_data_loading
-from squeezeformer_pytorch.training import runtime as _training_runtime
 from squeezeformer_pytorch.model import (
     SqueezeformerConfig,
     squeezeformer_variant,
     transformer_engine_available,
 )
 from squeezeformer_pytorch.runtime_types import DTypeChoice
+from squeezeformer_pytorch.training import data_loading as _training_data_loading
+from squeezeformer_pytorch.training import runtime as _training_runtime
 from squeezeformer_pytorch.training.cli import (
     _resolve_block_pattern,
     _resolve_float_tuple,
     _resolve_scheduler_kwargs,
     _validate_startup_args,
-    _validate_device_argument,
     parse_args,
 )
+from squeezeformer_pytorch.training.cli import (
+    _validate_device_argument as _cli_validate_device_argument,
+)
 from squeezeformer_pytorch.training.data_loading import (
-    DiskBackedRecordStore,
+    DiskBackedRecordStore as _DiskBackedRecordStore,
+)
+from squeezeformer_pytorch.training.data_loading import (
+    _build_disk_backed_record_store as _data_loading_build_disk_backed_record_store,
+)
+from squeezeformer_pytorch.training.data_loading import (
     _build_split_audit,
-    _build_disk_backed_record_store,
-    _ensure_opus_decode_support,
     _frames_to_minutes,
-    _load_records_from_dataset_roots,
-    _load_train_val_records,
-    _resolve_dataset_roots,
     _record_store_duration_hours,
     _resolve_dataset_sources,
     _resolve_validation_dataset_sources,
     _shard_records_for_rank,
 )
+from squeezeformer_pytorch.training.data_loading import (
+    _load_records_from_dataset_roots as _data_loading_load_records_from_dataset_roots,
+)
 from squeezeformer_pytorch.training.evaluation import (
     _aed_cross_entropy_loss,
     _build_aed_targets,
     _evaluate_and_checkpoint,
-    decode_batch,
-    evaluate,
-    speaker_level_metrics,
+)
+from squeezeformer_pytorch.training.evaluation import (
+    decode_batch as _evaluation_decode_batch,
+)
+from squeezeformer_pytorch.training.evaluation import (
+    evaluate as _evaluation_evaluate,
+)
+from squeezeformer_pytorch.training.evaluation import (
+    speaker_level_metrics as _evaluation_speaker_level_metrics,
 )
 from squeezeformer_pytorch.training.runtime import (
     ExponentialMovingAverage,
     FrozenAudioTeacher,
     FrozenLibertaTeacher,
     _autocast_context,
-    _average_topk_checkpoints,
-    _build_fp8_recipe,
     _compute_grad_norm,
     _configure_console_logger,
     _configure_trackio_storage,
@@ -94,16 +103,23 @@ from squeezeformer_pytorch.training.runtime import (
     _resolve_liberta_settings,
     _resolve_model_load_dtype,
     _resolve_resume_checkpoint_path,
-    _update_top_checkpoints,
-    _validate_device_ready,
-    _validate_fp8_runtime,
     _validate_resume_checkpoint_payload,
     _variant_defaults,
-    build_optimizer,
     build_paper_scheduler,
     resolve_device,
 )
+from squeezeformer_pytorch.training.runtime import (
+    _validate_device_ready as _runtime_validate_device_ready,
+)
 
+DiskBackedRecordStore = _DiskBackedRecordStore
+_build_disk_backed_record_store = _data_loading_build_disk_backed_record_store
+_load_records_from_dataset_roots = _data_loading_load_records_from_dataset_roots
+_validate_device_argument = _cli_validate_device_argument
+_validate_device_ready = _runtime_validate_device_ready
+decode_batch = _evaluation_decode_batch
+evaluate = _evaluation_evaluate
+speaker_level_metrics = _evaluation_speaker_level_metrics
 download_dataset = _data.download_dataset
 load_audio = _data.load_audio
 te = _training_runtime.te
@@ -1109,12 +1125,9 @@ def main() -> None:
                         decoder_inputs=decoder_inputs,
                         liberta_lengths=decoder_target_lengths,
                     )
-                    encoded = forward_outputs["encoded"]
-                    output_lengths = forward_outputs["output_lengths"]
                     main_ctc_loss = forward_outputs["main_ctc_loss"]
                     intermediate_ctc_losses_map = forward_outputs["intermediate_ctc_losses"]
                     aed_logits = forward_outputs.get("aed_logits")
-                    aed_hidden = forward_outputs.get("aed_hidden")
                     liberta_student_embeddings = forward_outputs.get("liberta_student_embeddings")
                     audio_teacher_student_states = forward_outputs.get("audio_teacher_student_states")
                     if intermediate_ctc_losses_map:
@@ -1136,7 +1149,6 @@ def main() -> None:
                         loss = (1.0 - args.aed_loss_weight) * loss + args.aed_loss_weight * aed_loss
                     else:
                         aed_loss = None
-                        aed_hidden = None
                 if (
                     liberta_teacher is not None
                     and liberta_student_embeddings is not None

@@ -358,7 +358,6 @@ def evaluate(
                         decoder_inputs=decoder_inputs,
                         liberta_lengths=decoder_target_lengths,
                     )
-                    encoded = forward_outputs["encoded"]
                     output_lengths = forward_outputs["output_lengths"]
                     log_probs = forward_outputs["main_log_probs"]
                     main_ctc_loss = forward_outputs["main_ctc_loss"]
@@ -374,7 +373,6 @@ def evaluate(
                         intermediate_ctc_loss = None
                         combined_ctc_loss = main_ctc_loss
                     aed_logits = forward_outputs.get("aed_logits")
-                    aed_hidden = forward_outputs.get("aed_hidden")
                     liberta_student_embeddings = forward_outputs.get("liberta_student_embeddings")
                     audio_teacher_student_states = forward_outputs.get("audio_teacher_student_states")
                     if aed_logits is not None and decoder_targets is not None:
@@ -386,7 +384,6 @@ def evaluate(
                         loss = (1.0 - aed_loss_weight) * combined_ctc_loss + aed_loss_weight * aed_loss
                     else:
                         aed_loss = None
-                        aed_hidden = None
                         loss = combined_ctc_loss
                 total_forward_seconds += time.perf_counter() - forward_start_time
                 if (

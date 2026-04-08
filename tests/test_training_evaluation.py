@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 
@@ -10,9 +11,9 @@ sys.modules.setdefault(
     types.SimpleNamespace(init=lambda **_kwargs: None, log=lambda *_args, **_kwargs: None),
 )
 
-from squeezeformer_pytorch.asr import CharacterTokenizer
-from squeezeformer_pytorch.runtime_types import DTypeChoice
-from squeezeformer_pytorch.training import evaluation as training_evaluation
+CharacterTokenizer = importlib.import_module("squeezeformer_pytorch.asr").CharacterTokenizer
+DTypeChoice = importlib.import_module("squeezeformer_pytorch.runtime_types").DTypeChoice
+training_evaluation = importlib.import_module("squeezeformer_pytorch.training.evaluation")
 
 
 def test_greedy_decode_ignores_padded_frames() -> None:
