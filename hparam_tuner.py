@@ -79,9 +79,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dataset-repo", default="speech-uk/cv22")
     parser.add_argument("--variant", default="sm", choices=VARIANT_CHOICES)
-    parser.add_argument("--optimizer", default="muon", choices=OPTIMIZER_CHOICES)
+    parser.add_argument("--optimizer", default="adamw", choices=OPTIMIZER_CHOICES)
     parser.add_argument("--tokenizer", default="sentencepiece", choices=TOKENIZER_CHOICES)
-    parser.add_argument("--spm-vocab-size", type=int, default=4096)
+    parser.add_argument("--spm-vocab-size", type=int, default=128)
     parser.add_argument("--device", type=_validate_device_argument, required=True)
     parser.add_argument(
         "--distributed",
@@ -106,7 +106,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--beam-size", type=int, default=8)
     parser.add_argument("--output-dir", default="artifacts/squeezeformer-cv22")
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=500)
     parser.add_argument("--base-batch-size", type=int, default=8)
     parser.add_argument("--base-max-batch-frames", type=int, default=12000)
     parser.add_argument("--base-gradient-accumulation-steps", type=int, default=4)

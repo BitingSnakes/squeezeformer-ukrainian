@@ -520,7 +520,9 @@ def _variant_defaults(variant: str) -> SchedulerDefaults:
         return SchedulerDefaults(peak_lr=2e-3, num_time_masks=5)
     if variant == "m":
         return SchedulerDefaults(peak_lr=1.5e-3, num_time_masks=7)
-    return SchedulerDefaults(peak_lr=1e-3, num_time_masks=10)
+    if variant == "ml":
+        return SchedulerDefaults(peak_lr=1e-3, num_time_masks=10)
+    return SchedulerDefaults(peak_lr=5e-4, num_time_masks=10)
 
 
 def _parse_intermediate_ctc_layers(value: object) -> tuple[int, ...]:

@@ -355,9 +355,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--variant", default="sm", choices=["xs", "s", "sm", "m", "ml", "l"])
     parser.add_argument("--output-dir", default="artifacts/squeezeformer-cv22")
     parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=500)
     parser.add_argument("--learning-rate", type=float, default=None)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--muon-learning-rate", type=float, default=None)
     parser.add_argument("--adamw-learning-rate", type=float, default=None)
     parser.add_argument("--muon-weight-decay", type=float, default=None)
@@ -498,7 +498,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--optimizer",
         type=OptimizerChoice,
         choices=list(OptimizerChoice),
-        default=OptimizerChoice.MUON,
+        default=OptimizerChoice.ADAMW,
     )
     parser.add_argument(
         "--dtype",
@@ -560,7 +560,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "training transcripts. Supports tokenizer JSON files and SentencePiece .model files."
         ),
     )
-    parser.add_argument("--spm-vocab-size", type=int, default=4096)
+    parser.add_argument("--spm-vocab-size", type=int, default=128)
     parser.add_argument(
         "--spm-model-type",
         default="unigram",
@@ -581,7 +581,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=None,
     )
-    parser.add_argument("--intermediate-ctc-weight", type=float, default=0.3)
+    parser.add_argument("--intermediate-ctc-weight", type=float, default=0.0)
     parser.add_argument(
         "--aed-decoder",
         action=argparse.BooleanOptionalAction,
@@ -665,13 +665,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Weight for a training-only penalty on positive blank-vs-best-nonblank logit margin."
         ),
     )
-    parser.add_argument("--ema-decay", type=float, default=0.999)
+    parser.add_argument("--ema-decay", type=float, default=0.0)
     parser.add_argument("--ema-warmup-steps", type=int, default=0)
     parser.add_argument(
         "--validation-model-source",
         type=ValidationModelSource,
         choices=list(ValidationModelSource),
-        default=ValidationModelSource.EMA,
+        default=ValidationModelSource.RAW,
         help="Which model weights to use for validation and validation-selected checkpoints.",
     )
     parser.add_argument("--muon-warmup-epochs", type=int, default=None)
@@ -692,7 +692,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--attention-backend",
-        default="flash",
+        default="relative",
         choices=["relative", "flash"],
         help=(
             "Attention implementation. 'flash' prefers kernels-community/flash-attn2 on "

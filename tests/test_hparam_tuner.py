@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+import sys
 
 import hparam_tuner
 from hparam_tuner import build_train_command, estimate_training_hparams
@@ -51,6 +52,24 @@ def test_estimate_training_hparams_cpu_smoke() -> None:
     assert estimate.variant == "sm"
     assert estimate.resolved_dtype == "bfloat16"
     assert estimate.parameter_scale > 0.0
+
+
+def test_parse_args_defaults_match_paper_recipe(monkeypatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hparam_tuner.py",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    args = hparam_tuner.parse_args()
+
+    assert args.optimizer == "adamw"
+    assert args.spm_vocab_size == 128
+    assert args.epochs == 500
 
 
 def test_build_train_command_includes_estimated_knobs() -> None:

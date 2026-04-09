@@ -6,8 +6,10 @@ import pytest
 
 from squeezeformer_pytorch.model import SqueezeformerConfig, VARIANT_CONFIGS
 from squeezeformer_pytorch.training.cli import parse_args
+from squeezeformer_pytorch.runtime_types import OptimizerChoice, ValidationModelSource
 from squeezeformer_pytorch.training.runtime import (
     _default_intermediate_ctc_layers,
+    _variant_defaults,
     _resolve_intermediate_ctc_settings,
 )
 
@@ -128,6 +130,33 @@ def test_parse_args_accepts_beam_length_bonus() -> None:
     )
 
     assert args.beam_length_bonus == 0.25
+
+
+def test_parse_args_defaults_match_paper_recipe() -> None:
+    args = parse_args(
+        [
+            "--device",
+            "cpu",
+        ]
+    )
+
+    assert args.epochs == 500
+    assert args.optimizer == OptimizerChoice.ADAMW
+    assert args.weight_decay == 5e-4
+    assert args.spm_vocab_size == 128
+    assert args.warmup_epochs == 20
+    assert args.hold_epochs == 160
+    assert args.intermediate_ctc_weight == 0.0
+    assert args.ema_decay == 0.0
+    assert args.validation_model_source == ValidationModelSource.RAW
+    assert args.attention_backend == "relative"
+
+
+def test_variant_scheduler_defaults_match_paper_recipe() -> None:
+    assert _variant_defaults("sm").peak_lr == 2e-3
+    assert _variant_defaults("m").peak_lr == 1.5e-3
+    assert _variant_defaults("ml").peak_lr == 1e-3
+    assert _variant_defaults("l").peak_lr == 5e-4
 
 
 def test_parse_args_accepts_run_trackio_ui_flag() -> None:
