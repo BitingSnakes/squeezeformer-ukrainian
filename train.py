@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from contextlib import nullcontext
 from copy import deepcopy
@@ -202,18 +203,43 @@ def _build_trackio_cli_arguments_table(argv: list[str]) -> trackio.Table | None:
     return trackio.Table(data=rows)
 
 
-def _launch_trackio_ui(*, trackio_dir: Path) -> subprocess.Popen[bytes]:
+def _relay_trackio_ui_output(
+    *,
+    stream,
+    logger: logging.Logger,
+) -> None:
+    if stream is None:
+        return
+    try:
+        for raw_line in iter(stream.readline, ""):
+            line = raw_line.strip()
+            if line:
+                logger.info("trackio ui | %s", line)
+    finally:
+        stream.close()
+
+
+def _launch_trackio_ui(*, trackio_dir: Path, logger: logging.Logger) -> subprocess.Popen[str]:
     env = os.environ.copy()
     env["TRACKIO_DIR"] = str(trackio_dir)
     env["GRADIO_SHARE"] = "True"
-    return subprocess.Popen(
+    process = subprocess.Popen(
         ["uv", "run", "python", "-c", "import trackio; trackio.show()"],
         env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
         start_new_session=True,
     )
+    threading.Thread(
+        target=_relay_trackio_ui_output,
+        kwargs={"stream": process.stdout, "logger": logger},
+        name="trackio-ui-log-relay",
+        daemon=True,
+    ).start()
+    return process
 
 
 def _validate_resume_tokenizer_configuration(
@@ -565,11 +591,12 @@ def main() -> None:
     )
     trackio_dir = _configure_trackio_storage(output_dir)
     if is_main_process and args.run_trackio_ui:
-        trackio_ui_process = _launch_trackio_ui(trackio_dir=trackio_dir)
+        trackio_ui_process = _launch_trackio_ui(trackio_dir=trackio_dir, logger=logger)
         logger.info(
-            "started trackio ui pid=%s trackio_dir=%s",
+            "started trackio ui pid=%s trackio_dir=%s command=%r",
             trackio_ui_process.pid,
             trackio_dir,
+            ["uv", "run", "python", "-c", "import trackio; trackio.show()"],
         )
     resume_path = _resolve_resume_checkpoint_path(args, output_dir=output_dir, logger=logger)
     logger.info(

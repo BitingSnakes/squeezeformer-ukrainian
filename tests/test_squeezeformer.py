@@ -5,6 +5,7 @@ import math
 import pickle
 import subprocess
 import sys
+import threading
 from dataclasses import asdict
 from io import BytesIO
 from pathlib import Path
@@ -193,6 +194,15 @@ def test_launch_trackio_ui_uses_trackio_dir_environment(monkeypatch, tmp_path: P
 
     class DummyProcess:
         pid = 4321
+        stdout = object()
+
+    class DummyThread:
+        def __init__(self, *args, **kwargs):
+            captured["thread_args"] = args
+            captured["thread_kwargs"] = kwargs
+
+        def start(self):
+            captured["thread_started"] = True
 
     def fake_popen(*args, **kwargs):
         captured["args"] = args
@@ -200,8 +210,12 @@ def test_launch_trackio_ui_uses_trackio_dir_environment(monkeypatch, tmp_path: P
         return DummyProcess()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(threading, "Thread", DummyThread)
 
-    process = _launch_trackio_ui(trackio_dir=tmp_path / "trackio")
+    process = _launch_trackio_ui(
+        trackio_dir=tmp_path / "trackio",
+        logger=logging.getLogger("test"),
+    )
 
     assert process.pid == 4321
     assert captured["args"] == (
@@ -209,10 +223,16 @@ def test_launch_trackio_ui_uses_trackio_dir_environment(monkeypatch, tmp_path: P
     )
     assert captured["kwargs"]["env"]["TRACKIO_DIR"] == str(tmp_path / "trackio")
     assert captured["kwargs"]["env"]["GRADIO_SHARE"] == "True"
-    assert captured["kwargs"]["stdout"] is subprocess.DEVNULL
-    assert captured["kwargs"]["stderr"] is subprocess.DEVNULL
+    assert captured["kwargs"]["stdout"] is subprocess.PIPE
+    assert captured["kwargs"]["stderr"] is subprocess.STDOUT
     assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
+    assert captured["kwargs"]["text"] is True
+    assert captured["kwargs"]["bufsize"] == 1
     assert captured["kwargs"]["start_new_session"] is True
+    assert captured["thread_kwargs"]["kwargs"]["stream"] is process.stdout
+    assert captured["thread_kwargs"]["kwargs"]["logger"].name == "test"
+    assert captured["thread_kwargs"]["daemon"] is True
+    assert captured["thread_started"] is True
 
 
 @torch.no_grad()
