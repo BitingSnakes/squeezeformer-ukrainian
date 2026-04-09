@@ -245,6 +245,12 @@ def test_flash_attention_backend_accepts_sequence_mask_for_sdpa_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
+    expected_mask = (
+        make_sequence_mask(torch.tensor([4, 2], dtype=torch.int64), max_length=4)
+        .unsqueeze(1)
+        .unsqueeze(2)
+    )
+    expected_mask = expected_mask & expected_mask.transpose(-1, -2)
 
     def fake_sdpa(
         query: torch.Tensor,
@@ -256,6 +262,7 @@ def test_flash_attention_backend_accepts_sequence_mask_for_sdpa_fallback(
         is_causal: bool = False,
     ) -> torch.Tensor:
         captured["attn_mask_shape"] = None if attn_mask is None else attn_mask.shape
+        captured["attn_mask"] = attn_mask
         return torch.zeros_like(query)
 
     monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", fake_sdpa)
@@ -267,7 +274,8 @@ def test_flash_attention_backend_accepts_sequence_mask_for_sdpa_fallback(
 
     out = attn(x, mask=mask)
 
-    assert captured["attn_mask_shape"] == (2, 1, 1, 4)
+    assert captured["attn_mask_shape"] == (2, 1, 4, 4)
+    assert torch.equal(captured["attn_mask"], expected_mask)
     assert out.shape == x.shape
 
 
@@ -380,6 +388,23 @@ def test_transformer_engine_padding_path_preserves_shapes_without_te_runtime() -
         torch.tensor([expected_subsampled_length(160), expected_subsampled_length(123)]),
     )
     assert torch.isfinite(outputs).all()
+
+
+@torch.no_grad()
+def test_encoder_zeroes_padded_suffixes_after_each_block() -> None:
+    model = build_squeezeformer_encoder(
+        "xs",
+        attention_backend="flash",
+        flash_attn2_enabled=False,
+    )
+    model.eval()
+
+    features = torch.randn(2, 16, 80)
+    lengths = torch.tensor([16, 12], dtype=torch.int64)
+    outputs, output_lengths = model(features, lengths)
+
+    assert outputs.shape == (2, int(output_lengths.max().item()), model.config.d_model)
+    assert torch.count_nonzero(outputs[1, int(output_lengths[1].item()) :, :]) == 0
 
 
 @torch.no_grad()

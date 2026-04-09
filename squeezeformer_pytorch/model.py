@@ -319,7 +319,7 @@ class FlashMultiHeadAttention(nn.Module):
     @staticmethod
     def _to_sdpa_mask(mask: Tensor) -> Tensor:
         if mask.dim() == 2:
-            return mask.unsqueeze(1).unsqueeze(1)
+            return (mask.unsqueeze(1) & mask.unsqueeze(2)).unsqueeze(1)
         return mask.unsqueeze(1)
 
     @staticmethod
@@ -1026,6 +1026,7 @@ class SqueezeformerEncoder(nn.Module):
         x = x * math.sqrt(self.config.d_model)
         x = self.dropout(x)
         x = self.input_norm(x)
+        x = x * make_sequence_mask(lengths, max_length=x.size(1)).unsqueeze(-1).to(dtype=x.dtype)
 
         recover_stack: list[tuple[Tensor, Tensor]] = []
         intermediate_xs: dict[int, Tensor] = {}
@@ -1081,6 +1082,9 @@ class SqueezeformerEncoder(nn.Module):
             else:
                 x = block(x, pos=pos, attn_mask=attn_mask, pad_mask=pad_mask)
             x = x[:, : int(lengths.max().item()), :]
+            x = x * make_sequence_mask(lengths, max_length=x.size(1)).unsqueeze(-1).to(
+                dtype=x.dtype
+            )
             if layer_index in intermediate_layer_indices:
                 if intermediate_layer_callback is not None:
                     intermediate_layer_callback(layer_index, x, lengths)
@@ -1090,6 +1094,9 @@ class SqueezeformerEncoder(nn.Module):
             if layer_index in post_block_transforms:
                 x, lengths = post_block_transforms[layer_index](x, lengths)
                 x = x[:, : int(lengths.max().item()), :]
+                x = x * make_sequence_mask(lengths, max_length=x.size(1)).unsqueeze(-1).to(
+                    dtype=x.dtype
+                )
 
         return x, lengths, intermediate_xs, intermediate_lengths
 
