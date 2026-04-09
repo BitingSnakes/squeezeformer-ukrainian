@@ -617,6 +617,25 @@ def test_initial_ctc_blank_bias_applies_to_all_ctc_heads() -> None:
         assert torch.isclose(classifier.bias[0], torch.tensor(-0.5))
 
 
+def test_ctc_length_diagnostics_count_repeated_adjacent_targets() -> None:
+    targets = torch.tensor([1, 1, 2, 3, 4, 4], dtype=torch.long)
+    target_lengths = torch.tensor([3, 3], dtype=torch.long)
+    minimum_lengths = SqueezeformerCTC._ctc_minimum_alignment_lengths(
+        targets,
+        target_lengths,
+    )
+
+    diagnostics = SqueezeformerCTC._ctc_length_diagnostics(
+        torch.tensor([3, 4], dtype=torch.long),
+        targets,
+        torch.tensor([3, 3], dtype=torch.long),
+    )
+
+    assert torch.equal(minimum_lengths, torch.tensor([4, 4], dtype=torch.long))
+    assert diagnostics["impossible_sample_count"] == 1.0
+    assert diagnostics["tight_sample_count"] == 2.0
+
+
 @torch.no_grad()
 def test_identical_initial_ctc_heads_copy_main_head_weights_to_auxiliary_heads() -> None:
     model = SqueezeformerCTC(

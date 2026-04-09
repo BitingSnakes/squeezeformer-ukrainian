@@ -118,6 +118,7 @@ def ctc_batch_diagnostics(
     output_lengths: torch.Tensor,
     tokenizer: Tokenizer,
     *,
+    targets: torch.Tensor | None = None,
     target_lengths: torch.Tensor | None = None,
 ) -> dict[str, float]:
     valid_mask = torch.arange(log_probs.size(1), device=output_lengths.device).unsqueeze(
@@ -142,12 +143,20 @@ def ctc_batch_diagnostics(
         "sample_count": float(output_lengths.numel()),
         "output_frames_sum": float(output_lengths.sum().item()),
     }
-    if target_lengths is not None:
+    if targets is not None and target_lengths is not None:
+        minimum_lengths = target_lengths.to(dtype=torch.int64).clone()
+        offset = 0
+        for sample_index, target_length in enumerate(target_lengths.tolist()):
+            length = int(target_length)
+            if length > 1:
+                sample_targets = targets[offset : offset + length]
+                minimum_lengths[sample_index] += sample_targets[:-1].eq(sample_targets[1:]).sum()
+            offset += length
         diagnostics["target_tokens_sum"] = float(target_lengths.sum().item())
         diagnostics["impossible_sample_count"] = float(
-            output_lengths.lt(target_lengths).sum().item()
+            output_lengths.lt(minimum_lengths).sum().item()
         )
-        diagnostics["tight_sample_count"] = float(output_lengths.le(target_lengths).sum().item())
+        diagnostics["tight_sample_count"] = float(output_lengths.le(minimum_lengths).sum().item())
     return diagnostics
 
 
@@ -741,6 +750,7 @@ def evaluate(
                     log_probs,
                     output_lengths,
                     tokenizer,
+                    targets=targets,
                     target_lengths=target_lengths,
                 )
                 total_blank_probability += diagnostics["blank_probability_sum"]

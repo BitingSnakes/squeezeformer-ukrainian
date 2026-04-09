@@ -162,11 +162,12 @@ def test_ctc_batch_diagnostics_capture_impossible_and_tight_samples() -> None:
             log_probs,
             output_lengths=torch.tensor([1, 2]),
             tokenizer=tokenizer,
+            targets=torch.tensor([1, 1, 1, 1], dtype=torch.long),
             target_lengths=torch.tensor([2, 2]),
         )
     )
 
-    assert diagnostics["impossible_sample_fraction"] == 0.5
+    assert diagnostics["impossible_sample_fraction"] == 1.0
     assert diagnostics["tight_sample_fraction"] == 1.0
 
 

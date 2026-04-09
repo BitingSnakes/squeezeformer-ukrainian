@@ -1697,6 +1697,7 @@ def main() -> None:
                                 log_probs,
                                 output_lengths,
                                 tokenizer,
+                                targets=targets,
                                 target_lengths=target_lengths,
                             )
                         )
