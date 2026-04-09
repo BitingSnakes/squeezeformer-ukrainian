@@ -563,6 +563,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--intermediate-ctc-layer", type=int, default=None)
     parser.add_argument("--intermediate-ctc-layers", default=None)
     parser.add_argument(
+        "--no-intermediate-ctc-layers",
+        action="store_true",
+        help="Disable intermediate CTC layers even when defaults or checkpoint metadata exist.",
+    )
+    parser.add_argument(
         "--intermediate-ctc",
         action=argparse.BooleanOptionalAction,
         default=None,

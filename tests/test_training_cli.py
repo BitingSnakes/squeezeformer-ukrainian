@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from argparse import Namespace
+
 import pytest
 
 from squeezeformer_pytorch.training.cli import parse_args
+from squeezeformer_pytorch.training.runtime import _resolve_intermediate_ctc_settings
+from squeezeformer_pytorch.model import SqueezeformerConfig
 
 
 def test_parse_args_rejects_explicit_batch_size_with_duration_batching() -> None:
@@ -56,3 +60,38 @@ def test_parse_args_rejects_multiple_dynamic_batching_modes() -> None:
         str(error.value) == "Batching controls are mutually exclusive; choose only one of "
         "--max-batch-duration-sec, --max-batch-frames, or the adaptive batch options."
     )
+
+
+def test_parse_args_accepts_no_intermediate_ctc_layers_flag() -> None:
+    args = parse_args(
+        [
+            "--device",
+            "cpu",
+            "--no-intermediate-ctc-layers",
+        ]
+    )
+
+    assert args.no_intermediate_ctc_layers is True
+
+
+def test_no_intermediate_ctc_layers_overrides_checkpoint_settings() -> None:
+    args = Namespace(
+        intermediate_ctc=None,
+        intermediate_ctc_weight=0.3,
+        intermediate_ctc_layers=None,
+        intermediate_ctc_layer=None,
+        no_intermediate_ctc_layers=True,
+    )
+    encoder_config = SqueezeformerConfig(num_layers=12)
+    checkpoint = {
+        "training_args": {
+            "intermediate_ctc_enabled": True,
+            "intermediate_ctc_weight": 0.3,
+            "intermediate_ctc_layers": [3, 7],
+        }
+    }
+
+    layers, weight = _resolve_intermediate_ctc_settings(args, encoder_config, checkpoint)
+
+    assert layers == ()
+    assert weight == 0.0

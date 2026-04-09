@@ -553,6 +553,8 @@ def _resolve_intermediate_ctc_settings(
     checkpoint_layers = checkpoint_args.get("intermediate_ctc_layers")
     checkpoint_layer = checkpoint_args.get("intermediate_ctc_layer")
 
+    if getattr(args, "no_intermediate_ctc_layers", False):
+        return (), 0.0
     if args.intermediate_ctc is False:
         return (), 0.0
     if args.intermediate_ctc is None and checkpoint is not None and checkpoint_enabled is False:
