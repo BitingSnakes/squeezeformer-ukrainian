@@ -4,9 +4,9 @@ from argparse import Namespace
 
 import pytest
 
+from squeezeformer_pytorch.model import SqueezeformerConfig
 from squeezeformer_pytorch.training.cli import parse_args
 from squeezeformer_pytorch.training.runtime import _resolve_intermediate_ctc_settings
-from squeezeformer_pytorch.model import SqueezeformerConfig
 
 
 def test_parse_args_rejects_explicit_batch_size_with_duration_batching() -> None:

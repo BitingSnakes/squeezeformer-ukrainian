@@ -95,16 +95,13 @@ def ctc_batch_diagnostics(
     *,
     target_lengths: torch.Tensor | None = None,
 ) -> dict[str, float]:
-    valid_mask = (
-        torch.arange(log_probs.size(1), device=output_lengths.device).unsqueeze(0)
-        < output_lengths.unsqueeze(1)
-    )
+    valid_mask = torch.arange(log_probs.size(1), device=output_lengths.device).unsqueeze(
+        0
+    ) < output_lengths.unsqueeze(1)
     valid_frames = int(valid_mask.sum().item())
     blank_probabilities = log_probs[..., tokenizer.blank_id].exp()
     argmax_tokens = log_probs.argmax(dim=-1)
-    argmax_blank_frames = int(
-        ((argmax_tokens == tokenizer.blank_id) & valid_mask).sum().item()
-    )
+    argmax_blank_frames = int(((argmax_tokens == tokenizer.blank_id) & valid_mask).sum().item())
 
     nonblank_log_probs = log_probs.clone()
     nonblank_log_probs[..., tokenizer.blank_id] = float("-inf")
@@ -135,9 +132,7 @@ def summarize_ctc_batch_diagnostics(diagnostics: dict[str, float]) -> dict[str, 
         / decoded_frames,
         "argmax_blank_fraction": float(diagnostics.get("argmax_blank_frames", 0.0))
         / decoded_frames,
-        "avg_top_nonblank_probability": float(
-            diagnostics.get("top_nonblank_probability_sum", 0.0)
-        )
+        "avg_top_nonblank_probability": float(diagnostics.get("top_nonblank_probability_sum", 0.0))
         / decoded_frames,
         "avg_output_frames": output_frames_sum / sample_count,
         "avg_target_tokens": target_tokens_sum / sample_count,
@@ -308,9 +303,7 @@ def _merge_evaluation_shards(
         total_blank_probability += float(shard.get("total_blank_probability", 0.0))
         total_decoded_frames += int(shard.get("total_decoded_frames", 0))
         total_argmax_blank_frames += float(shard.get("total_argmax_blank_frames", 0.0))
-        total_top_nonblank_probability += float(
-            shard.get("total_top_nonblank_probability", 0.0)
-        )
+        total_top_nonblank_probability += float(shard.get("total_top_nonblank_probability", 0.0))
         total_target_tokens += float(shard.get("total_target_tokens", 0.0))
         total_samples += float(shard.get("total_samples", 0.0))
         references.extend(shard["references"])

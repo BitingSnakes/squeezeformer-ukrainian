@@ -104,8 +104,7 @@ class CharacterTokenizer(Tokenizer):
         if unknown_chars:
             formatted = ", ".join(repr(char) for char in unknown_chars)
             raise ValueError(
-                "CharacterTokenizer encountered character(s) outside the vocabulary: "
-                f"{formatted}"
+                f"CharacterTokenizer encountered character(s) outside the vocabulary: {formatted}"
             )
         return [self.token_to_id[char] for char in text]
 
