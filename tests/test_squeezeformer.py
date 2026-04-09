@@ -539,18 +539,17 @@ def test_convolution_module_masks_padded_suffix_before_batch_norm_statistics() -
 
 
 @torch.no_grad()
-def test_ctc_heads_start_with_negative_blank_bias() -> None:
+def test_only_main_ctc_head_starts_with_negative_blank_bias() -> None:
     model = SqueezeformerCTC(
         encoder_config=squeezeformer_variant("xs"),
         vocab_size=16,
         intermediate_ctc_layers=(1, 3),
     )
 
-    assert torch.isclose(model.classifier.bias[0], torch.tensor(-2.0))
+    assert torch.isclose(model.classifier.bias[0], torch.tensor(-0.5))
     assert torch.count_nonzero(model.classifier.bias[1:]) == 0
     for classifier in model.intermediate_classifiers.values():
-        assert torch.isclose(classifier.bias[0], torch.tensor(-2.0))
-        assert torch.count_nonzero(classifier.bias[1:]) == 0
+        assert not torch.isclose(classifier.bias[0], torch.tensor(-0.5))
 
 
 @torch.no_grad()

@@ -508,8 +508,6 @@ class SqueezeformerCTC(nn.Module):
             else None
         )
         self._initialize_ctc_head(self.classifier)
-        for classifier in self.intermediate_classifiers.values():
-            self._initialize_ctc_head(classifier)
 
     @staticmethod
     def _initialize_ctc_head(classifier: nn.Module) -> None:
