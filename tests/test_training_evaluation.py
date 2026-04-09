@@ -135,6 +135,34 @@ def test_ctc_batch_diagnostics_capture_impossible_and_tight_samples() -> None:
     assert diagnostics["tight_sample_fraction"] == 1.0
 
 
+def test_ctc_logit_diagnostics_capture_margin_and_entropy_signal() -> None:
+    tokenizer = CharacterTokenizer(symbols=["a", "b"])
+    logits = torch.tensor(
+        [
+            [
+                [3.0, 1.0, 0.0],
+                [0.5, 2.0, 1.0],
+                [9.0, 9.0, 9.0],
+            ]
+        ],
+        dtype=torch.float32,
+    )
+
+    diagnostics = training_evaluation.summarize_ctc_logit_diagnostics(
+        training_evaluation.ctc_logit_diagnostics(
+            logits,
+            output_lengths=torch.tensor([2]),
+            tokenizer=tokenizer,
+        )
+    )
+
+    assert diagnostics["avg_top_logit"] == 2.5
+    assert diagnostics["avg_top2_margin"] == 1.5
+    assert diagnostics["avg_blank_logit"] == 1.75
+    assert diagnostics["avg_blank_nonblank_margin"] == 0.25
+    assert diagnostics["avg_entropy"] > 0.0
+
+
 def test_evaluate_restores_model_mode(monkeypatch) -> None:
     class DummyTokenizer:
         blank_id = 0

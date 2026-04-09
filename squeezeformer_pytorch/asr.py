@@ -605,27 +605,37 @@ class SqueezeformerCTC(nn.Module):
         ), intermediate_log_probs
 
     def _chunked_log_probs_from_classifier(self, classifier: nn.Module, x: Tensor) -> Tensor:
+        _logits, log_probs = self._chunked_logits_and_log_probs_from_classifier(classifier, x)
+        return log_probs
+
+    def _chunked_logits_and_log_probs_from_classifier(
+        self,
+        classifier: nn.Module,
+        x: Tensor,
+    ) -> tuple[Tensor, Tensor]:
         batch, time, _ = x.shape
         vocab_size = getattr(classifier, "out_features", None)
         if not isinstance(vocab_size, int) or vocab_size <= 0:
             logits = apply_linear_with_fp8_padding(classifier, x)
-            return F.log_softmax(logits, dim=-1)
+            return logits, F.log_softmax(logits, dim=-1)
 
         bytes_per_element = max(1, x.element_size())
         target_elements = max(1, _BLANK_PRUNE_TARGET_BYTES // bytes_per_element)
         chunk_batch = max(1, target_elements // max(1, time * vocab_size))
         if chunk_batch >= batch:
             logits = apply_linear_with_fp8_padding(classifier, x)
-            return F.log_softmax(logits, dim=-1)
+            return logits, F.log_softmax(logits, dim=-1)
 
+        logits = x.new_empty((batch, time, vocab_size))
         log_probs = x.new_empty((batch, time, vocab_size))
         start = 0
         for chunk in x.split(chunk_batch, dim=0):
             stop = start + chunk.size(0)
             chunk_logits = apply_linear_with_fp8_padding(classifier, chunk)
+            logits[start:stop] = chunk_logits
             log_probs[start:stop] = F.log_softmax(chunk_logits, dim=-1)
             start = stop
-        return log_probs
+        return logits, log_probs
 
     def ctc_loss_from_encoded(
         self,
@@ -836,10 +846,12 @@ class SqueezeformerCTC(nn.Module):
                 }
             )
             if return_main_log_probs:
-                output["main_log_probs"] = self._chunked_log_probs_from_classifier(
+                main_logits, main_log_probs = self._chunked_logits_and_log_probs_from_classifier(
                     self.classifier,
                     encoded,
                 )
+                output["main_logits"] = main_logits
+                output["main_log_probs"] = main_log_probs
             if self.audio_teacher_projection is not None:
                 output["audio_teacher_student_states"] = self.project_encoder_for_audio_teacher(
                     encoded,

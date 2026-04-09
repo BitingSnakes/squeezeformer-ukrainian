@@ -76,8 +76,10 @@ from squeezeformer_pytorch.training.evaluation import (
     _build_aed_targets,
     _evaluate_and_checkpoint,
     ctc_batch_diagnostics,
+    ctc_logit_diagnostics,
     greedy_decode,
     summarize_ctc_batch_diagnostics,
+    summarize_ctc_logit_diagnostics,
 )
 from squeezeformer_pytorch.training.evaluation import (
     decode_batch as _evaluation_decode_batch,
@@ -1315,6 +1317,7 @@ def main() -> None:
                     )
                     output_lengths = forward_outputs["output_lengths"]
                     log_probs = forward_outputs.get("main_log_probs")
+                    logits = forward_outputs.get("main_logits")
                     aed_logits = forward_outputs.get("aed_logits")
                     liberta_student_embeddings = forward_outputs.get("liberta_student_embeddings")
                     audio_teacher_student_states = forward_outputs.get(
@@ -1493,6 +1496,13 @@ def main() -> None:
                                 target_lengths=target_lengths,
                             )
                         )
+                        ctc_logit_stats = summarize_ctc_logit_diagnostics(
+                            ctc_logit_diagnostics(
+                                logits if logits is not None else log_probs,
+                                output_lengths,
+                                tokenizer,
+                            )
+                        )
                     else:
                         ctc_diagnostics = {
                             "avg_blank_probability": 0.0,
@@ -1503,6 +1513,13 @@ def main() -> None:
                             "target_tokens_per_frame": 0.0,
                             "impossible_sample_fraction": 0.0,
                             "tight_sample_fraction": 0.0,
+                        }
+                        ctc_logit_stats = {
+                            "avg_blank_logit": 0.0,
+                            "avg_top_logit": 0.0,
+                            "avg_top2_margin": 0.0,
+                            "avg_blank_nonblank_margin": 0.0,
+                            "avg_entropy": 0.0,
                         }
                 if is_main_process and should_log_step:
                     learning_rates = {
@@ -1541,6 +1558,9 @@ def main() -> None:
                             "train_avg_blank_prob=%.4f train_argmax_blank_frac=%.4f "
                             "train_avg_top_nonblank_prob=%.4f train_target_tokens_per_frame=%.4f "
                             "train_ctc_impossible_frac=%.4f train_ctc_tight_frac=%.4f "
+                            "train_avg_blank_logit=%.4f train_avg_top_logit=%.4f "
+                            "train_avg_top2_margin=%.4f train_avg_blank_nonblank_margin=%.4f "
+                            "train_avg_entropy=%.4f "
                             "%s %s %s %s"
                         ),
                         epoch,
@@ -1562,6 +1582,11 @@ def main() -> None:
                         ctc_diagnostics["target_tokens_per_frame"],
                         ctc_diagnostics["impossible_sample_fraction"],
                         ctc_diagnostics["tight_sample_fraction"],
+                        ctc_logit_stats["avg_blank_logit"],
+                        ctc_logit_stats["avg_top_logit"],
+                        ctc_logit_stats["avg_top2_margin"],
+                        ctc_logit_stats["avg_blank_nonblank_margin"],
+                        ctc_logit_stats["avg_entropy"],
                         intermediate_loss_detail,
                         intermediate_length_detail,
                         memory_snapshot,
@@ -1610,6 +1635,13 @@ def main() -> None:
                             "train_ctc_tight_frac_step": ctc_diagnostics[
                                 "tight_sample_fraction"
                             ],
+                            "train_avg_blank_logit_step": ctc_logit_stats["avg_blank_logit"],
+                            "train_avg_top_logit_step": ctc_logit_stats["avg_top_logit"],
+                            "train_avg_top2_margin_step": ctc_logit_stats["avg_top2_margin"],
+                            "train_avg_blank_nonblank_margin_step": ctc_logit_stats[
+                                "avg_blank_nonblank_margin"
+                            ],
+                            "train_avg_entropy_step": ctc_logit_stats["avg_entropy"],
                             "ema_decay": ema.current_decay() if ema is not None else 0.0,
                             "cpu_rss_bytes": _read_proc_status_memory_bytes("VmRSS:") or 0,
                             "cpu_peak_rss_bytes": (
@@ -1668,6 +1700,17 @@ def main() -> None:
                                         "ctc_tight_frac_step": ctc_diagnostics[
                                             "tight_sample_fraction"
                                         ],
+                                        "avg_blank_logit_step": ctc_logit_stats[
+                                            "avg_blank_logit"
+                                        ],
+                                        "avg_top_logit_step": ctc_logit_stats["avg_top_logit"],
+                                        "avg_top2_margin_step": ctc_logit_stats[
+                                            "avg_top2_margin"
+                                        ],
+                                        "avg_blank_nonblank_margin_step": ctc_logit_stats[
+                                            "avg_blank_nonblank_margin"
+                                        ],
+                                        "avg_entropy_step": ctc_logit_stats["avg_entropy"],
                                         "avg_output_frames_step": ctc_diagnostics[
                                             "avg_output_frames"
                                         ],

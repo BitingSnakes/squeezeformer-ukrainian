@@ -127,6 +127,60 @@ def ctc_batch_diagnostics(
     return diagnostics
 
 
+def ctc_logit_diagnostics(
+    logits: torch.Tensor,
+    output_lengths: torch.Tensor,
+    tokenizer: Tokenizer,
+) -> dict[str, float]:
+    valid_mask = torch.arange(logits.size(1), device=output_lengths.device).unsqueeze(0) < output_lengths.unsqueeze(1)
+    valid_frames = int(valid_mask.sum().item())
+    if valid_frames <= 0:
+        return {
+            "decoded_frames": 0.0,
+            "blank_logit_sum": 0.0,
+            "top_logit_sum": 0.0,
+            "top2_margin_sum": 0.0,
+            "blank_nonblank_margin_sum": 0.0,
+            "entropy_sum": 0.0,
+        }
+
+    top2 = torch.topk(logits, k=min(2, logits.size(-1)), dim=-1).values
+    top_logits = top2[..., 0]
+    top2_margins = top2[..., 0] - top2[..., 1] if logits.size(-1) > 1 else torch.zeros_like(top_logits)
+    blank_logits = logits[..., tokenizer.blank_id]
+    nonblank_logits = logits.clone()
+    nonblank_logits[..., tokenizer.blank_id] = float("-inf")
+    best_nonblank_logits = nonblank_logits.max(dim=-1).values
+    blank_nonblank_margins = blank_logits - best_nonblank_logits
+    probabilities = torch.softmax(logits, dim=-1)
+    entropy = -(probabilities * torch.log_softmax(logits, dim=-1)).sum(dim=-1)
+
+    return {
+        "decoded_frames": float(valid_frames),
+        "blank_logit_sum": float(blank_logits.masked_select(valid_mask).sum().item()),
+        "top_logit_sum": float(top_logits.masked_select(valid_mask).sum().item()),
+        "top2_margin_sum": float(top2_margins.masked_select(valid_mask).sum().item()),
+        "blank_nonblank_margin_sum": float(
+            blank_nonblank_margins.masked_select(valid_mask).sum().item()
+        ),
+        "entropy_sum": float(entropy.masked_select(valid_mask).sum().item()),
+    }
+
+
+def summarize_ctc_logit_diagnostics(diagnostics: dict[str, float]) -> dict[str, float]:
+    decoded_frames = max(1.0, float(diagnostics.get("decoded_frames", 0.0)))
+    return {
+        "avg_blank_logit": float(diagnostics.get("blank_logit_sum", 0.0)) / decoded_frames,
+        "avg_top_logit": float(diagnostics.get("top_logit_sum", 0.0)) / decoded_frames,
+        "avg_top2_margin": float(diagnostics.get("top2_margin_sum", 0.0)) / decoded_frames,
+        "avg_blank_nonblank_margin": float(
+            diagnostics.get("blank_nonblank_margin_sum", 0.0)
+        )
+        / decoded_frames,
+        "avg_entropy": float(diagnostics.get("entropy_sum", 0.0)) / decoded_frames,
+    }
+
+
 def summarize_ctc_batch_diagnostics(diagnostics: dict[str, float]) -> dict[str, float]:
     decoded_frames = max(1.0, float(diagnostics.get("decoded_frames", 0.0)))
     sample_count = max(1.0, float(diagnostics.get("sample_count", 0.0)))
