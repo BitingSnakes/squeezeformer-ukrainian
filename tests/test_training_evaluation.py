@@ -407,6 +407,7 @@ def test_merge_evaluation_shards_combines_all_examples(monkeypatch) -> None:
                 "total_liberta_distill_loss": 12.0,
                 "total_audio_teacher_loss": 14.0,
                 "total_batches": 2,
+                "total_samples": 1.0,
                 "references": ["a"],
                 "hypotheses": ["b"],
                 "utterance_ids": ["utt-1"],
@@ -414,14 +415,15 @@ def test_merge_evaluation_shards_combines_all_examples(monkeypatch) -> None:
                 "has_speaker_ids": [True],
             },
             {
-                "total_loss": 6.0,
-                "total_main_ctc_loss": 8.0,
-                "total_intermediate_ctc_loss": 10.0,
-                "total_combined_ctc_loss": 12.0,
-                "total_aed_loss": 14.0,
-                "total_liberta_distill_loss": 16.0,
-                "total_audio_teacher_loss": 18.0,
+                "total_loss": 18.0,
+                "total_main_ctc_loss": 24.0,
+                "total_intermediate_ctc_loss": 30.0,
+                "total_combined_ctc_loss": 36.0,
+                "total_aed_loss": 42.0,
+                "total_liberta_distill_loss": 48.0,
+                "total_audio_teacher_loss": 54.0,
                 "total_batches": 2,
+                "total_samples": 3.0,
                 "references": ["c"],
                 "hypotheses": ["d"],
                 "utterance_ids": ["utt-2"],
@@ -432,13 +434,13 @@ def test_merge_evaluation_shards_combines_all_examples(monkeypatch) -> None:
         example_limit=1,
     )
 
-    assert merged["metrics"]["loss"] == 2.0
-    assert merged["metrics"]["main_ctc_loss"] == 3.0
-    assert merged["metrics"]["intermediate_ctc_loss"] == 4.0
-    assert merged["metrics"]["combined_ctc_loss"] == 5.0
-    assert merged["metrics"]["aed_loss"] == 6.0
-    assert merged["metrics"]["liberta_distill_loss"] == 7.0
-    assert merged["metrics"]["audio_teacher_loss"] == 8.0
+    assert merged["metrics"]["loss"] == 5.0
+    assert merged["metrics"]["main_ctc_loss"] == 7.0
+    assert merged["metrics"]["intermediate_ctc_loss"] == 9.0
+    assert merged["metrics"]["combined_ctc_loss"] == 11.0
+    assert merged["metrics"]["aed_loss"] == 13.0
+    assert merged["metrics"]["liberta_distill_loss"] == 15.0
+    assert merged["metrics"]["audio_teacher_loss"] == 17.0
     assert merged["metrics"]["cer"] == 2.0
     assert merged["metrics"]["wer"] == 0.2
     assert merged["metrics"]["avg_blank_probability"] == 0.0

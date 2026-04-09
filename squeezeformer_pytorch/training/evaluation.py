@@ -486,14 +486,15 @@ def _merge_evaluation_shards(
         speaker_ids.extend(shard["speaker_ids"])
         has_speaker_ids.extend(shard["has_speaker_ids"])
 
+    loss_denominator = max(1.0, total_samples)
     metrics = {
-        "loss": total_loss / max(1, total_batches),
-        "main_ctc_loss": total_main_ctc_loss / max(1, total_batches),
-        "intermediate_ctc_loss": total_intermediate_ctc_loss / max(1, total_batches),
-        "combined_ctc_loss": total_combined_ctc_loss / max(1, total_batches),
-        "aed_loss": total_aed_loss / max(1, total_batches),
-        "liberta_distill_loss": total_liberta_distill_loss / max(1, total_batches),
-        "audio_teacher_loss": total_audio_teacher_loss / max(1, total_batches),
+        "loss": total_loss / loss_denominator,
+        "main_ctc_loss": total_main_ctc_loss / loss_denominator,
+        "intermediate_ctc_loss": total_intermediate_ctc_loss / loss_denominator,
+        "combined_ctc_loss": total_combined_ctc_loss / loss_denominator,
+        "aed_loss": total_aed_loss / loss_denominator,
+        "liberta_distill_loss": total_liberta_distill_loss / loss_denominator,
+        "audio_teacher_loss": total_audio_teacher_loss / loss_denominator,
         "cer": char_error_rate(references, hypotheses),
         "wer": word_error_rate(references, hypotheses),
     }
@@ -717,19 +718,20 @@ def evaluate(
                     total_teacher_seconds += time.perf_counter() - teacher_start_time
                 else:
                     audio_teacher_loss = None
-                total_loss += float(loss.item())
-                total_main_ctc_loss += float(main_ctc_loss.item())
+                local_batch_size = float(features.size(0))
+                total_loss += float(loss.item()) * local_batch_size
+                total_main_ctc_loss += float(main_ctc_loss.item()) * local_batch_size
                 total_intermediate_ctc_loss += float(
                     intermediate_ctc_loss.item() if intermediate_ctc_loss is not None else 0.0
-                )
-                total_combined_ctc_loss += float(combined_ctc_loss.item())
-                total_aed_loss += float(aed_loss.item() if aed_loss is not None else 0.0)
+                ) * local_batch_size
+                total_combined_ctc_loss += float(combined_ctc_loss.item()) * local_batch_size
+                total_aed_loss += float(aed_loss.item() if aed_loss is not None else 0.0) * local_batch_size
                 total_liberta_distill_loss += float(
                     liberta_distill_loss.item() if liberta_distill_loss is not None else 0.0
-                )
+                ) * local_batch_size
                 total_audio_teacher_loss += float(
                     audio_teacher_loss.item() if audio_teacher_loss is not None else 0.0
-                )
+                ) * local_batch_size
                 total_batches += 1
                 references.extend(batch["transcripts"])
                 utterance_ids.extend(batch["utterance_ids"])

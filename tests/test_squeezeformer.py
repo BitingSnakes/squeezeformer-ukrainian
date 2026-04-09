@@ -36,6 +36,8 @@ from squeezeformer_pytorch.data import (
     ASRDataset,
     AudioFeaturizer,
     AudioRecord,
+    DistributedBatchSampler,
+    DistributedIndexSampler,
     DurationBatchSampler,
     MaxFramesBatchSampler,
     SpecAugment,
@@ -59,6 +61,7 @@ from squeezeformer_pytorch.masking import (
 from squeezeformer_pytorch.runtime_types import DTypeChoice, OptimizerChoice
 from squeezeformer_pytorch.runtime_types import DecodeStrategy
 from squeezeformer_pytorch.secrets import REDACTED, sanitize_for_serialization
+from squeezeformer_pytorch.training.data_loading import _shard_records_for_rank
 from train import (
     DiskBackedRecordStore,
     ExponentialMovingAverage,
@@ -77,7 +80,6 @@ from train import (
     _load_train_val_records,
     _resolve_dataset_roots,
     _resolve_dataset_sources,
-    _shard_records_for_rank,
     _should_warn_on_blank_starvation,
     _update_top_checkpoints,
     _validate_device_argument,
@@ -1992,6 +1994,75 @@ def test_max_frames_batch_sampler_respects_frame_budget() -> None:
         assert len(batch) * max_frames <= 90
 
 
+def test_distributed_batch_sampler_repartitions_batches_each_epoch() -> None:
+    records = [
+        AudioRecord(None, None, str(index), str(index), estimated_frames=30)
+        for index in range(8)
+    ]
+    batch_sampler_rank0 = MaxFramesBatchSampler(
+        records,
+        max_batch_frames=30,
+        shuffle=True,
+        seed=7,
+    )
+    batch_sampler_rank1 = MaxFramesBatchSampler(
+        records,
+        max_batch_frames=30,
+        shuffle=True,
+        seed=7,
+    )
+    rank0 = DistributedBatchSampler(
+        batch_sampler_rank0,
+        rank=0,
+        world_size=2,
+    )
+    rank1 = DistributedBatchSampler(
+        batch_sampler_rank1,
+        rank=1,
+        world_size=2,
+    )
+
+    rank0.set_epoch(0)
+    rank1.set_epoch(0)
+    epoch0_rank0 = list(rank0)
+    epoch0_rank1 = list(rank1)
+    epoch0_combined = [
+        batch for pair in zip(epoch0_rank0, epoch0_rank1, strict=False) for batch in pair if batch
+    ]
+
+    rank0.set_epoch(1)
+    rank1.set_epoch(1)
+    epoch1_rank0 = list(rank0)
+    epoch1_rank1 = list(rank1)
+    epoch1_combined = [
+        batch for pair in zip(epoch1_rank0, epoch1_rank1, strict=False) for batch in pair if batch
+    ]
+
+    assert epoch0_combined != epoch1_combined
+    flattened = sorted(index for batch in epoch0_rank0 + epoch0_rank1 for index in batch)
+    assert flattened == list(range(len(records)))
+
+
+def test_distributed_index_sampler_can_leave_validation_uneven() -> None:
+    rank0 = DistributedIndexSampler(
+        5,
+        rank=0,
+        world_size=2,
+        shuffle=False,
+        pad_to_world_size=False,
+    )
+    rank1 = DistributedIndexSampler(
+        5,
+        rank=1,
+        world_size=2,
+        shuffle=False,
+        pad_to_world_size=False,
+    )
+
+    assert list(rank0) == [0, 2, 4]
+    assert list(rank1) == [1, 3]
+
+
 def test_duration_batch_sampler_respects_duration_budget() -> None:
     records = [
         AudioRecord(
@@ -2519,6 +2590,50 @@ def test_create_dataloader_uses_spawn_context_when_distributed_initialized(
         assert kwargs["multiprocessing_context"].get_start_method() == "spawn"
     else:
         assert "multiprocessing_context" not in kwargs
+
+
+def test_create_dataloader_wraps_max_frames_sampler_for_distributed_training(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyTokenizer:
+        def encode(self, text: str) -> list[int]:
+            return [len(text)]
+
+    captured: dict[str, object] = {}
+
+    class FakeDataLoader:
+        def __init__(self, dataset, *args, **kwargs) -> None:
+            captured["dataset"] = dataset
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(
+        "squeezeformer_pytorch.data.materialize_record_metadata", lambda *args, **kwargs: args[0]
+    )
+    monkeypatch.setattr("squeezeformer_pytorch.data.DataLoader", FakeDataLoader)
+
+    dataset = ASRDataset(
+        records=[
+            AudioRecord("dummy.wav", None, f"utt-{index}", f"utt-{index}", estimated_frames=32)
+            for index in range(4)
+        ],
+        tokenizer=DummyTokenizer(),
+        featurizer=AudioFeaturizer(),
+    )
+    create_dataloader(
+        dataset,
+        batch_size=1,
+        shuffle=True,
+        num_workers=0,
+        max_batch_frames=64,
+        distributed=True,
+        rank=0,
+        world_size=2,
+        seed=13,
+        pad_distributed_batches=True,
+    )
+
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs["batch_sampler"], DistributedBatchSampler)
 
 
 def test_disk_backed_record_store_is_pickle_safe_after_open(tmp_path: Path) -> None:

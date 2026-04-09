@@ -66,7 +66,6 @@ from squeezeformer_pytorch.training.data_loading import (
     _record_store_duration_hours,
     _resolve_dataset_sources,
     _resolve_validation_dataset_sources,
-    _shard_records_for_rank,
 )
 from squeezeformer_pytorch.training.data_loading import (
     _load_records_from_dataset_roots as _data_loading_load_records_from_dataset_roots,
@@ -280,6 +279,35 @@ def _distributed_mean(value: float, *, device: torch.device, distributed: bool) 
     return float(reduced.item())
 
 
+def _distributed_sum_float(value: float, *, device: torch.device, distributed: bool) -> float:
+    if not distributed or not dist.is_initialized():
+        return value
+    reduced = torch.tensor(value, device=device, dtype=torch.float64)
+    dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
+    return float(reduced.item())
+
+
+def _distributed_weighted_mean(
+    value: float,
+    *,
+    weight: float,
+    device: torch.device,
+    distributed: bool,
+) -> float:
+    if weight <= 0.0:
+        return 0.0
+    if not distributed or not dist.is_initialized():
+        return value
+    reduced = torch.tensor(
+        [value * weight, weight],
+        device=device,
+        dtype=torch.float64,
+    )
+    dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
+    denominator = max(float(reduced[1].item()), 1e-12)
+    return float(reduced[0].item() / denominator)
+
+
 def _synchronize_best_val_wer(
     best_val_wer: float, *, device: torch.device, distributed: bool
 ) -> float:
@@ -304,6 +332,15 @@ def _distributed_max_int(value: int, *, device: torch.device, distributed: bool)
     reduced = torch.tensor(value, device=device, dtype=torch.int64)
     dist.all_reduce(reduced, op=dist.ReduceOp.MAX)
     return int(reduced.item())
+
+
+def _set_dataloader_epoch(dataloader, epoch: int) -> None:
+    sampler = getattr(dataloader, "sampler", None)
+    if sampler is not None and hasattr(sampler, "set_epoch"):
+        sampler.set_epoch(epoch)
+    batch_sampler = getattr(dataloader, "batch_sampler", None)
+    if batch_sampler is not None and hasattr(batch_sampler, "set_epoch"):
+        batch_sampler.set_epoch(epoch)
 
 
 def _classifier_head_row_diagnostics(model: nn.Module) -> dict[str, float]:
@@ -356,6 +393,14 @@ def _classifier_head_row_diagnostics(model: nn.Module) -> dict[str, float]:
         "blank_bias_grad": blank_bias_grad,
         "nonblank_bias_grad_mean": nonblank_bias_grad_mean,
     }
+
+
+def _divide_gradients_in_place(parameters, denominator: float) -> None:
+    if denominator <= 0.0:
+        return
+    for parameter in parameters:
+        if parameter.grad is not None:
+            parameter.grad.div_(float(denominator))
 
 
 def _should_warn_on_blank_starvation(
@@ -931,19 +976,8 @@ def main() -> None:
         liberta_distill_enabled=liberta_distill_enabled,
         logger=logger,
     )
-    local_train_records = _shard_records_for_rank(
-        train_records,
-        rank=rank,
-        world_size=world_size,
-    )
-    local_val_records = _shard_records_for_rank(
-        val_records,
-        rank=rank,
-        world_size=world_size,
-        allow_uneven=True,
-    )
     train_dataset = ASRDataset(
-        local_train_records,
+        train_records,
         tokenizer=tokenizer,
         featurizer=featurizer,
         specaugment=specaugment,
@@ -952,7 +986,7 @@ def main() -> None:
         return_waveforms=audio_teacher_enabled,
     )
     val_dataset = ASRDataset(
-        local_val_records,
+        val_records,
         tokenizer=tokenizer,
         featurizer=featurizer,
         feature_cache_dir=val_feature_cache_dir,
@@ -960,12 +994,12 @@ def main() -> None:
     )
     stage_start_time = time.perf_counter()
     logger.info(
-        "building dataloaders train_shard_samples=%s val_shard_samples=%s val_total_samples=%s train_hours=%.2f val_shard_hours=%.2f val_total_hours=%.2f num_workers=%s metadata_workers=%s persistent_workers=%s prefetch_factor=%s",
-        len(local_train_records),
-        len(local_val_records),
+        "building dataloaders train_samples=%s val_samples=%s distributed=%s world_size=%s train_hours=%.2f val_hours=%.2f num_workers=%s metadata_workers=%s persistent_workers=%s prefetch_factor=%s",
+        len(train_records),
         len(val_records),
-        _record_store_duration_hours(local_train_records, hop_length=args.hop_length),
-        _record_store_duration_hours(local_val_records, hop_length=args.hop_length),
+        distributed,
+        world_size,
+        _record_store_duration_hours(train_records, hop_length=args.hop_length),
         _record_store_duration_hours(val_records, hop_length=args.hop_length),
         args.num_workers,
         args.metadata_workers,
@@ -988,6 +1022,11 @@ def main() -> None:
         metadata_workers=args.metadata_workers,
         longest_batches_first=args.longest_batches_first,
         multiprocessing_context=args.dataloader_mp_context,
+        distributed=distributed,
+        rank=rank,
+        world_size=world_size,
+        seed=args.seed,
+        pad_distributed_batches=distributed,
     )
     val_loader = create_dataloader(
         val_dataset,
@@ -1005,14 +1044,14 @@ def main() -> None:
         metadata_workers=args.metadata_workers,
         longest_batches_first=False,
         multiprocessing_context=args.dataloader_mp_context,
+        distributed=distributed,
+        rank=rank,
+        world_size=world_size,
+        seed=args.seed,
+        pad_distributed_batches=False,
     )
     train_batches = len(train_loader)
     val_batches = len(val_loader)
-    train_batches = _distributed_min_int(
-        train_batches,
-        device=sync_device,
-        distributed=distributed,
-    )
     logger.info(
         "dataloaders ready train_batches=%s val_batches=%s elapsed=%s",
         train_batches,
@@ -1317,6 +1356,7 @@ def main() -> None:
         epoch_start_time = time.perf_counter()
         if device.type == "cuda" and torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats(device)
+        _set_dataloader_epoch(train_loader, epoch)
         logger.info(
             "epoch %s/%s started train_batches=%s val_batches=%s grad_accumulation=%s",
             epoch,
@@ -1333,15 +1373,15 @@ def main() -> None:
         running_aed_loss = 0.0
         running_liberta_distill_loss = 0.0
         running_audio_teacher_loss = 0.0
+        running_sample_count = 0.0
         blank_starvation_warning_logged = False
         tune_effective_frames = 0
         tune_padded_frames = 0
         tune_target_tokens = 0
+        accumulated_global_batch_size = 0.0
         for optimizer in optimizers:
             optimizer.zero_grad(set_to_none=True)
         for batch_index, batch in enumerate(train_loader, start=1):
-            if batch_index > train_batches:
-                break
             if batch is None:
                 logger.warning("skipping empty training batch after dataset filtering")
                 continue
@@ -1352,6 +1392,7 @@ def main() -> None:
                 tune_effective_frames = 0
                 tune_padded_frames = 0
                 tune_target_tokens = 0
+                accumulated_global_batch_size = 0.0
                 if (
                     is_main_process
                     and args.memory_tune_steps > 0
@@ -1364,6 +1405,13 @@ def main() -> None:
             feature_lengths = batch["feature_lengths"].to(device)
             targets = batch["targets"].to(device)
             target_lengths = batch["target_lengths"].to(device)
+            local_batch_size = float(features.size(0))
+            global_batch_size = _distributed_sum_float(
+                local_batch_size,
+                device=device,
+                distributed=distributed,
+            )
+            accumulated_global_batch_size += global_batch_size
             tune_effective_frames += int(feature_lengths.sum().item())
             tune_padded_frames += int(features.size(0) * features.size(1))
             tune_target_tokens += int(target_lengths.sum().item())
@@ -1500,27 +1548,35 @@ def main() -> None:
                     loss = loss + (args.audio_teacher_weight * audio_teacher_loss)
                 else:
                     audio_teacher_loss = None
-                running_loss += float(loss.item())
-                running_main_ctc_loss += float(main_ctc_loss.item())
+                running_loss += float(loss.item()) * local_batch_size
+                running_main_ctc_loss += float(main_ctc_loss.item()) * local_batch_size
                 running_intermediate_ctc_loss += float(
                     intermediate_ctc_loss.item() if intermediate_ctc_loss is not None else 0.0
-                )
+                ) * local_batch_size
                 running_blank_logit_regularization_loss += float(
                     blank_logit_regularization_loss.item()
                     if blank_logit_regularization_loss is not None
                     else 0.0
-                )
-                running_aed_loss += float(aed_loss.item() if aed_loss is not None else 0.0)
+                ) * local_batch_size
+                running_aed_loss += float(aed_loss.item() if aed_loss is not None else 0.0) * local_batch_size
                 running_liberta_distill_loss += float(
                     liberta_distill_loss.item() if liberta_distill_loss is not None else 0.0
-                )
+                ) * local_batch_size
                 running_audio_teacher_loss += float(
                     audio_teacher_loss.item() if audio_teacher_loss is not None else 0.0
-                )
-                scaler.scale(loss / args.gradient_accumulation_steps).backward()
+                ) * local_batch_size
+                running_sample_count += local_batch_size
+                backward_loss = loss * local_batch_size
+                if distributed and dist.is_initialized():
+                    backward_loss = backward_loss * float(world_size)
+                scaler.scale(backward_loss).backward()
             if should_step:
                 for optimizer in optimizers:
                     scaler.unscale_(optimizer)
+                _divide_gradients_in_place(
+                    model.parameters(),
+                    max(1.0, accumulated_global_batch_size),
+                )
                 grad_norm = float(_compute_grad_norm(model.parameters()).item())
                 head_row_stats = _classifier_head_row_diagnostics(model)
                 if args.grad_clip_norm > 0:
@@ -1555,48 +1611,55 @@ def main() -> None:
                     )
 
                 if should_log_step:
-                    train_loss_step = _distributed_mean(
+                    train_loss_step = _distributed_weighted_mean(
                         float(loss.item()),
+                        weight=local_batch_size,
                         device=device,
                         distributed=distributed,
                     )
-                    train_main_ctc_loss_step = _distributed_mean(
+                    train_main_ctc_loss_step = _distributed_weighted_mean(
                         float(main_ctc_loss.item()),
+                        weight=local_batch_size,
                         device=device,
                         distributed=distributed,
                     )
-                    train_intermediate_ctc_loss_step = _distributed_mean(
+                    train_intermediate_ctc_loss_step = _distributed_weighted_mean(
                         float(
                             intermediate_ctc_loss.item()
                             if intermediate_ctc_loss is not None
                             else 0.0
                         ),
+                        weight=local_batch_size,
                         device=device,
                         distributed=distributed,
                     )
-                    train_blank_logit_regularization_loss_step = _distributed_mean(
+                    train_blank_logit_regularization_loss_step = _distributed_weighted_mean(
                         float(
                             blank_logit_regularization_loss.item()
                             if blank_logit_regularization_loss is not None
                             else 0.0
                         ),
+                        weight=local_batch_size,
                         device=device,
                         distributed=distributed,
                     )
-                    train_aed_loss_step = _distributed_mean(
+                    train_aed_loss_step = _distributed_weighted_mean(
                         float(aed_loss.item() if aed_loss is not None else 0.0),
+                        weight=local_batch_size,
                         device=device,
                         distributed=distributed,
                     )
-                    train_liberta_distill_loss_step = _distributed_mean(
+                    train_liberta_distill_loss_step = _distributed_weighted_mean(
                         float(
                             liberta_distill_loss.item() if liberta_distill_loss is not None else 0.0
                         ),
+                        weight=local_batch_size,
                         device=device,
                         distributed=distributed,
                     )
-                    train_audio_teacher_loss_step = _distributed_mean(
+                    train_audio_teacher_loss_step = _distributed_weighted_mean(
                         float(audio_teacher_loss.item() if audio_teacher_loss is not None else 0.0),
+                        weight=local_batch_size,
                         device=device,
                         distributed=distributed,
                     )
@@ -2029,38 +2092,45 @@ def main() -> None:
 
                 if args.validate_every_steps > 0 and global_step % args.validate_every_steps == 0:
                     train_metrics = {
-                        "train_loss": _distributed_mean(
-                            running_loss / max(1, batch_index),
+                        "train_loss": _distributed_weighted_mean(
+                            running_loss / max(1.0, running_sample_count),
+                            weight=running_sample_count,
                             device=device,
                             distributed=distributed,
                         ),
-                        "train_main_ctc_loss": _distributed_mean(
-                            running_main_ctc_loss / max(1, batch_index),
+                        "train_main_ctc_loss": _distributed_weighted_mean(
+                            running_main_ctc_loss / max(1.0, running_sample_count),
+                            weight=running_sample_count,
                             device=device,
                             distributed=distributed,
                         ),
-                        "train_intermediate_ctc_loss": _distributed_mean(
-                            running_intermediate_ctc_loss / max(1, batch_index),
+                        "train_intermediate_ctc_loss": _distributed_weighted_mean(
+                            running_intermediate_ctc_loss / max(1.0, running_sample_count),
+                            weight=running_sample_count,
                             device=device,
                             distributed=distributed,
                         ),
-                        "train_blank_logit_regularization_loss": _distributed_mean(
-                            running_blank_logit_regularization_loss / max(1, batch_index),
+                        "train_blank_logit_regularization_loss": _distributed_weighted_mean(
+                            running_blank_logit_regularization_loss / max(1.0, running_sample_count),
+                            weight=running_sample_count,
                             device=device,
                             distributed=distributed,
                         ),
-                        "train_aed_loss": _distributed_mean(
-                            running_aed_loss / max(1, batch_index),
+                        "train_aed_loss": _distributed_weighted_mean(
+                            running_aed_loss / max(1.0, running_sample_count),
+                            weight=running_sample_count,
                             device=device,
                             distributed=distributed,
                         ),
-                        "train_liberta_distill_loss": _distributed_mean(
-                            running_liberta_distill_loss / max(1, batch_index),
+                        "train_liberta_distill_loss": _distributed_weighted_mean(
+                            running_liberta_distill_loss / max(1.0, running_sample_count),
+                            weight=running_sample_count,
                             device=device,
                             distributed=distributed,
                         ),
-                        "train_audio_teacher_loss": _distributed_mean(
-                            running_audio_teacher_loss / max(1, batch_index),
+                        "train_audio_teacher_loss": _distributed_weighted_mean(
+                            running_audio_teacher_loss / max(1.0, running_sample_count),
+                            weight=running_sample_count,
                             device=device,
                             distributed=distributed,
                         ),
@@ -2128,38 +2198,58 @@ def main() -> None:
                     if distributed:
                         _distributed_barrier()
 
-        train_loss = _distributed_mean(
-            running_loss / max(1, train_batches),
+        local_train_mean = running_loss / max(1.0, running_sample_count)
+        local_train_main_ctc_mean = running_main_ctc_loss / max(1.0, running_sample_count)
+        local_train_intermediate_ctc_mean = running_intermediate_ctc_loss / max(
+            1.0, running_sample_count
+        )
+        local_train_blank_reg_mean = running_blank_logit_regularization_loss / max(
+            1.0, running_sample_count
+        )
+        local_train_aed_mean = running_aed_loss / max(1.0, running_sample_count)
+        local_train_liberta_mean = running_liberta_distill_loss / max(1.0, running_sample_count)
+        local_train_audio_teacher_mean = running_audio_teacher_loss / max(
+            1.0, running_sample_count
+        )
+        train_loss = _distributed_weighted_mean(
+            local_train_mean,
+            weight=running_sample_count,
             device=device,
             distributed=distributed,
         )
-        train_main_ctc_loss = _distributed_mean(
-            running_main_ctc_loss / max(1, train_batches),
+        train_main_ctc_loss = _distributed_weighted_mean(
+            local_train_main_ctc_mean,
+            weight=running_sample_count,
             device=device,
             distributed=distributed,
         )
-        train_intermediate_ctc_loss = _distributed_mean(
-            running_intermediate_ctc_loss / max(1, train_batches),
+        train_intermediate_ctc_loss = _distributed_weighted_mean(
+            local_train_intermediate_ctc_mean,
+            weight=running_sample_count,
             device=device,
             distributed=distributed,
         )
-        train_blank_logit_regularization_loss = _distributed_mean(
-            running_blank_logit_regularization_loss / max(1, train_batches),
+        train_blank_logit_regularization_loss = _distributed_weighted_mean(
+            local_train_blank_reg_mean,
+            weight=running_sample_count,
             device=device,
             distributed=distributed,
         )
-        train_aed_loss = _distributed_mean(
-            running_aed_loss / max(1, train_batches),
+        train_aed_loss = _distributed_weighted_mean(
+            local_train_aed_mean,
+            weight=running_sample_count,
             device=device,
             distributed=distributed,
         )
-        train_liberta_distill_loss = _distributed_mean(
-            running_liberta_distill_loss / max(1, train_batches),
+        train_liberta_distill_loss = _distributed_weighted_mean(
+            local_train_liberta_mean,
+            weight=running_sample_count,
             device=device,
             distributed=distributed,
         )
-        train_audio_teacher_loss = _distributed_mean(
-            running_audio_teacher_loss / max(1, train_batches),
+        train_audio_teacher_loss = _distributed_weighted_mean(
+            local_train_audio_teacher_mean,
+            weight=running_sample_count,
             device=device,
             distributed=distributed,
         )

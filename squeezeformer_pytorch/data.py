@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import math
 import multiprocessing as mp
 import os
 import re
@@ -21,7 +22,7 @@ import torchaudio
 from huggingface_hub import hf_hub_url, list_repo_files, snapshot_download
 from torch import Tensor
 from torch.nn import functional as F
-from torch.utils.data import BatchSampler, DataLoader, Dataset
+from torch.utils.data import BatchSampler, DataLoader, Dataset, Sampler
 
 from .asr import Tokenizer
 from .frontend import AudioFeaturizer, SpecAugment, WaveformAugment
@@ -31,6 +32,12 @@ AUDIO_COLUMNS = ("path", "audio")
 
 
 logger = logging.getLogger("train")
+
+
+def _epoch_shuffled_order(length: int, *, seed: int, epoch: int) -> list[int]:
+    generator = torch.Generator()
+    generator.manual_seed(int(seed) + int(epoch))
+    return torch.randperm(length, generator=generator).tolist()
 
 
 def _dataloader_multiprocessing_context(
@@ -1209,11 +1216,14 @@ class LengthBucketBatchSampler(BatchSampler):
         batch_size: int,
         shuffle: bool,
         longest_first: bool = False,
+        seed: int = 0,
     ) -> None:
         self.records = records
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.longest_first = longest_first
+        self.seed = int(seed)
+        self.epoch = 0
 
     def _batch_order_key(self, batch: list[int]) -> tuple[int, int]:
         max_frames = max(max(1, self.records[index].estimated_frames) for index in batch)
@@ -1230,12 +1240,15 @@ class LengthBucketBatchSampler(BatchSampler):
         if self.longest_first:
             batches.sort(key=self._batch_order_key, reverse=True)
         elif self.shuffle:
-            order = torch.randperm(len(batches)).tolist()
+            order = _epoch_shuffled_order(len(batches), seed=self.seed, epoch=self.epoch)
             batches = [batches[index] for index in order]
         yield from batches
 
     def __len__(self) -> int:
         return (len(self.records) + self.batch_size - 1) // self.batch_size
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
 
 
 class MaxFramesBatchSampler(BatchSampler):
@@ -1245,11 +1258,14 @@ class MaxFramesBatchSampler(BatchSampler):
         max_batch_frames: int,
         shuffle: bool,
         longest_first: bool = False,
+        seed: int = 0,
     ) -> None:
         self.records = records
         self.max_batch_frames = max_batch_frames
         self.shuffle = shuffle
         self.longest_first = longest_first
+        self.seed = int(seed)
+        self.epoch = 0
         self._sorted_indices = sorted(
             range(len(self.records)), key=lambda index: self.records[index].estimated_frames
         )
@@ -1283,12 +1299,15 @@ class MaxFramesBatchSampler(BatchSampler):
         if self.longest_first:
             batches.sort(key=self._batch_order_key, reverse=True)
         elif self.shuffle:
-            order = torch.randperm(len(batches)).tolist()
+            order = _epoch_shuffled_order(len(batches), seed=self.seed, epoch=self.epoch)
             batches = [batches[index] for index in order]
         yield from batches
 
     def __len__(self) -> int:
         return self._num_batches
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
 
 
 class DurationBatchSampler(BatchSampler):
@@ -1298,11 +1317,14 @@ class DurationBatchSampler(BatchSampler):
         max_batch_duration_sec: float,
         shuffle: bool,
         longest_first: bool = False,
+        seed: int = 0,
     ) -> None:
         self.records = records
         self.max_batch_duration_sec = max_batch_duration_sec
         self.shuffle = shuffle
         self.longest_first = longest_first
+        self.seed = int(seed)
+        self.epoch = 0
         self._sorted_indices = sorted(
             range(len(self.records)),
             key=lambda index: (
@@ -1344,12 +1366,15 @@ class DurationBatchSampler(BatchSampler):
         if self.longest_first:
             batches.sort(key=self._batch_order_key, reverse=True)
         elif self.shuffle:
-            order = torch.randperm(len(batches)).tolist()
+            order = _epoch_shuffled_order(len(batches), seed=self.seed, epoch=self.epoch)
             batches = [batches[index] for index in order]
         yield from batches
 
     def __len__(self) -> int:
         return self._num_batches
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
 
 
 class AdaptiveBatchSampler(BatchSampler):
@@ -1360,6 +1385,7 @@ class AdaptiveBatchSampler(BatchSampler):
         unit: str,
         shuffle: bool,
         longest_first: bool = False,
+        seed: int = 0,
     ) -> None:
         if unit not in {"frames", "tokens"}:
             raise ValueError("unit must be one of {'frames', 'tokens'}")
@@ -1368,6 +1394,8 @@ class AdaptiveBatchSampler(BatchSampler):
         self.unit = unit
         self.shuffle = shuffle
         self.longest_first = longest_first
+        self.seed = int(seed)
+        self.epoch = 0
         self._sorted_indices = sorted(
             range(len(self.records)),
             key=lambda index: (
@@ -1409,12 +1437,122 @@ class AdaptiveBatchSampler(BatchSampler):
         if self.longest_first:
             batches.sort(key=self._batch_order_key, reverse=True)
         elif self.shuffle:
-            order = torch.randperm(len(batches)).tolist()
+            order = _epoch_shuffled_order(len(batches), seed=self.seed, epoch=self.epoch)
             batches = [batches[index] for index in order]
         yield from batches
 
     def __len__(self) -> int:
         return self._num_batches
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+
+class DistributedIndexSampler(Sampler[int]):
+    def __init__(
+        self,
+        dataset_size: int,
+        *,
+        rank: int,
+        world_size: int,
+        shuffle: bool,
+        seed: int = 0,
+        drop_last: bool = False,
+        pad_to_world_size: bool = False,
+    ) -> None:
+        if world_size < 1:
+            raise ValueError("world_size must be at least 1")
+        if not 0 <= rank < world_size:
+            raise ValueError(f"rank must be in [0, {world_size - 1}], got {rank}")
+        self.dataset_size = int(dataset_size)
+        self.rank = int(rank)
+        self.world_size = int(world_size)
+        self.shuffle = bool(shuffle)
+        self.seed = int(seed)
+        self.drop_last = bool(drop_last)
+        self.pad_to_world_size = bool(pad_to_world_size)
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def _all_indices(self) -> list[int]:
+        indices = list(range(self.dataset_size))
+        if self.shuffle:
+            order = _epoch_shuffled_order(self.dataset_size, seed=self.seed, epoch=self.epoch)
+            indices = [indices[index] for index in order]
+        if self.drop_last:
+            usable = (len(indices) // self.world_size) * self.world_size
+            return indices[:usable]
+        if self.pad_to_world_size and indices:
+            total_size = math.ceil(len(indices) / self.world_size) * self.world_size
+            if total_size > len(indices):
+                indices = indices + indices[: total_size - len(indices)]
+        return indices
+
+    def __iter__(self):
+        indices = self._all_indices()
+        yield from indices[self.rank : len(indices) : self.world_size]
+
+    def __len__(self) -> int:
+        if self.dataset_size <= 0:
+            return 0
+        if self.drop_last:
+            return self.dataset_size // self.world_size
+        if self.pad_to_world_size:
+            return math.ceil(self.dataset_size / self.world_size)
+        remaining = max(0, self.dataset_size - self.rank)
+        return (remaining + self.world_size - 1) // self.world_size
+
+
+class DistributedBatchSampler(BatchSampler):
+    def __init__(
+        self,
+        batch_sampler: BatchSampler,
+        *,
+        rank: int,
+        world_size: int,
+        drop_last: bool = False,
+        pad_to_world_size: bool = False,
+    ) -> None:
+        if world_size < 1:
+            raise ValueError("world_size must be at least 1")
+        if not 0 <= rank < world_size:
+            raise ValueError(f"rank must be in [0, {world_size - 1}], got {rank}")
+        self.batch_sampler = batch_sampler
+        self.rank = int(rank)
+        self.world_size = int(world_size)
+        self.drop_last = bool(drop_last)
+        self.pad_to_world_size = bool(pad_to_world_size)
+
+    def set_epoch(self, epoch: int) -> None:
+        if hasattr(self.batch_sampler, "set_epoch"):
+            self.batch_sampler.set_epoch(epoch)
+
+    def _all_batches(self) -> list[list[int]]:
+        return [list(batch) for batch in self.batch_sampler]
+
+    def __iter__(self):
+        batches = self._all_batches()
+        if self.drop_last:
+            usable = (len(batches) // self.world_size) * self.world_size
+            batches = batches[:usable]
+        elif self.pad_to_world_size and batches:
+            total_size = math.ceil(len(batches) / self.world_size) * self.world_size
+            if total_size > len(batches):
+                batches = batches + batches[: total_size - len(batches)]
+        yield from batches[self.rank : len(batches) : self.world_size]
+
+    def __len__(self) -> int:
+        total_batches = len(self.batch_sampler)
+        if total_batches <= 0:
+            return 0
+        if self.drop_last:
+            return total_batches // self.world_size
+        if self.pad_to_world_size:
+            return math.ceil(total_batches / self.world_size)
+        remaining = max(0, total_batches - self.rank)
+        return (remaining + self.world_size - 1) // self.world_size
 
 
 def _record_is_valid(record: AudioRecord) -> bool:
@@ -1555,6 +1693,11 @@ def create_dataloader(
     metadata_workers: int = 4,
     longest_batches_first: bool = False,
     multiprocessing_context: str | None = None,
+    distributed: bool = False,
+    rank: int = 0,
+    world_size: int = 1,
+    seed: int = 0,
+    pad_distributed_batches: bool = False,
 ) -> DataLoader[dict[str, Any]]:
     if hasattr(dataset.records, "populate_metadata"):
         dataset.records.populate_metadata(
@@ -1588,7 +1731,15 @@ def create_dataloader(
             unit=adaptive_batch_unit,
             shuffle=shuffle,
             longest_first=longest_batches_first,
+            seed=seed,
         )
+        if distributed and world_size > 1:
+            batch_sampler = DistributedBatchSampler(
+                batch_sampler,
+                rank=rank,
+                world_size=world_size,
+                pad_to_world_size=pad_distributed_batches,
+            )
         return DataLoader(dataset, batch_sampler=batch_sampler, **dataloader_kwargs)
     if max_batch_duration_sec is not None:
         batch_sampler = DurationBatchSampler(
@@ -1596,7 +1747,15 @@ def create_dataloader(
             max_batch_duration_sec=max_batch_duration_sec,
             shuffle=shuffle,
             longest_first=longest_batches_first,
+            seed=seed,
         )
+        if distributed and world_size > 1:
+            batch_sampler = DistributedBatchSampler(
+                batch_sampler,
+                rank=rank,
+                world_size=world_size,
+                pad_to_world_size=pad_distributed_batches,
+            )
         return DataLoader(dataset, batch_sampler=batch_sampler, **dataloader_kwargs)
     if max_batch_frames is not None:
         batch_sampler = MaxFramesBatchSampler(
@@ -1604,7 +1763,15 @@ def create_dataloader(
             max_batch_frames=max_batch_frames,
             shuffle=shuffle,
             longest_first=longest_batches_first,
+            seed=seed,
         )
+        if distributed and world_size > 1:
+            batch_sampler = DistributedBatchSampler(
+                batch_sampler,
+                rank=rank,
+                world_size=world_size,
+                pad_to_world_size=pad_distributed_batches,
+            )
         return DataLoader(dataset, batch_sampler=batch_sampler, **dataloader_kwargs)
     if bucket_by_length:
         batch_sampler = LengthBucketBatchSampler(
@@ -1612,8 +1779,32 @@ def create_dataloader(
             batch_size=batch_size,
             shuffle=shuffle,
             longest_first=longest_batches_first,
+            seed=seed,
         )
+        if distributed and world_size > 1:
+            batch_sampler = DistributedBatchSampler(
+                batch_sampler,
+                rank=rank,
+                world_size=world_size,
+                pad_to_world_size=pad_distributed_batches,
+            )
         return DataLoader(dataset, batch_sampler=batch_sampler, **dataloader_kwargs)
+    if distributed and world_size > 1:
+        sampler = DistributedIndexSampler(
+            len(dataset),
+            rank=rank,
+            world_size=world_size,
+            shuffle=shuffle,
+            seed=seed,
+            pad_to_world_size=pad_distributed_batches,
+        )
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            sampler=sampler,
+            **dataloader_kwargs,
+        )
     return DataLoader(
         dataset,
         batch_size=batch_size,
