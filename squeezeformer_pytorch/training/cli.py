@@ -673,6 +673,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "supported CUDA setups and falls back to PyTorch scaled_dot_product_attention."
         ),
     )
+    parser.add_argument(
+        "--disable-flash-attn2",
+        action="store_true",
+        help="Disable kernels-community/flash-attn2 and use PyTorch SDPA for the flash backend.",
+    )
     parser.add_argument("--block-pattern", default="M,s,C,s")
     parser.add_argument(
         "--frontend-backend",

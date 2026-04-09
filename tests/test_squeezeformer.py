@@ -319,6 +319,48 @@ def test_flash_attention_backend_falls_back_to_sdpa_after_kernel_error(
 
 
 @torch.no_grad()
+def test_flash_attention_backend_can_start_with_flash_attn2_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_kernel_load() -> object:
+        raise AssertionError("flash-attn2 kernel should not be loaded when disabled")
+
+    monkeypatch.setattr(squeezeformer_model, "_load_flash_attn2_kernel", fail_kernel_load)
+
+    captured: dict[str, object] = {}
+
+    def fake_sdpa(
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        *,
+        attn_mask: torch.Tensor | None = None,
+        dropout_p: float = 0.0,
+        is_causal: bool = False,
+    ) -> torch.Tensor:
+        captured["query_shape"] = query.shape
+        return torch.zeros_like(query)
+
+    monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", fake_sdpa)
+
+    model = build_squeezeformer_encoder(
+        "xs",
+        attention_backend="flash",
+        flash_attn2_enabled=False,
+    )
+    attn = model.blocks[0].layers[0].attn.attn
+
+    features = torch.randn(2, 16, 80)
+    lengths = torch.tensor([16, 12], dtype=torch.int64)
+    outputs, output_lengths = model(features, lengths)
+
+    assert isinstance(attn, squeezeformer_model.FlashMultiHeadAttention)
+    assert attn._flash_attn2_enabled is False
+    assert captured["query_shape"] is not None
+    assert outputs.shape == (2, int(output_lengths.max().item()), model.config.d_model)
+
+
+@torch.no_grad()
 def test_transformer_engine_padding_path_preserves_shapes_without_te_runtime() -> None:
     lengths = torch.tensor([160, 123], dtype=torch.int64)
     features = torch.randn(2, int(lengths.max().item()), 80)

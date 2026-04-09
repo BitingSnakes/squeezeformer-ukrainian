@@ -837,6 +837,11 @@ def main() -> None:
             activation_checkpointing=args.activation_checkpointing,
             attention_backend=args.attention_backend,
         )
+    if args.disable_flash_attn2:
+        encoder_config = replace(
+            deepcopy(encoder_config),
+            flash_attn2_enabled=False,
+        )
     intermediate_ctc_layers, intermediate_ctc_weight = _resolve_intermediate_ctc_settings(
         args,
         encoder_config,

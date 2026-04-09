@@ -295,6 +295,7 @@ class FlashMultiHeadAttention(nn.Module):
         dim: int,
         num_heads: int,
         dropout: float = 0.0,
+        flash_attn2_enabled: bool = True,
         use_transformer_engine: bool = False,
     ) -> None:
         super().__init__()
@@ -309,7 +310,7 @@ class FlashMultiHeadAttention(nn.Module):
         self.value = make_linear(dim, dim, use_transformer_engine=use_transformer_engine)
         self.out_proj = make_linear(dim, dim, use_transformer_engine=use_transformer_engine)
         self.dropout_p = dropout
-        self._flash_attn2_enabled = True
+        self._flash_attn2_enabled = flash_attn2_enabled
 
     def _shape(self, x: Tensor) -> Tensor:
         batch, time, _ = x.shape
@@ -494,6 +495,7 @@ class AttentionModule(nn.Module):
         dropout: float = 0.1,
         adaptive_scale: bool = True,
         attention_backend: str = "relative",
+        flash_attn2_enabled: bool = True,
         use_transformer_engine: bool = False,
     ) -> None:
         super().__init__()
@@ -514,6 +516,7 @@ class AttentionModule(nn.Module):
                 dim=dim,
                 num_heads=num_heads,
                 dropout=dropout,
+                flash_attn2_enabled=flash_attn2_enabled,
                 use_transformer_engine=use_transformer_engine,
             )
         else:
@@ -599,6 +602,7 @@ class MHSAFFModule(nn.Module):
         ff_expansion_factor: int,
         dropout: float,
         attention_backend: str,
+        flash_attn2_enabled: bool = True,
         use_transformer_engine: bool = False,
     ) -> None:
         super().__init__()
@@ -608,6 +612,7 @@ class MHSAFFModule(nn.Module):
             dropout=dropout,
             adaptive_scale=True,
             attention_backend=attention_backend,
+            flash_attn2_enabled=flash_attn2_enabled,
             use_transformer_engine=use_transformer_engine,
         )
         self.mid_norm = make_layer_norm(dim, use_transformer_engine=use_transformer_engine)
@@ -677,6 +682,7 @@ class SqueezeformerBlock(nn.Module):
         dropout: float,
         block_pattern: tuple[str, ...],
         attention_backend: str,
+        flash_attn2_enabled: bool = True,
         drop_path_rate: float = 0.0,
         use_transformer_engine: bool = False,
     ) -> None:
@@ -693,6 +699,7 @@ class SqueezeformerBlock(nn.Module):
                         ff_expansion_factor=ff_expansion_factor,
                         dropout=dropout,
                         attention_backend=attention_backend,
+                        flash_attn2_enabled=flash_attn2_enabled,
                         use_transformer_engine=use_transformer_engine,
                     )
                 )
@@ -858,6 +865,7 @@ class SqueezeformerConfig:
     time_reduce_idx: tuple[int, ...] = (7,)
     time_recover_idx: tuple[int, ...] = (15,)
     attention_backend: str = "relative"
+    flash_attn2_enabled: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "block_pattern", tuple(self.block_pattern))
@@ -978,6 +986,7 @@ class SqueezeformerEncoder(nn.Module):
                     dropout=config.dropout,
                     block_pattern=config.block_pattern,
                     attention_backend=config.attention_backend,
+                    flash_attn2_enabled=config.flash_attn2_enabled,
                     drop_path_rate=(
                         config.stochastic_depth_rate * layer_index / max(1, config.num_layers - 1)
                     ),
