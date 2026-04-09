@@ -196,6 +196,8 @@ def main() -> None:
     selected_split = args.split
     selected_val_fraction = args.val_fraction
     selected_test_fraction = args.test_fraction
+    if validation_dataset_sources and not args.dataset_source:
+        selected_sources = validation_dataset_sources
     if args.split == "train" and args.dataset_source:
         selected_split = "train"
         selected_val_fraction = 0.0
