@@ -674,9 +674,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--disable-flash-attn2",
+        "--disable-flash-attn2-kernels",
+        dest="disable_flash_attn2_kernels",
         action="store_true",
         help="Disable kernels-community/flash-attn2 and use PyTorch SDPA for the flash backend.",
+    )
+    parser.add_argument(
+        "--disable-flash-attention",
+        action="store_true",
+        help=(
+            "Disable the flash attention backend entirely and force the encoder to use "
+            "relative attention instead of flash-attn2 or PyTorch SDPA."
+        ),
     )
     parser.add_argument("--block-pattern", default="M,s,C,s")
     parser.add_argument(

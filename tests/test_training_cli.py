@@ -74,16 +74,28 @@ def test_parse_args_accepts_no_intermediate_ctc_layers_flag() -> None:
     assert args.no_intermediate_ctc_layers is True
 
 
-def test_parse_args_accepts_disable_flash_attn2_flag() -> None:
+def test_parse_args_accepts_disable_flash_attn2_kernels_flag() -> None:
     args = parse_args(
         [
             "--device",
             "cpu",
-            "--disable-flash-attn2",
+            "--disable-flash-attn2-kernels",
         ]
     )
 
-    assert args.disable_flash_attn2 is True
+    assert args.disable_flash_attn2_kernels is True
+
+
+def test_parse_args_accepts_disable_flash_attention_flag() -> None:
+    args = parse_args(
+        [
+            "--device",
+            "cpu",
+            "--disable-flash-attention",
+        ]
+    )
+
+    assert args.disable_flash_attention is True
 
 
 def test_no_intermediate_ctc_layers_overrides_checkpoint_settings() -> None:

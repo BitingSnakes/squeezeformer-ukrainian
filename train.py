@@ -840,13 +840,16 @@ def main() -> None:
         else squeezeformer_variant(args.variant)
     )
     if checkpoint is None:
+        attention_backend = (
+            "relative" if args.disable_flash_attention else args.attention_backend
+        )
         encoder_config = replace(
             deepcopy(encoder_config),
             block_pattern=_resolve_block_pattern(args.block_pattern),
             activation_checkpointing=args.activation_checkpointing,
-            attention_backend=args.attention_backend,
+            attention_backend=attention_backend,
         )
-    if args.disable_flash_attn2:
+    if args.disable_flash_attn2_kernels:
         encoder_config = replace(
             deepcopy(encoder_config),
             flash_attn2_enabled=False,
