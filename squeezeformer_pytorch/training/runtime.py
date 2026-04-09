@@ -206,7 +206,9 @@ class FrozenAudioTeacher:
             )
         max_samples = max(1, int(round(self.max_seconds * self.sample_rate)))
         samples: list[Tensor] = []
-        for batch_index, (waveform, length) in enumerate(zip(waveforms, waveform_lengths, strict=True)):
+        for batch_index, (waveform, length) in enumerate(
+            zip(waveforms, waveform_lengths, strict=True)
+        ):
             trimmed = waveform[: int(length.item())].detach().cpu()
             source_sample_rate = self.sample_rate
             if sample_rates is not None:
@@ -746,7 +748,17 @@ def _resolve_audio_teacher_settings(
         max_seconds = float(args.audio_teacher_max_seconds)
 
     if not enabled:
-        return False, model_name, model_path, weight, objective, target, layer, sample_rate, max_seconds
+        return (
+            False,
+            model_name,
+            model_path,
+            weight,
+            objective,
+            target,
+            layer,
+            sample_rate,
+            max_seconds,
+        )
     if weight <= 0.0:
         raise ValueError("--audio-teacher-weight must be > 0 when --audio-teacher is enabled.")
     if objective == "ctc_kl":

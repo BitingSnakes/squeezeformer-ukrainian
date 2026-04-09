@@ -129,7 +129,9 @@ def test_evaluate_restores_model_mode(monkeypatch) -> None:
 
 def test_merge_evaluation_shards_combines_all_examples(monkeypatch) -> None:
     monkeypatch.setattr(training_evaluation, "char_error_rate", lambda refs, hyps: float(len(refs)))
-    monkeypatch.setattr(training_evaluation, "word_error_rate", lambda refs, hyps: float(len(hyps)) / 10.0)
+    monkeypatch.setattr(
+        training_evaluation, "word_error_rate", lambda refs, hyps: float(len(hyps)) / 10.0
+    )
     monkeypatch.setattr(
         training_evaluation,
         "length_bucket_metrics",
@@ -150,8 +152,22 @@ def test_merge_evaluation_shards_combines_all_examples(monkeypatch) -> None:
         training_evaluation,
         "collect_examples",
         lambda utterance_ids, speaker_ids, refs, hyps, limit: (
-            [{"utterance_id": utterance_ids[0], "speaker_id": "", "reference": refs[0], "hypothesis": hyps[0]}],
-            [{"utterance_id": utterance_ids[-1], "speaker_id": "", "reference": refs[-1], "hypothesis": hyps[-1]}],
+            [
+                {
+                    "utterance_id": utterance_ids[0],
+                    "speaker_id": "",
+                    "reference": refs[0],
+                    "hypothesis": hyps[0],
+                }
+            ],
+            [
+                {
+                    "utterance_id": utterance_ids[-1],
+                    "speaker_id": "",
+                    "reference": refs[-1],
+                    "hypothesis": hyps[-1],
+                }
+            ],
         ),
     )
 

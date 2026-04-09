@@ -149,7 +149,8 @@ def decoding_debug_metrics(hypotheses: list[str]) -> dict[str, float]:
     empty_count = sum(1 for hypothesis in hypotheses if not hypothesis.strip())
     return {
         "decoded_empty_fraction": empty_count / len(hypotheses),
-        "decoded_avg_char_length": sum(len(hypothesis) for hypothesis in hypotheses) / len(hypotheses),
+        "decoded_avg_char_length": sum(len(hypothesis) for hypothesis in hypotheses)
+        / len(hypotheses),
         "decoded_avg_word_length": (
             sum(len(hypothesis.split()) for hypothesis in hypotheses) / len(hypotheses)
         ),
@@ -364,7 +365,10 @@ def evaluate(
                     intermediate_ctc_losses_map = forward_outputs["intermediate_ctc_losses"]
                     if intermediate_ctc_losses_map:
                         intermediate_ctc_loss = torch.stack(
-                            [intermediate_ctc_losses_map[layer_index] for layer_index in model.intermediate_ctc_layers]
+                            [
+                                intermediate_ctc_losses_map[layer_index]
+                                for layer_index in model.intermediate_ctc_layers
+                            ]
                         ).mean()
                         combined_ctc_loss = (
                             1.0 - intermediate_ctc_weight
@@ -374,22 +378,23 @@ def evaluate(
                         combined_ctc_loss = main_ctc_loss
                     aed_logits = forward_outputs.get("aed_logits")
                     liberta_student_embeddings = forward_outputs.get("liberta_student_embeddings")
-                    audio_teacher_student_states = forward_outputs.get("audio_teacher_student_states")
+                    audio_teacher_student_states = forward_outputs.get(
+                        "audio_teacher_student_states"
+                    )
                     if aed_logits is not None and decoder_targets is not None:
                         aed_loss = _aed_cross_entropy_loss(
                             aed_logits,
                             decoder_targets,
                             pad_id=model.aed_decoder.pad_id,
                         )
-                        loss = (1.0 - aed_loss_weight) * combined_ctc_loss + aed_loss_weight * aed_loss
+                        loss = (
+                            1.0 - aed_loss_weight
+                        ) * combined_ctc_loss + aed_loss_weight * aed_loss
                     else:
                         aed_loss = None
                         loss = combined_ctc_loss
                 total_forward_seconds += time.perf_counter() - forward_start_time
-                if (
-                    liberta_teacher is not None
-                    and liberta_student_embeddings is not None
-                ):
+                if liberta_teacher is not None and liberta_student_embeddings is not None:
                     teacher_start_time = time.perf_counter()
                     teacher_embeddings = liberta_teacher.encode(batch["transcripts"]).to(
                         device=liberta_student_embeddings.device,
@@ -450,10 +455,9 @@ def evaluate(
                 utterance_ids.extend(batch["utterance_ids"])
                 speaker_ids.extend(batch["speaker_ids"])
                 has_speaker_ids.extend(batch["has_speaker_ids"])
-                valid_mask = (
-                    torch.arange(log_probs.size(1), device=output_lengths.device).unsqueeze(0)
-                    < output_lengths.unsqueeze(1)
-                )
+                valid_mask = torch.arange(
+                    log_probs.size(1), device=output_lengths.device
+                ).unsqueeze(0) < output_lengths.unsqueeze(1)
                 blank_probabilities = log_probs[..., tokenizer.blank_id].exp()
                 total_blank_probability += float(
                     blank_probabilities.masked_select(valid_mask).sum().item()
@@ -597,9 +601,7 @@ def _examples_table(
 
 
 def _checkpoint_safe_metrics(metrics: dict[str, object]) -> dict[str, object]:
-    return {
-        key: value for key, value in metrics.items() if not isinstance(value, trackio.Table)
-    }
+    return {key: value for key, value in metrics.items() if not isinstance(value, trackio.Table)}
 
 
 def _evaluate_and_checkpoint(

@@ -1509,10 +1509,18 @@ def test_iter_records_filters_alignment_outliers(tmp_path: Path) -> None:
 
 def test_max_frames_batch_sampler_respects_frame_budget() -> None:
     records = [
-        AudioRecord(None, None, "a", "0", estimated_frames=20, speaker_id="s0", has_speaker_id=True),
-        AudioRecord(None, None, "b", "1", estimated_frames=25, speaker_id="s1", has_speaker_id=True),
-        AudioRecord(None, None, "c", "2", estimated_frames=40, speaker_id="s2", has_speaker_id=True),
-        AudioRecord(None, None, "d", "3", estimated_frames=45, speaker_id="s3", has_speaker_id=True),
+        AudioRecord(
+            None, None, "a", "0", estimated_frames=20, speaker_id="s0", has_speaker_id=True
+        ),
+        AudioRecord(
+            None, None, "b", "1", estimated_frames=25, speaker_id="s1", has_speaker_id=True
+        ),
+        AudioRecord(
+            None, None, "c", "2", estimated_frames=40, speaker_id="s2", has_speaker_id=True
+        ),
+        AudioRecord(
+            None, None, "d", "3", estimated_frames=45, speaker_id="s3", has_speaker_id=True
+        ),
     ]
     sampler = MaxFramesBatchSampler(records, max_batch_frames=90, shuffle=False)
     batches = list(iter(sampler))
@@ -1573,7 +1581,9 @@ def test_duration_batch_sampler_respects_duration_budget() -> None:
     batches = list(iter(sampler))
     assert batches
     for batch in batches:
-        total_duration = sum(records[index].num_samples / records[index].sample_rate for index in batch)
+        total_duration = sum(
+            records[index].num_samples / records[index].sample_rate for index in batch
+        )
         assert total_duration <= 3.0
 
 
@@ -2065,7 +2075,9 @@ def test_disk_backed_record_store_is_pickle_safe_after_open(tmp_path: Path) -> N
     estimated_frames = array.array("I", [2])
     num_samples = array.array("Q", [3200])
     sample_rates = array.array("I", [16_000])
-    store = DiskBackedRecordStore(records_path, offsets, estimated_frames, num_samples, sample_rates)
+    store = DiskBackedRecordStore(
+        records_path, offsets, estimated_frames, num_samples, sample_rates
+    )
 
     # Force the store to open its underlying file handle before pickling.
     record = store[0]

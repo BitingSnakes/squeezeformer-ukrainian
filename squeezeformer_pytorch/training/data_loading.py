@@ -169,7 +169,9 @@ class DiskBackedRecordStore:
         for index in range(len(self)):
             yield self[index]
 
-    def shard(self, rank: int, world_size: int, *, allow_uneven: bool = False) -> "DiskBackedRecordStore":
+    def shard(
+        self, rank: int, world_size: int, *, allow_uneven: bool = False
+    ) -> "DiskBackedRecordStore":
         local_length = len(self)
         if allow_uneven:
             local_count = max(0, (local_length - rank + world_size - 1) // world_size)

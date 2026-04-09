@@ -138,7 +138,9 @@ def _distributed_mean(value: float, *, device: torch.device, distributed: bool) 
     return float(reduced.item())
 
 
-def _synchronize_best_val_wer(best_val_wer: float, *, device: torch.device, distributed: bool) -> float:
+def _synchronize_best_val_wer(
+    best_val_wer: float, *, device: torch.device, distributed: bool
+) -> float:
     if not distributed or not dist.is_initialized():
         return best_val_wer
     payload = torch.tensor(best_val_wer, device=device, dtype=torch.float64)
@@ -191,8 +193,8 @@ def _maybe_downshift_adaptive_batch_budget(
     adjusted_budget = original_budget
     reason = "distributed LiBERTa distillation safety margin"
     if args.adaptive_batch_unit == "frames":
-        total_memory_gib = (
-            float(torch.cuda.get_device_properties(device).total_memory) / float(1024**3)
+        total_memory_gib = float(torch.cuda.get_device_properties(device).total_memory) / float(
+            1024**3
         )
         free_memory_gib = total_memory_gib
         try:
@@ -903,8 +905,7 @@ def main() -> None:
     )
     optimizer_steps_per_epoch = max(
         1,
-        (train_batches + args.gradient_accumulation_steps - 1)
-        // args.gradient_accumulation_steps,
+        (train_batches + args.gradient_accumulation_steps - 1) // args.gradient_accumulation_steps,
     )
     optimizers, optimizer_names = build_optimizer(
         model=model,
@@ -1129,10 +1130,15 @@ def main() -> None:
                     intermediate_ctc_losses_map = forward_outputs["intermediate_ctc_losses"]
                     aed_logits = forward_outputs.get("aed_logits")
                     liberta_student_embeddings = forward_outputs.get("liberta_student_embeddings")
-                    audio_teacher_student_states = forward_outputs.get("audio_teacher_student_states")
+                    audio_teacher_student_states = forward_outputs.get(
+                        "audio_teacher_student_states"
+                    )
                     if intermediate_ctc_losses_map:
                         intermediate_ctc_loss = torch.stack(
-                            [intermediate_ctc_losses_map[layer_index] for layer_index in intermediate_ctc_layers]
+                            [
+                                intermediate_ctc_losses_map[layer_index]
+                                for layer_index in intermediate_ctc_layers
+                            ]
                         ).mean()
                         loss = (
                             1.0 - intermediate_ctc_weight
@@ -1149,10 +1155,7 @@ def main() -> None:
                         loss = (1.0 - args.aed_loss_weight) * loss + args.aed_loss_weight * aed_loss
                     else:
                         aed_loss = None
-                if (
-                    liberta_teacher is not None
-                    and liberta_student_embeddings is not None
-                ):
+                if liberta_teacher is not None and liberta_student_embeddings is not None:
                     teacher_embeddings = liberta_teacher.encode(batch["transcripts"]).to(
                         device=liberta_student_embeddings.device,
                         dtype=liberta_student_embeddings.dtype,
@@ -1252,7 +1255,11 @@ def main() -> None:
                         distributed=distributed,
                     )
                     train_intermediate_ctc_loss_step = _distributed_mean(
-                        float(intermediate_ctc_loss.item() if intermediate_ctc_loss is not None else 0.0),
+                        float(
+                            intermediate_ctc_loss.item()
+                            if intermediate_ctc_loss is not None
+                            else 0.0
+                        ),
                         device=device,
                         distributed=distributed,
                     )
@@ -1364,10 +1371,7 @@ def main() -> None:
                         }
                     )
 
-                if (
-                    args.validate_every_steps > 0
-                    and global_step % args.validate_every_steps == 0
-                ):
+                if args.validate_every_steps > 0 and global_step % args.validate_every_steps == 0:
                     train_metrics = {
                         "train_loss": _distributed_mean(
                             running_loss / max(1, batch_index),

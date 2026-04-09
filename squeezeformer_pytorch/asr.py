@@ -371,7 +371,9 @@ class TrainingOnlyAEDDecoder(nn.Module):
         self.max_target_length = max_target_length
         self.register_buffer(
             "_causal_mask",
-            torch.triu(torch.ones(max_target_length, max_target_length, dtype=torch.bool), diagonal=1),
+            torch.triu(
+                torch.ones(max_target_length, max_target_length, dtype=torch.bool), diagonal=1
+            ),
             persistent=False,
         )
 
@@ -564,7 +566,9 @@ class SqueezeformerCTC(nn.Module):
             )
             for layer_index in self.intermediate_ctc_layers
         }
-        return self._chunked_log_probs_from_classifier(self.classifier, encoded), intermediate_log_probs
+        return self._chunked_log_probs_from_classifier(
+            self.classifier, encoded
+        ), intermediate_log_probs
 
     def _chunked_log_probs_from_classifier(self, classifier: nn.Module, x: Tensor) -> Tensor:
         batch, time, _ = x.shape
@@ -692,9 +696,9 @@ class SqueezeformerCTC(nn.Module):
                 reduction="none",
                 zero_infinity=True,
             )
-            weighted_loss_sum = weighted_loss_sum + (
-                per_sample_losses / chunk_target_lengths.clamp_min(1)
-            ).sum()
+            weighted_loss_sum = (
+                weighted_loss_sum + (per_sample_losses / chunk_target_lengths.clamp_min(1)).sum()
+            )
         return weighted_loss_sum / max(1, batch)
 
     def _post_block_transforms(
@@ -789,10 +793,10 @@ class SqueezeformerCTC(nn.Module):
                 main_ctc_loss = None
             output = TrainingOutputs(
                 {
-                "encoded": encoded,
-                "output_lengths": output_lengths,
-                "main_ctc_loss": main_ctc_loss,
-                "intermediate_ctc_losses": intermediate_ctc_losses,
+                    "encoded": encoded,
+                    "output_lengths": output_lengths,
+                    "main_ctc_loss": main_ctc_loss,
+                    "intermediate_ctc_losses": intermediate_ctc_losses,
                 }
             )
             if return_main_log_probs:
