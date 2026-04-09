@@ -53,7 +53,6 @@ def test_parse_args_rejects_multiple_dynamic_batching_modes() -> None:
         )
 
     assert (
-        str(error.value)
-        == "Batching controls are mutually exclusive; choose only one of "
+        str(error.value) == "Batching controls are mutually exclusive; choose only one of "
         "--max-batch-duration-sec, --max-batch-frames, or the adaptive batch options."
     )

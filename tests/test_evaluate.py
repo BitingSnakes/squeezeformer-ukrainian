@@ -102,7 +102,11 @@ def test_evaluate_defaults_to_checkpoint_tokenizer_casing(monkeypatch) -> None:
     monkeypatch.setattr(evaluate, "SqueezeformerCTC", DummyModel)
     monkeypatch.setattr(evaluate, "resolve_device", lambda *_args, **_kwargs: "cpu")
     monkeypatch.setattr(evaluate, "_validate_device_ready", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(evaluate, "_load_records_from_dataset_roots", lambda *_args, **kwargs: fake_load_records(**kwargs))
+    monkeypatch.setattr(
+        evaluate,
+        "_load_records_from_dataset_roots",
+        lambda *_args, **kwargs: fake_load_records(**kwargs),
+    )
     monkeypatch.setattr(evaluate, "AudioFeaturizer", DummyFeaturizer)
     monkeypatch.setattr(evaluate, "ASRDataset", DummyDataset)
     monkeypatch.setattr(evaluate, "create_dataloader", lambda *_args, **_kwargs: [])
@@ -210,7 +214,11 @@ def test_evaluate_respects_lowercase_transcripts_override(monkeypatch) -> None:
     monkeypatch.setattr(evaluate, "SqueezeformerCTC", DummyModel)
     monkeypatch.setattr(evaluate, "resolve_device", lambda *_args, **_kwargs: "cpu")
     monkeypatch.setattr(evaluate, "_validate_device_ready", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(evaluate, "_load_records_from_dataset_roots", lambda *_args, **kwargs: fake_load_records(**kwargs))
+    monkeypatch.setattr(
+        evaluate,
+        "_load_records_from_dataset_roots",
+        lambda *_args, **kwargs: fake_load_records(**kwargs),
+    )
     monkeypatch.setattr(evaluate, "AudioFeaturizer", DummyFeaturizer)
     monkeypatch.setattr(evaluate, "ASRDataset", DummyDataset)
     monkeypatch.setattr(evaluate, "create_dataloader", lambda *_args, **_kwargs: [])
@@ -327,7 +335,9 @@ def test_evaluate_prefers_validation_dataset_sources_when_dataset_source_is_unse
     monkeypatch.setattr(
         evaluate,
         "_resolve_sources",
-        lambda sources, fallback=None: list(sources or ([fallback] if fallback is not None else [])),
+        lambda sources, fallback=None: list(
+            sources or ([fallback] if fallback is not None else [])
+        ),
     )
     monkeypatch.setattr(
         evaluate,
@@ -574,9 +584,7 @@ def test_evaluate_trackio_uses_meaningful_run_name(monkeypatch) -> None:
 
     evaluate.main()
 
-    assert (
-        captured["trackio_init_kwargs"]["name"] == "demo-project_19700101_000000"
-    )
+    assert captured["trackio_init_kwargs"]["name"] == "demo-project_19700101_000000"
 
 
 def test_evaluation_runtime_resolves_audio_teacher_metadata() -> None:

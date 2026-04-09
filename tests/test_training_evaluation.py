@@ -240,7 +240,9 @@ def test_merge_evaluation_shards_combines_all_examples(monkeypatch) -> None:
     assert merged["random_examples"][0]["utterance_id"] == "utt-2"
 
 
-def test_evaluate_and_checkpoint_saves_validated_ema_weights_and_resume_raw(monkeypatch, tmp_path: Path) -> None:
+def test_evaluate_and_checkpoint_saves_validated_ema_weights_and_resume_raw(
+    monkeypatch, tmp_path: Path
+) -> None:
     class DummyTokenizer:
         blank_id = 0
 
