@@ -215,6 +215,47 @@ def test_top_emitted_token_histogram_reports_dominant_tokens() -> None:
     assert histogram[1][2] == "b"
 
 
+def test_top_emitted_token_histogram_uses_sentencepiece_piece_when_decode_is_empty() -> None:
+    class DummyProcessor:
+        def decode(self, ids):
+            if list(ids) == [2]:
+                return ""
+            return "x"
+
+        def id_to_piece(self, token_id):
+            if token_id == 2:
+                return "▁"
+            return "x"
+
+    class DummyTokenizer:
+        blank_id = 0
+        processor = DummyProcessor()
+
+        def decode(self, token_ids):
+            return self.processor.decode(token_ids)
+
+    log_probs = torch.log(
+        torch.tensor(
+            [
+                [
+                    [0.01, 0.01, 0.98],
+                    [0.01, 0.01, 0.98],
+                ]
+            ],
+            dtype=torch.float32,
+        )
+    )
+
+    histogram = training_evaluation.top_emitted_token_histogram(
+        log_probs,
+        output_lengths=torch.tensor([2]),
+        tokenizer=DummyTokenizer(),
+        top_k=1,
+    )
+
+    assert histogram[0][2] == "▁"
+
+
 def test_evaluate_restores_model_mode(monkeypatch) -> None:
     class DummyTokenizer:
         blank_id = 0

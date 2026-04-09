@@ -53,6 +53,28 @@ def _load_cloned_state_dict(module: nn.Module, state_dict: dict[str, torch.Tenso
     )
 
 
+def _token_display_text(tokenizer: Tokenizer, token_id: int) -> str:
+    if token_id == tokenizer.blank_id:
+        return "<blank>"
+
+    decoded = tokenizer.decode([token_id]).replace("\n", "\\n")
+    if decoded:
+        return decoded
+
+    processor = getattr(tokenizer, "processor", None)
+    if processor is not None:
+        id_to_piece = getattr(processor, "id_to_piece", None)
+        if callable(id_to_piece):
+            try:
+                piece = str(id_to_piece(token_id)).replace("\n", "\\n")
+            except Exception:
+                piece = ""
+            if piece:
+                return piece
+
+    return f"<id:{token_id}>"
+
+
 def greedy_decode(
     log_probs: torch.Tensor,
     output_lengths: torch.Tensor,
@@ -247,12 +269,7 @@ def top_emitted_token_histogram(
 
     histogram: list[tuple[int, float, str]] = []
     for token_id, count in zip(top_indices.tolist(), top_values.tolist(), strict=True):
-        if token_id == tokenizer.blank_id:
-            token_text = "<blank>"
-        else:
-            token_text = tokenizer.decode([token_id]).replace("\n", "\\n")
-            if not token_text:
-                token_text = f"<id:{token_id}>"
+        token_text = _token_display_text(tokenizer, int(token_id))
         histogram.append((int(token_id), float(count) / float(valid_frames), token_text))
     return histogram
 
