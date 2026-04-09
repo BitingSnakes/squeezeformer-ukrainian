@@ -78,7 +78,6 @@ from squeezeformer_pytorch.training.evaluation import (
     ctc_batch_diagnostics,
     ctc_logit_diagnostics,
     encoder_output_diagnostics,
-    greedy_decode,
     summarize_ctc_batch_diagnostics,
     summarize_encoder_output_diagnostics,
     summarize_ctc_logit_diagnostics,
@@ -152,13 +151,13 @@ def _build_trackio_run_name(
     output_dir: Path,
     start_epoch: int,
     global_step: int,
-    process_start_time: float,
+    process_start_timestamp: float,
 ) -> str:
     base_name = trackio_project.strip() or output_dir.name or "training"
     normalized_base_name = re.sub(r"[^A-Za-z0-9._-]+", "-", base_name).strip("-")
     if not normalized_base_name:
         normalized_base_name = "training"
-    timestamp = datetime.fromtimestamp(process_start_time, tz=timezone.utc).strftime(
+    timestamp = datetime.fromtimestamp(process_start_timestamp, tz=timezone.utc).strftime(
         "%Y%m%d_%H%M%S"
     )
     run_name = f"{normalized_base_name}_{timestamp}"
@@ -357,6 +356,22 @@ def _classifier_head_row_diagnostics(model: nn.Module) -> dict[str, float]:
         "blank_bias_grad": blank_bias_grad,
         "nonblank_bias_grad_mean": nonblank_bias_grad_mean,
     }
+
+
+def _should_warn_on_blank_starvation(
+    *,
+    global_step: int,
+    avg_blank_probability: float,
+    argmax_blank_fraction: float,
+    avg_top_nonblank_probability: float,
+) -> bool:
+    if global_step <= 0 or global_step > 500:
+        return False
+    if argmax_blank_fraction > 0.001:
+        return False
+    if avg_top_nonblank_probability <= 0.0:
+        return False
+    return avg_blank_probability <= (0.5 * avg_top_nonblank_probability)
 
 
 def _distributed_barrier() -> None:
@@ -604,7 +619,8 @@ def _update_top_checkpoints(
 
 def main() -> None:
     args = parse_args()
-    process_start_time = time.perf_counter()
+    process_start_monotonic = time.perf_counter()
+    process_start_timestamp = time.time()
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     _validate_startup_args(args, world_size=world_size)
     distributed = world_size > 1
@@ -1228,7 +1244,7 @@ def main() -> None:
             output_dir=output_dir,
             start_epoch=start_epoch,
             global_step=global_step,
-            process_start_time=process_start_time,
+            process_start_timestamp=process_start_timestamp,
         )
         trackio.init(
             project=args.trackio_project,
@@ -1262,7 +1278,7 @@ def main() -> None:
             args.trackio_project,
             trackio_run_name,
             trackio_dir,
-            _format_elapsed_seconds(time.perf_counter() - process_start_time),
+            _format_elapsed_seconds(time.perf_counter() - process_start_monotonic),
         )
 
     for epoch in range(start_epoch, args.epochs + 1):
@@ -1285,6 +1301,7 @@ def main() -> None:
         running_aed_loss = 0.0
         running_liberta_distill_loss = 0.0
         running_audio_teacher_loss = 0.0
+        blank_starvation_warning_logged = False
         tune_effective_frames = 0
         tune_padded_frames = 0
         tune_target_tokens = 0
@@ -1724,10 +1741,39 @@ def main() -> None:
                             f"{token_text}:{fraction:.3f}"
                             for _token_id, fraction, token_text in top_token_histogram
                         )
-                        preview_hypothesis = greedy_decode(
+                        if (
+                            not blank_starvation_warning_logged
+                            and _should_warn_on_blank_starvation(
+                                global_step=global_step,
+                                avg_blank_probability=ctc_diagnostics["avg_blank_probability"],
+                                argmax_blank_fraction=ctc_diagnostics["argmax_blank_fraction"],
+                                avg_top_nonblank_probability=ctc_diagnostics[
+                                    "avg_top_nonblank_probability"
+                                ],
+                            )
+                        ):
+                            blank_starvation_warning_logged = True
+                            logger.warning(
+                                "ctc blank starvation detected at global_step=%s: "
+                                "avg_blank_prob=%.4f argmax_blank_frac=%.4f "
+                                "avg_top_nonblank_prob=%.4f. Blank never wins a frame, so "
+                                "training will usually collapse into repeated nonblank pieces. "
+                                "This is commonly caused by overly aggressive blank suppression; "
+                                "if you set --blank-logit-offset > 0, retry with "
+                                "--blank-logit-offset 0.0 first.",
+                                global_step,
+                                ctc_diagnostics["avg_blank_probability"],
+                                ctc_diagnostics["argmax_blank_fraction"],
+                                ctc_diagnostics["avg_top_nonblank_probability"],
+                            )
+                        preview_hypothesis = decode_batch(
                             log_probs[:1],
                             output_lengths[:1],
-                            tokenizer,
+                            tokenizer=tokenizer,
+                            strategy=args.decode_strategy,
+                            beam_size=args.beam_size,
+                            lm_scorer=lm_scorer,
+                            lm_weight=args.lm_weight,
                         )[0]
                         logger.info(
                             "train preview ref=%r hyp=%r avg_output_frames=%.1f avg_target_tokens=%.1f top_tokens=%s",

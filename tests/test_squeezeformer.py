@@ -66,6 +66,7 @@ from train import (
     _build_fp8_recipe,
     _build_trackio_cli_arguments_table,
     _build_trackio_grouped_metrics,
+    _build_trackio_run_name,
     _configure_console_logger,
     _ensure_opus_decode_support,
     _launch_trackio_ui,
@@ -74,6 +75,7 @@ from train import (
     _resolve_dataset_roots,
     _resolve_dataset_sources,
     _shard_records_for_rank,
+    _should_warn_on_blank_starvation,
     _update_top_checkpoints,
     _validate_device_argument,
     _validate_fp8_runtime,
@@ -111,6 +113,36 @@ def test_validate_resume_tokenizer_configuration_rejects_tokenizer_type_mismatch
         )
 
     assert "uses tokenizer type 'sentencepiece'" in str(error.value)
+
+
+def test_build_trackio_run_name_uses_wall_clock_timestamp() -> None:
+    run_name = _build_trackio_run_name(
+        trackio_project="demo-run",
+        output_dir=Path("artifacts/demo"),
+        start_epoch=1,
+        global_step=0,
+        process_start_timestamp=1_712_750_400.0,
+    )
+
+    assert run_name == "demo-run_20240410_120000"
+
+
+def test_should_warn_on_blank_starvation_detects_zero_blank_argmax() -> None:
+    assert _should_warn_on_blank_starvation(
+        global_step=25,
+        avg_blank_probability=0.004,
+        argmax_blank_fraction=0.0,
+        avg_top_nonblank_probability=0.04,
+    )
+
+
+def test_should_warn_on_blank_starvation_ignores_healthy_blank_signal() -> None:
+    assert not _should_warn_on_blank_starvation(
+        global_step=25,
+        avg_blank_probability=0.6,
+        argmax_blank_fraction=0.8,
+        avg_top_nonblank_probability=0.2,
+    )
 
 
 def test_validate_resume_tokenizer_configuration_rejects_tokenizer_path_mismatch(
