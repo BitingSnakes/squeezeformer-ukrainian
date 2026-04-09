@@ -304,6 +304,58 @@ def _distributed_max_int(value: int, *, device: torch.device, distributed: bool)
     return int(reduced.item())
 
 
+def _classifier_head_row_diagnostics(model: nn.Module) -> dict[str, float]:
+    classifier = getattr(model, "classifier", None)
+    weight = getattr(classifier, "weight", None)
+    if not isinstance(weight, torch.Tensor) or weight.ndim != 2 or weight.shape[0] < 2:
+        return {
+            "blank_bias": 0.0,
+            "blank_weight_norm": 0.0,
+            "nonblank_weight_norm_mean": 0.0,
+            "blank_weight_grad_norm": 0.0,
+            "nonblank_weight_grad_norm_mean": 0.0,
+            "blank_bias_grad": 0.0,
+            "nonblank_bias_grad_mean": 0.0,
+        }
+
+    weight_float = weight.detach().float()
+    blank_weight = weight_float[0]
+    nonblank_weight = weight_float[1:]
+    weight_grad = weight.grad
+    if isinstance(weight_grad, torch.Tensor):
+        weight_grad_float = weight_grad.detach().float()
+        blank_weight_grad_norm = float(weight_grad_float[0].norm().item())
+        nonblank_weight_grad_norm_mean = float(
+            weight_grad_float[1:].norm(dim=1).mean().item()
+        )
+    else:
+        blank_weight_grad_norm = 0.0
+        nonblank_weight_grad_norm_mean = 0.0
+
+    bias = getattr(classifier, "bias", None)
+    blank_bias = 0.0
+    blank_bias_grad = 0.0
+    nonblank_bias_grad_mean = 0.0
+    if isinstance(bias, torch.Tensor) and bias.ndim == 1 and bias.shape[0] == weight.shape[0]:
+        bias_float = bias.detach().float()
+        blank_bias = float(bias_float[0].item())
+        bias_grad = bias.grad
+        if isinstance(bias_grad, torch.Tensor):
+            bias_grad_float = bias_grad.detach().float()
+            blank_bias_grad = float(bias_grad_float[0].item())
+            nonblank_bias_grad_mean = float(bias_grad_float[1:].mean().item())
+
+    return {
+        "blank_bias": blank_bias,
+        "blank_weight_norm": float(blank_weight.norm().item()),
+        "nonblank_weight_norm_mean": float(nonblank_weight.norm(dim=1).mean().item()),
+        "blank_weight_grad_norm": blank_weight_grad_norm,
+        "nonblank_weight_grad_norm_mean": nonblank_weight_grad_norm_mean,
+        "blank_bias_grad": blank_bias_grad,
+        "nonblank_bias_grad_mean": nonblank_bias_grad_mean,
+    }
+
+
 def _distributed_barrier() -> None:
     if not dist.is_initialized():
         return
@@ -1401,6 +1453,7 @@ def main() -> None:
                 for optimizer in optimizers:
                     scaler.unscale_(optimizer)
                 grad_norm = float(_compute_grad_norm(model.parameters()).item())
+                head_row_stats = _classifier_head_row_diagnostics(model)
                 if args.grad_clip_norm > 0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip_norm)
                 for optimizer in optimizers:
@@ -1474,6 +1527,14 @@ def main() -> None:
                         device=device,
                         distributed=distributed,
                     )
+                    head_row_stats = {
+                        name: _distributed_mean(
+                            value,
+                            device=device,
+                            distributed=distributed,
+                        )
+                        for name, value in head_row_stats.items()
+                    }
                     batch_audio_minutes = _distributed_mean(
                         _frames_to_minutes(
                             tune_effective_frames,
@@ -1561,6 +1622,11 @@ def main() -> None:
                             "train_avg_blank_logit=%.4f train_avg_top_logit=%.4f "
                             "train_avg_top2_margin=%.4f train_avg_blank_nonblank_margin=%.4f "
                             "train_avg_entropy=%.4f "
+                            "train_blank_bias=%.4f train_blank_weight_norm=%.4f "
+                            "train_nonblank_weight_norm_mean=%.4f "
+                            "train_blank_weight_grad_norm=%.4f "
+                            "train_nonblank_weight_grad_norm_mean=%.4f "
+                            "train_blank_bias_grad=%.4f train_nonblank_bias_grad_mean=%.4f "
                             "%s %s %s %s"
                         ),
                         epoch,
@@ -1587,6 +1653,13 @@ def main() -> None:
                         ctc_logit_stats["avg_top2_margin"],
                         ctc_logit_stats["avg_blank_nonblank_margin"],
                         ctc_logit_stats["avg_entropy"],
+                        head_row_stats["blank_bias"],
+                        head_row_stats["blank_weight_norm"],
+                        head_row_stats["nonblank_weight_norm_mean"],
+                        head_row_stats["blank_weight_grad_norm"],
+                        head_row_stats["nonblank_weight_grad_norm_mean"],
+                        head_row_stats["blank_bias_grad"],
+                        head_row_stats["nonblank_bias_grad_mean"],
                         intermediate_loss_detail,
                         intermediate_length_detail,
                         memory_snapshot,
@@ -1642,6 +1715,25 @@ def main() -> None:
                                 "avg_blank_nonblank_margin"
                             ],
                             "train_avg_entropy_step": ctc_logit_stats["avg_entropy"],
+                            "train_blank_bias_step": head_row_stats["blank_bias"],
+                            "train_blank_weight_norm_step": head_row_stats[
+                                "blank_weight_norm"
+                            ],
+                            "train_nonblank_weight_norm_mean_step": head_row_stats[
+                                "nonblank_weight_norm_mean"
+                            ],
+                            "train_blank_weight_grad_norm_step": head_row_stats[
+                                "blank_weight_grad_norm"
+                            ],
+                            "train_nonblank_weight_grad_norm_mean_step": head_row_stats[
+                                "nonblank_weight_grad_norm_mean"
+                            ],
+                            "train_blank_bias_grad_step": head_row_stats[
+                                "blank_bias_grad"
+                            ],
+                            "train_nonblank_bias_grad_mean_step": head_row_stats[
+                                "nonblank_bias_grad_mean"
+                            ],
                             "ema_decay": ema.current_decay() if ema is not None else 0.0,
                             "cpu_rss_bytes": _read_proc_status_memory_bytes("VmRSS:") or 0,
                             "cpu_peak_rss_bytes": (
@@ -1711,6 +1803,25 @@ def main() -> None:
                                             "avg_blank_nonblank_margin"
                                         ],
                                         "avg_entropy_step": ctc_logit_stats["avg_entropy"],
+                                        "blank_bias_step": head_row_stats["blank_bias"],
+                                        "blank_weight_norm_step": head_row_stats[
+                                            "blank_weight_norm"
+                                        ],
+                                        "nonblank_weight_norm_mean_step": head_row_stats[
+                                            "nonblank_weight_norm_mean"
+                                        ],
+                                        "blank_weight_grad_norm_step": head_row_stats[
+                                            "blank_weight_grad_norm"
+                                        ],
+                                        "nonblank_weight_grad_norm_mean_step": head_row_stats[
+                                            "nonblank_weight_grad_norm_mean"
+                                        ],
+                                        "blank_bias_grad_step": head_row_stats[
+                                            "blank_bias_grad"
+                                        ],
+                                        "nonblank_bias_grad_mean_step": head_row_stats[
+                                            "nonblank_bias_grad_mean"
+                                        ],
                                         "avg_output_frames_step": ctc_diagnostics[
                                             "avg_output_frames"
                                         ],
