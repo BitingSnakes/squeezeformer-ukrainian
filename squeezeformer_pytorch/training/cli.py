@@ -218,20 +218,20 @@ def _validate_startup_args(
             "--max-chars-per-second must be >= --min-chars-per-second, got "
             f"{args.max_chars_per_second} < {args.min_chars_per_second}."
         )
-    if args.max_tokens_per_second < args.min_tokens_per_second:
+    if args.max_words_per_second < args.min_words_per_second:
         raise ValueError(
-            "--max-tokens-per-second must be >= --min-tokens-per-second, got "
-            f"{args.max_tokens_per_second} < {args.min_tokens_per_second}."
+            "--max-words-per-second must be >= --min-words-per-second, got "
+            f"{args.max_words_per_second} < {args.min_words_per_second}."
         )
     if args.max_duration_per_char < args.min_duration_per_char:
         raise ValueError(
             "--max-duration-per-char must be >= --min-duration-per-char, got "
             f"{args.max_duration_per_char} < {args.min_duration_per_char}."
         )
-    if args.max_duration_per_token < args.min_duration_per_token:
+    if args.max_duration_per_word < args.min_duration_per_word:
         raise ValueError(
-            "--max-duration-per-token must be >= --min-duration-per-token, got "
-            f"{args.max_duration_per_token} < {args.min_duration_per_token}."
+            "--max-duration-per-word must be >= --min-duration-per-word, got "
+            f"{args.max_duration_per_word} < {args.min_duration_per_word}."
         )
     if args.noise_snr_db_max < args.noise_snr_db_min:
         raise ValueError(
@@ -376,12 +376,52 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-audio-duration-sec", type=float, default=30.0)
     parser.add_argument("--min-chars-per-second", type=float, default=0.0)
     parser.add_argument("--max-chars-per-second", type=float, default=float("inf"))
-    parser.add_argument("--min-tokens-per-second", type=float, default=0.0)
-    parser.add_argument("--max-tokens-per-second", type=float, default=float("inf"))
+    parser.add_argument(
+        "--min-words-per-second",
+        "--min-tokens-per-second",
+        dest="min_words_per_second",
+        type=float,
+        default=0.0,
+        help=(
+            "Minimum whitespace-delimited word rate accepted by alignment filtering. "
+            "The legacy --min-tokens-per-second spelling remains accepted as an alias."
+        ),
+    )
+    parser.add_argument(
+        "--max-words-per-second",
+        "--max-tokens-per-second",
+        dest="max_words_per_second",
+        type=float,
+        default=float("inf"),
+        help=(
+            "Maximum whitespace-delimited word rate accepted by alignment filtering. "
+            "The legacy --max-tokens-per-second spelling remains accepted as an alias."
+        ),
+    )
     parser.add_argument("--min-duration-per-char", type=float, default=0.0)
     parser.add_argument("--max-duration-per-char", type=float, default=float("inf"))
-    parser.add_argument("--min-duration-per-token", type=float, default=0.0)
-    parser.add_argument("--max-duration-per-token", type=float, default=float("inf"))
+    parser.add_argument(
+        "--min-duration-per-word",
+        "--min-duration-per-token",
+        dest="min_duration_per_word",
+        type=float,
+        default=0.0,
+        help=(
+            "Minimum seconds per whitespace-delimited word accepted by alignment filtering. "
+            "The legacy --min-duration-per-token spelling remains accepted as an alias."
+        ),
+    )
+    parser.add_argument(
+        "--max-duration-per-word",
+        "--max-duration-per-token",
+        dest="max_duration_per_word",
+        type=float,
+        default=float("inf"),
+        help=(
+            "Maximum seconds per whitespace-delimited word accepted by alignment filtering. "
+            "The legacy --max-duration-per-token spelling remains accepted as an alias."
+        ),
+    )
     parser.add_argument("--feature-cache-dir", default=None)
     parser.add_argument(
         "--max-batch-duration-sec",

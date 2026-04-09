@@ -912,14 +912,47 @@ def test_parse_args_supports_alignment_filter_thresholds(
             "1.5",
             "--max-chars-per-second",
             "18",
-            "--min-tokens-per-second",
+            "--min-words-per-second",
             "0.5",
-            "--max-tokens-per-second",
+            "--max-words-per-second",
             "5",
             "--min-duration-per-char",
             "0.02",
             "--max-duration-per-char",
             "0.6",
+            "--min-duration-per-word",
+            "0.15",
+            "--max-duration-per-word",
+            "3.0",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.min_chars_per_second == 1.5
+    assert args.max_chars_per_second == 18.0
+    assert args.min_words_per_second == 0.5
+    assert args.max_words_per_second == 5.0
+    assert args.min_duration_per_char == 0.02
+    assert args.max_duration_per_char == 0.6
+    assert args.min_duration_per_word == 0.15
+    assert args.max_duration_per_word == 3.0
+
+
+def test_parse_args_supports_legacy_token_alignment_filter_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train.py",
+            "--device",
+            "cpu",
+            "--min-tokens-per-second",
+            "0.5",
+            "--max-tokens-per-second",
+            "5",
             "--min-duration-per-token",
             "0.15",
             "--max-duration-per-token",
@@ -929,14 +962,10 @@ def test_parse_args_supports_alignment_filter_thresholds(
 
     args = parse_args()
 
-    assert args.min_chars_per_second == 1.5
-    assert args.max_chars_per_second == 18.0
-    assert args.min_tokens_per_second == 0.5
-    assert args.max_tokens_per_second == 5.0
-    assert args.min_duration_per_char == 0.02
-    assert args.max_duration_per_char == 0.6
-    assert args.min_duration_per_token == 0.15
-    assert args.max_duration_per_token == 3.0
+    assert args.min_words_per_second == 0.5
+    assert args.max_words_per_second == 5.0
+    assert args.min_duration_per_word == 0.15
+    assert args.max_duration_per_word == 3.0
 
 
 def test_load_records_from_dataset_roots_combines_sources_with_global_limit(tmp_path: Path) -> None:
@@ -1083,12 +1112,12 @@ def test_load_train_val_records_without_record_cache_uses_in_memory_loader(
         max_symbol_ratio: float,
         min_chars_per_second: float,
         max_chars_per_second: float,
-        min_tokens_per_second: float,
-        max_tokens_per_second: float,
+        min_words_per_second: float,
+        max_words_per_second: float,
         min_duration_per_char: float,
         max_duration_per_char: float,
-        min_duration_per_token: float,
-        max_duration_per_token: float,
+        min_duration_per_word: float,
+        max_duration_per_word: float,
         lowercase_transcripts: bool,
         hf_token: str | None = None,
         cache_dir: str | None = None,
@@ -1104,12 +1133,12 @@ def test_load_train_val_records_without_record_cache_uses_in_memory_loader(
             max_symbol_ratio,
             min_chars_per_second,
             max_chars_per_second,
-            min_tokens_per_second,
-            max_tokens_per_second,
+            min_words_per_second,
+            max_words_per_second,
             min_duration_per_char,
             max_duration_per_char,
-            min_duration_per_token,
-            max_duration_per_token,
+            min_duration_per_word,
+            max_duration_per_word,
             lowercase_transcripts,
             hf_token,
             cache_dir,
@@ -1143,12 +1172,12 @@ def test_load_train_val_records_without_record_cache_uses_in_memory_loader(
             "max_symbol_ratio": 0.5,
             "min_chars_per_second": 0.0,
             "max_chars_per_second": float("inf"),
-            "min_tokens_per_second": 0.0,
-            "max_tokens_per_second": float("inf"),
+            "min_words_per_second": 0.0,
+            "max_words_per_second": float("inf"),
             "min_duration_per_char": 0.0,
             "max_duration_per_char": float("inf"),
-            "min_duration_per_token": 0.0,
-            "max_duration_per_token": float("inf"),
+            "min_duration_per_word": 0.0,
+            "max_duration_per_word": float("inf"),
             "hf_token": None,
             "cache_dir": None,
             "prevalidate_audio": False,
@@ -1495,12 +1524,12 @@ def test_iter_records_filters_alignment_outliers(tmp_path: Path) -> None:
             test_fraction=0.0,
             min_chars_per_second=2.0,
             max_chars_per_second=20.0,
-            min_tokens_per_second=0.5,
-            max_tokens_per_second=6.0,
+            min_words_per_second=0.5,
+            max_words_per_second=6.0,
             min_duration_per_char=0.03,
             max_duration_per_char=0.5,
-            min_duration_per_token=0.2,
-            max_duration_per_token=3.0,
+            min_duration_per_word=0.2,
+            max_duration_per_word=3.0,
         )
     )
 

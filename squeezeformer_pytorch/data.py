@@ -62,12 +62,12 @@ class LoaderSummary:
     skipped_audio_too_long: int = 0
     skipped_chars_per_second_too_low: int = 0
     skipped_chars_per_second_too_high: int = 0
-    skipped_tokens_per_second_too_low: int = 0
-    skipped_tokens_per_second_too_high: int = 0
+    skipped_words_per_second_too_low: int = 0
+    skipped_words_per_second_too_high: int = 0
     skipped_duration_per_char_too_low: int = 0
     skipped_duration_per_char_too_high: int = 0
-    skipped_duration_per_token_too_low: int = 0
-    skipped_duration_per_token_too_high: int = 0
+    skipped_duration_per_word_too_low: int = 0
+    skipped_duration_per_word_too_high: int = 0
     skipped_split: int = 0
 
 
@@ -106,9 +106,9 @@ def _log_loader_summary(
         "skipped_too_long=%s skipped_symbol_ratio=%s skipped_no_alnum=%s "
         "skipped_audio_too_short=%s skipped_audio_too_long=%s "
         "skipped_chars_per_second_too_low=%s skipped_chars_per_second_too_high=%s "
-        "skipped_tokens_per_second_too_low=%s skipped_tokens_per_second_too_high=%s "
+        "skipped_words_per_second_too_low=%s skipped_words_per_second_too_high=%s "
         "skipped_duration_per_char_too_low=%s skipped_duration_per_char_too_high=%s "
-        "skipped_duration_per_token_too_low=%s skipped_duration_per_token_too_high=%s "
+        "skipped_duration_per_word_too_low=%s skipped_duration_per_word_too_high=%s "
         "skipped_split=%s max_samples=%s",
         _source_summary_label(source),
         split,
@@ -125,12 +125,12 @@ def _log_loader_summary(
         summary.skipped_audio_too_long,
         summary.skipped_chars_per_second_too_low,
         summary.skipped_chars_per_second_too_high,
-        summary.skipped_tokens_per_second_too_low,
-        summary.skipped_tokens_per_second_too_high,
+        summary.skipped_words_per_second_too_low,
+        summary.skipped_words_per_second_too_high,
         summary.skipped_duration_per_char_too_low,
         summary.skipped_duration_per_char_too_high,
-        summary.skipped_duration_per_token_too_low,
-        summary.skipped_duration_per_token_too_high,
+        summary.skipped_duration_per_word_too_low,
+        summary.skipped_duration_per_word_too_high,
         summary.skipped_split,
         max_samples if max_samples is not None else "none",
     )
@@ -155,18 +155,18 @@ def _alignment_rejection_reason(
     *,
     min_chars_per_second: float,
     max_chars_per_second: float,
-    min_tokens_per_second: float,
-    max_tokens_per_second: float,
+    min_words_per_second: float,
+    max_words_per_second: float,
     min_duration_per_char: float,
     max_duration_per_char: float,
-    min_duration_per_token: float,
-    max_duration_per_token: float,
+    min_duration_per_word: float,
+    max_duration_per_word: float,
 ) -> str | None:
     if duration_seconds <= 0.0:
         return None
     char_count = sum(1 for char in text if not char.isspace())
-    token_count = len(text.split())
-    if char_count <= 0 or token_count <= 0:
+    word_count = len(text.split())
+    if char_count <= 0 or word_count <= 0:
         return None
 
     chars_per_second = char_count / duration_seconds
@@ -175,11 +175,11 @@ def _alignment_rejection_reason(
     if chars_per_second > max_chars_per_second:
         return "chars_per_second_too_high"
 
-    tokens_per_second = token_count / duration_seconds
-    if tokens_per_second < min_tokens_per_second:
-        return "tokens_per_second_too_low"
-    if tokens_per_second > max_tokens_per_second:
-        return "tokens_per_second_too_high"
+    words_per_second = word_count / duration_seconds
+    if words_per_second < min_words_per_second:
+        return "words_per_second_too_low"
+    if words_per_second > max_words_per_second:
+        return "words_per_second_too_high"
 
     duration_per_char = duration_seconds / char_count
     if duration_per_char < min_duration_per_char:
@@ -187,11 +187,11 @@ def _alignment_rejection_reason(
     if duration_per_char > max_duration_per_char:
         return "duration_per_char_too_high"
 
-    duration_per_token = duration_seconds / token_count
-    if duration_per_token < min_duration_per_token:
-        return "duration_per_token_too_low"
-    if duration_per_token > max_duration_per_token:
-        return "duration_per_token_too_high"
+    duration_per_word = duration_seconds / word_count
+    if duration_per_word < min_duration_per_word:
+        return "duration_per_word_too_low"
+    if duration_per_word > max_duration_per_word:
+        return "duration_per_word_too_high"
 
     return None
 
@@ -585,12 +585,12 @@ def _build_cv_record(
     max_audio_duration_sec: float,
     min_chars_per_second: float,
     max_chars_per_second: float,
-    min_tokens_per_second: float,
-    max_tokens_per_second: float,
+    min_words_per_second: float,
+    max_words_per_second: float,
     min_duration_per_char: float,
     max_duration_per_char: float,
-    min_duration_per_token: float,
-    max_duration_per_token: float,
+    min_duration_per_word: float,
+    max_duration_per_word: float,
     lowercase_transcripts: bool,
 ) -> AudioRecord | None:
     try:
@@ -636,12 +636,12 @@ def _build_cv_record(
         duration_seconds,
         min_chars_per_second=min_chars_per_second,
         max_chars_per_second=max_chars_per_second,
-        min_tokens_per_second=min_tokens_per_second,
-        max_tokens_per_second=max_tokens_per_second,
+        min_words_per_second=min_words_per_second,
+        max_words_per_second=max_words_per_second,
         min_duration_per_char=min_duration_per_char,
         max_duration_per_char=max_duration_per_char,
-        min_duration_per_token=min_duration_per_token,
-        max_duration_per_token=max_duration_per_token,
+        min_duration_per_word=min_duration_per_word,
+        max_duration_per_word=max_duration_per_word,
     )
     if alignment_rejection_reason is not None:
         _increment_summary_field(summary, alignment_rejection_reason)
@@ -757,12 +757,12 @@ def load_records(
     max_audio_duration_sec: float = 30.0,
     min_chars_per_second: float = 0.0,
     max_chars_per_second: float = float("inf"),
-    min_tokens_per_second: float = 0.0,
-    max_tokens_per_second: float = float("inf"),
+    min_words_per_second: float = 0.0,
+    max_words_per_second: float = float("inf"),
     min_duration_per_char: float = 0.0,
     max_duration_per_char: float = float("inf"),
-    min_duration_per_token: float = 0.0,
-    max_duration_per_token: float = float("inf"),
+    min_duration_per_word: float = 0.0,
+    max_duration_per_word: float = float("inf"),
     lowercase_transcripts: bool = True,
 ) -> list[AudioRecord]:
     records = list(
@@ -780,12 +780,12 @@ def load_records(
             max_audio_duration_sec=max_audio_duration_sec,
             min_chars_per_second=min_chars_per_second,
             max_chars_per_second=max_chars_per_second,
-            min_tokens_per_second=min_tokens_per_second,
-            max_tokens_per_second=max_tokens_per_second,
+            min_words_per_second=min_words_per_second,
+            max_words_per_second=max_words_per_second,
             min_duration_per_char=min_duration_per_char,
             max_duration_per_char=max_duration_per_char,
-            min_duration_per_token=min_duration_per_token,
-            max_duration_per_token=max_duration_per_token,
+            min_duration_per_word=min_duration_per_word,
+            max_duration_per_word=max_duration_per_word,
             lowercase_transcripts=lowercase_transcripts,
         )
     )
@@ -808,12 +808,12 @@ def iter_records(
     max_audio_duration_sec: float = 30.0,
     min_chars_per_second: float = 0.0,
     max_chars_per_second: float = float("inf"),
-    min_tokens_per_second: float = 0.0,
-    max_tokens_per_second: float = float("inf"),
+    min_words_per_second: float = 0.0,
+    max_words_per_second: float = float("inf"),
     min_duration_per_char: float = 0.0,
     max_duration_per_char: float = float("inf"),
-    min_duration_per_token: float = 0.0,
-    max_duration_per_token: float = float("inf"),
+    min_duration_per_word: float = 0.0,
+    max_duration_per_word: float = float("inf"),
     lowercase_transcripts: bool = True,
 ) -> Iterable[AudioRecord]:
     summary = LoaderSummary()
@@ -837,12 +837,12 @@ def iter_records(
                 max_audio_duration_sec=max_audio_duration_sec,
                 min_chars_per_second=min_chars_per_second,
                 max_chars_per_second=max_chars_per_second,
-                min_tokens_per_second=min_tokens_per_second,
-                max_tokens_per_second=max_tokens_per_second,
+                min_words_per_second=min_words_per_second,
+                max_words_per_second=max_words_per_second,
                 min_duration_per_char=min_duration_per_char,
                 max_duration_per_char=max_duration_per_char,
-                min_duration_per_token=min_duration_per_token,
-                max_duration_per_token=max_duration_per_token,
+                min_duration_per_word=min_duration_per_word,
+                max_duration_per_word=max_duration_per_word,
                 lowercase_transcripts=lowercase_transcripts,
             )
             if record is None:
@@ -888,12 +888,12 @@ def iter_records_from_source(
     max_audio_duration_sec: float = 30.0,
     min_chars_per_second: float = 0.0,
     max_chars_per_second: float = float("inf"),
-    min_tokens_per_second: float = 0.0,
-    max_tokens_per_second: float = float("inf"),
+    min_words_per_second: float = 0.0,
+    max_words_per_second: float = float("inf"),
     min_duration_per_char: float = 0.0,
     max_duration_per_char: float = float("inf"),
-    min_duration_per_token: float = 0.0,
-    max_duration_per_token: float = float("inf"),
+    min_duration_per_word: float = 0.0,
+    max_duration_per_word: float = float("inf"),
     lowercase_transcripts: bool = True,
     hf_token: str | None = None,
     cache_dir: str | Path | None = None,
@@ -923,12 +923,12 @@ def iter_records_from_source(
                 max_audio_duration_sec=max_audio_duration_sec,
                 min_chars_per_second=min_chars_per_second,
                 max_chars_per_second=max_chars_per_second,
-                min_tokens_per_second=min_tokens_per_second,
-                max_tokens_per_second=max_tokens_per_second,
+                min_words_per_second=min_words_per_second,
+                max_words_per_second=max_words_per_second,
                 min_duration_per_char=min_duration_per_char,
                 max_duration_per_char=max_duration_per_char,
-                min_duration_per_token=min_duration_per_token,
-                max_duration_per_token=max_duration_per_token,
+                min_duration_per_word=min_duration_per_word,
+                max_duration_per_word=max_duration_per_word,
                 lowercase_transcripts=lowercase_transcripts,
             )
             if record is None:
