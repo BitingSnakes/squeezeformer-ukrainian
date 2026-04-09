@@ -32,11 +32,11 @@ from squeezeformer_pytorch.evaluation_runtime import (
 )
 from squeezeformer_pytorch.model import SqueezeformerConfig
 from squeezeformer_pytorch.runtime_types import DecodeStrategy, DTypeChoice
-from train import (
+from squeezeformer_pytorch.training.cli import _validate_device_argument
+from squeezeformer_pytorch.training.evaluation import evaluate
+from squeezeformer_pytorch.training.runtime import (
     FrozenLibertaTeacher,
-    _validate_device_argument,
     _validate_device_ready,
-    evaluate,
     resolve_device,
 )
 
