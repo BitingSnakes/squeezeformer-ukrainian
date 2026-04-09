@@ -211,4 +211,5 @@ def test_default_intermediate_ctc_layers_avoid_reduced_time_segments_for_all_var
         layers = _default_intermediate_ctc_layers(config)
 
         assert all(layer not in reduced_layers for layer in layers)
-        assert all(layer < config.num_layers - 1 for layer in layers)
+        assert all(layer < config.num_layers for layer in layers)
+        assert layers[-1] == config.num_layers - 1

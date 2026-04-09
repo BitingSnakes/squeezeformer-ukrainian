@@ -1768,6 +1768,23 @@ def main() -> None:
                         if intermediate_ctc_diagnostics_map
                         else ""
                     )
+                    intermediate_blank_detail = (
+                        " ".join(
+                            (
+                                f"layer{layer_index}_avg_blank_prob="
+                                f"{summarize_ctc_batch_diagnostics(intermediate_ctc_diagnostics_map[layer_index])['avg_blank_probability']:.4f} "
+                                f"layer{layer_index}_argmax_blank_frac="
+                                f"{summarize_ctc_batch_diagnostics(intermediate_ctc_diagnostics_map[layer_index])['argmax_blank_fraction']:.4f} "
+                                f"layer{layer_index}_avg_top_nonblank_prob="
+                                f"{summarize_ctc_batch_diagnostics(intermediate_ctc_diagnostics_map[layer_index])['avg_top_nonblank_probability']:.4f} "
+                                f"layer{layer_index}_avg_blank_nonblank_margin="
+                                f"{summarize_ctc_logit_diagnostics(intermediate_ctc_diagnostics_map[layer_index])['avg_blank_nonblank_margin']:.4f}"
+                            )
+                            for layer_index in sorted(intermediate_ctc_diagnostics_map)
+                        )
+                        if intermediate_ctc_diagnostics_map
+                        else ""
+                    )
                     logger.info(
                         (
                             "epoch=%s step=%s/%s global_step=%s train_loss=%.4f "
@@ -1789,7 +1806,7 @@ def main() -> None:
                             "train_blank_bias_grad=%.4f train_nonblank_bias_grad_mean=%.4f "
                             "train_encoder_mean=%.4f train_encoder_std=%.4f "
                             "train_encoder_token_l2_norm=%.4f "
-                            "%s %s %s %s"
+                            "%s %s %s %s %s"
                         ),
                         epoch,
                         batch_index,
@@ -1828,6 +1845,7 @@ def main() -> None:
                         encoder_stats["avg_token_l2_norm"],
                         intermediate_loss_detail,
                         intermediate_length_detail,
+                        intermediate_blank_detail,
                         memory_snapshot,
                         " ".join(f"{name}={value:.6g}" for name, value in learning_rates.items()),
                     )

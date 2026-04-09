@@ -546,7 +546,7 @@ def _dedupe_sorted_layers(layers: tuple[int, ...]) -> tuple[int, ...]:
 
 def _default_intermediate_ctc_layers(encoder_config: SqueezeformerConfig) -> tuple[int, ...]:
     if encoder_config.num_layers < 4:
-        return (max(0, encoder_config.num_layers - 2),)
+        return (max(0, encoder_config.num_layers - 1),)
 
     reduced_time_layers: set[int] = set()
     for reduce_idx, recover_idx in zip(
@@ -558,18 +558,24 @@ def _default_intermediate_ctc_layers(encoder_config: SqueezeformerConfig) -> tup
 
     candidate_layers = tuple(
         layer_index
-        for layer_index in range(max(0, encoder_config.num_layers - 1))
+        for layer_index in range(max(1, encoder_config.num_layers))
         if layer_index not in reduced_time_layers
     )
     if not candidate_layers:
-        candidate_layers = tuple(range(max(1, encoder_config.num_layers - 1)))
+        candidate_layers = tuple(range(max(1, encoder_config.num_layers)))
 
     if len(candidate_layers) == 1:
         return candidate_layers
 
+    # Use one early full-resolution head and one late full-resolution head so
+    # auxiliary supervision covers both the front-end and the post-recovery
+    # encoder stack. The previous 1/3 + 2/3 placement for Squeezeformer
+    # variants with a single temporal U-Net often landed both heads before time
+    # reduction, leaving the later stack unsupervised except through the final
+    # classifier.
     position_indices = (
         len(candidate_layers) // 3,
-        (2 * len(candidate_layers)) // 3,
+        len(candidate_layers) - 1,
     )
     return _dedupe_sorted_layers(
         tuple(candidate_layers[min(len(candidate_layers) - 1, position)] for position in position_indices)

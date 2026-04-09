@@ -561,6 +561,93 @@ class SqueezeformerCTC(nn.Module):
             "tight_sample_count": float(tight),
         }
 
+    @staticmethod
+    def _ctc_batch_diagnostics_from_log_probs(
+        log_probs: Tensor,
+        output_lengths: Tensor,
+        *,
+        blank_id: int,
+        target_lengths: Tensor | None = None,
+    ) -> dict[str, float]:
+        valid_mask = (
+            torch.arange(log_probs.size(1), device=output_lengths.device).unsqueeze(0)
+            < output_lengths.unsqueeze(1)
+        )
+        valid_frames = int(valid_mask.sum().item())
+        blank_probabilities = log_probs[..., blank_id].exp()
+        argmax_tokens = log_probs.argmax(dim=-1)
+        argmax_blank_frames = int(((argmax_tokens == blank_id) & valid_mask).sum().item())
+
+        nonblank_log_probs = log_probs.clone()
+        nonblank_log_probs[..., blank_id] = float("-inf")
+        top_nonblank_probabilities = nonblank_log_probs.max(dim=-1).values.exp()
+
+        diagnostics = {
+            "blank_probability_sum": float(blank_probabilities.masked_select(valid_mask).sum().item()),
+            "decoded_frames": float(valid_frames),
+            "argmax_blank_frames": float(argmax_blank_frames),
+            "top_nonblank_probability_sum": float(
+                top_nonblank_probabilities.masked_select(valid_mask).sum().item()
+            ),
+            "sample_count": float(output_lengths.numel()),
+            "output_frames_sum": float(output_lengths.sum().item()),
+        }
+        if target_lengths is not None:
+            diagnostics["target_tokens_sum"] = float(target_lengths.sum().item())
+            diagnostics["impossible_sample_count"] = float(
+                output_lengths.lt(target_lengths).sum().item()
+            )
+            diagnostics["tight_sample_count"] = float(
+                output_lengths.le(target_lengths).sum().item()
+            )
+        return diagnostics
+
+    @staticmethod
+    def _ctc_logit_diagnostics_from_logits(
+        logits: Tensor,
+        output_lengths: Tensor,
+        *,
+        blank_id: int,
+    ) -> dict[str, float]:
+        valid_mask = (
+            torch.arange(logits.size(1), device=output_lengths.device).unsqueeze(0)
+            < output_lengths.unsqueeze(1)
+        )
+        valid_frames = int(valid_mask.sum().item())
+        if valid_frames <= 0:
+            return {
+                "decoded_frames": 0.0,
+                "blank_logit_sum": 0.0,
+                "top_logit_sum": 0.0,
+                "top2_margin_sum": 0.0,
+                "blank_nonblank_margin_sum": 0.0,
+                "entropy_sum": 0.0,
+            }
+
+        top2 = torch.topk(logits, k=min(2, logits.size(-1)), dim=-1).values
+        top_logits = top2[..., 0]
+        top2_margins = (
+            top2[..., 0] - top2[..., 1] if logits.size(-1) > 1 else torch.zeros_like(top_logits)
+        )
+        blank_logits = logits[..., blank_id]
+        nonblank_logits = logits.clone()
+        nonblank_logits[..., blank_id] = float("-inf")
+        best_nonblank_logits = nonblank_logits.max(dim=-1).values
+        blank_nonblank_margins = blank_logits - best_nonblank_logits
+        probabilities = torch.softmax(logits, dim=-1)
+        entropy = -(probabilities * torch.log_softmax(logits, dim=-1)).sum(dim=-1)
+
+        return {
+            "decoded_frames": float(valid_frames),
+            "blank_logit_sum": float(blank_logits.masked_select(valid_mask).sum().item()),
+            "top_logit_sum": float(top_logits.masked_select(valid_mask).sum().item()),
+            "top2_margin_sum": float(top2_margins.masked_select(valid_mask).sum().item()),
+            "blank_nonblank_margin_sum": float(
+                blank_nonblank_margins.masked_select(valid_mask).sum().item()
+            ),
+            "entropy_sum": float(entropy.masked_select(valid_mask).sum().item()),
+        }
+
     def _apply_training_blank_logit_offset(self, logits: Tensor) -> Tensor:
         if not self.training or self.blank_logit_offset <= 0.0:
             return logits
@@ -634,17 +721,16 @@ class SqueezeformerCTC(nn.Module):
             return encoded, output_lengths, intermediate_ctc_losses, intermediate_ctc_diagnostics
 
         def accumulate_intermediate_ctc_loss(layer_index: int, x: Tensor, lengths: Tensor) -> None:
-            intermediate_ctc_losses[layer_index] = self._chunked_ctc_loss_from_classifier(
+            (
+                intermediate_ctc_losses[layer_index],
+                intermediate_ctc_diagnostics[layer_index],
+            ) = self._chunked_ctc_loss_and_diagnostics_from_classifier(
                 self.intermediate_classifiers[str(layer_index)],
                 x,
                 lengths,
                 targets,
                 target_lengths,
                 blank_id=blank_id,
-            )
-            intermediate_ctc_diagnostics[layer_index] = self._ctc_length_diagnostics(
-                lengths,
-                target_lengths,
             )
 
         encoded, output_lengths = self.encoder.forward_with_intermediate_callback(
@@ -757,6 +843,118 @@ class SqueezeformerCTC(nn.Module):
                 blank_id=blank_id,
             )
         return main_ctc_loss, intermediate_ctc_losses
+
+    def _chunked_ctc_loss_and_diagnostics_from_classifier(
+        self,
+        classifier: nn.Module,
+        x: Tensor,
+        output_lengths: Tensor,
+        targets: Tensor,
+        target_lengths: Tensor,
+        *,
+        blank_id: int,
+    ) -> tuple[Tensor, dict[str, float]]:
+        batch, time, _ = x.shape
+        vocab_size = getattr(classifier, "out_features", None)
+
+        def summarize(logits: Tensor, log_probs: Tensor) -> dict[str, float]:
+            diagnostics = self._ctc_batch_diagnostics_from_log_probs(
+                log_probs,
+                output_lengths,
+                blank_id=blank_id,
+                target_lengths=target_lengths,
+            )
+            diagnostics.update(
+                self._ctc_logit_diagnostics_from_logits(
+                    logits,
+                    output_lengths,
+                    blank_id=blank_id,
+                )
+            )
+            return diagnostics
+
+        if not isinstance(vocab_size, int) or vocab_size <= 0:
+            logits = apply_linear_with_fp8_padding(classifier, x)
+            logits_for_log_probs = self._apply_training_blank_logit_offset(logits)
+            log_probs = self._ctc_log_softmax(logits_for_log_probs)
+            per_sample_losses = F.ctc_loss(
+                log_probs.transpose(0, 1),
+                targets,
+                output_lengths,
+                target_lengths,
+                blank=blank_id,
+                reduction="none",
+                zero_infinity=True,
+            )
+            return (per_sample_losses / target_lengths.clamp_min(1)).mean(), summarize(
+                logits,
+                log_probs,
+            )
+
+        bytes_per_element = max(1, x.element_size())
+        target_elements = max(1, _BLANK_PRUNE_TARGET_BYTES // bytes_per_element)
+        chunk_batch = max(1, target_elements // max(1, time * vocab_size))
+        if chunk_batch >= batch:
+            logits = apply_linear_with_fp8_padding(classifier, x)
+            logits_for_log_probs = self._apply_training_blank_logit_offset(logits)
+            log_probs = self._ctc_log_softmax(logits_for_log_probs)
+            per_sample_losses = F.ctc_loss(
+                log_probs.transpose(0, 1),
+                targets,
+                output_lengths,
+                target_lengths,
+                blank=blank_id,
+                reduction="none",
+                zero_infinity=True,
+            )
+            return (per_sample_losses / target_lengths.clamp_min(1)).mean(), summarize(
+                logits,
+                log_probs,
+            )
+
+        target_lengths_list = [int(length) for length in target_lengths.tolist()]
+        target_offsets = [0]
+        for length in target_lengths_list:
+            target_offsets.append(target_offsets[-1] + length)
+
+        weighted_loss_sum = x.new_zeros((), dtype=torch.float32)
+        diagnostics: dict[str, float] = {}
+        for start in range(0, batch, chunk_batch):
+            stop = min(batch, start + chunk_batch)
+            chunk_logits = apply_linear_with_fp8_padding(classifier, x[start:stop])
+            chunk_logits_for_log_probs = self._apply_training_blank_logit_offset(chunk_logits)
+            chunk_log_probs = self._ctc_log_softmax(chunk_logits_for_log_probs)
+            chunk_targets = targets[target_offsets[start] : target_offsets[stop]]
+            chunk_output_lengths = output_lengths[start:stop]
+            chunk_target_lengths = target_lengths[start:stop]
+            per_sample_losses = F.ctc_loss(
+                chunk_log_probs.transpose(0, 1),
+                chunk_targets,
+                chunk_output_lengths,
+                chunk_target_lengths,
+                blank=blank_id,
+                reduction="none",
+                zero_infinity=True,
+            )
+            weighted_loss_sum = (
+                weighted_loss_sum + (per_sample_losses / chunk_target_lengths.clamp_min(1)).sum()
+            )
+            chunk_diagnostics = self._ctc_batch_diagnostics_from_log_probs(
+                chunk_log_probs,
+                chunk_output_lengths,
+                blank_id=blank_id,
+                target_lengths=chunk_target_lengths,
+            )
+            chunk_diagnostics.update(
+                self._ctc_logit_diagnostics_from_logits(
+                    chunk_logits,
+                    chunk_output_lengths,
+                    blank_id=blank_id,
+                )
+            )
+            for key, value in chunk_diagnostics.items():
+                diagnostics[key] = diagnostics.get(key, 0.0) + float(value)
+        return weighted_loss_sum / max(1, batch), diagnostics
 
     def _chunked_ctc_loss_from_classifier(
         self,

@@ -801,6 +801,37 @@ def test_ctc_model_can_emit_intermediate_log_probs_for_multiple_heads(tmp_path: 
     assert torch.isfinite(intermediate_log_probs[7]).all()
 
 
+def test_training_outputs_include_intermediate_blank_diagnostics() -> None:
+    model = SqueezeformerCTC(
+        encoder_config=squeezeformer_variant("xs"),
+        vocab_size=8,
+        intermediate_ctc_layers=(1, 3),
+    )
+    features = torch.randn(2, 160, 80)
+    feature_lengths = torch.tensor([160, 123], dtype=torch.int64)
+    targets = torch.tensor([1, 2, 3, 1, 2], dtype=torch.long)
+    target_lengths = torch.tensor([3, 2], dtype=torch.long)
+
+    outputs = model(
+        features,
+        feature_lengths,
+        return_training_outputs=True,
+        targets=targets,
+        target_lengths=target_lengths,
+        blank_id=0,
+    )
+
+    layer_diagnostics = outputs["intermediate_ctc_diagnostics"]
+    assert set(layer_diagnostics) == {1, 3}
+    for diagnostics in layer_diagnostics.values():
+        assert "blank_probability_sum" in diagnostics
+        assert "argmax_blank_frames" in diagnostics
+        assert "top_nonblank_probability_sum" in diagnostics
+        assert "blank_logit_sum" in diagnostics
+        assert "blank_nonblank_margin_sum" in diagnostics
+        assert "entropy_sum" in diagnostics
+
+
 @torch.no_grad()
 def test_ctc_model_can_emit_training_only_aed_logits() -> None:
     model = SqueezeformerCTC(
