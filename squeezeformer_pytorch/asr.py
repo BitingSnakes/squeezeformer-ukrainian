@@ -24,7 +24,7 @@ from .model import (
 )
 
 _BLANK_PRUNE_TARGET_BYTES = 128 * 1024 * 1024
-_INITIAL_CTC_BLANK_BIAS = -2.0
+_INITIAL_CTC_BLANK_BIAS = -0.5
 
 
 class TrainingOutputs(dict[str, Any]):
