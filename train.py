@@ -490,7 +490,7 @@ def main() -> None:
     train_records, val_records = _load_train_val_records(
         args,
         train_dataset_sources,
-        validation_dataset_sources,
+        validation_dataset_sources=validation_dataset_sources,
         lowercase_transcripts=lowercase_transcripts,
         output_dir=output_dir,
         distributed=distributed,
