@@ -904,6 +904,11 @@ def _evaluate_and_checkpoint(
             + topk_update_seconds
             + topk_average_seconds
         )
+        argmax_blank_fraction = float(val_metrics.get("argmax_blank_fraction", 0.0))
+        avg_top_nonblank_probability = float(
+            val_metrics.get("avg_top_nonblank_probability", 0.0)
+        )
+        target_tokens_per_frame = float(val_metrics.get("target_tokens_per_frame", 0.0))
         logger.info(
             (
                 "%s complete train_loss=%.4f val_loss=%.4f "
@@ -930,9 +935,9 @@ def _evaluate_and_checkpoint(
             float(val_metrics["cer"]),
             float(val_metrics["wer"]),
             float(val_metrics["avg_blank_probability"]),
-            float(val_metrics["argmax_blank_fraction"]),
-            float(val_metrics["avg_top_nonblank_probability"]),
-            float(val_metrics["target_tokens_per_frame"]),
+            argmax_blank_fraction,
+            avg_top_nonblank_probability,
+            target_tokens_per_frame,
             float(val_metrics["decoded_empty_fraction"]),
             float(val_metrics["decoded_avg_char_length"]),
             float(val_metrics["decoded_avg_word_length"]),
