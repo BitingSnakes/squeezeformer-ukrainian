@@ -569,7 +569,7 @@ class ConvolutionModule(nn.Module):
             padding=kernel_size // 2,
             groups=hidden_dim,
         )
-        self.batch_norm = nn.GroupNorm(1, hidden_dim)
+        self.time_norm = nn.LayerNorm(hidden_dim)
         self.activation2 = nn.SiLU()
         self.pointwise_out = nn.Conv1d(hidden_dim, dim, kernel_size=1)
         self.dropout = nn.Dropout(dropout)
@@ -589,12 +589,14 @@ class ConvolutionModule(nn.Module):
         x = self.depthwise(x)
         if mask is not None:
             x = x * mask
-        x = self.batch_norm(x)
-        if mask is not None:
-            x = x * mask
+        x = x.transpose(1, 2)
+        x = self.time_norm(x)
+        if pad_mask is not None:
+            x = x * pad_mask.unsqueeze(-1).to(dtype=x.dtype)
         x = self.activation2(x)
-        if mask is not None:
-            x = x * mask
+        if pad_mask is not None:
+            x = x * pad_mask.unsqueeze(-1).to(dtype=x.dtype)
+        x = x.transpose(1, 2)
         x = self.pointwise_out(x)
         if mask is not None:
             x = x * mask

@@ -4,9 +4,12 @@ from argparse import Namespace
 
 import pytest
 
-from squeezeformer_pytorch.model import SqueezeformerConfig
+from squeezeformer_pytorch.model import SqueezeformerConfig, VARIANT_CONFIGS
 from squeezeformer_pytorch.training.cli import parse_args
-from squeezeformer_pytorch.training.runtime import _resolve_intermediate_ctc_settings
+from squeezeformer_pytorch.training.runtime import (
+    _default_intermediate_ctc_layers,
+    _resolve_intermediate_ctc_settings,
+)
 
 
 def test_parse_args_rejects_explicit_batch_size_with_duration_batching() -> None:
@@ -131,3 +134,19 @@ def test_no_intermediate_ctc_layers_overrides_checkpoint_settings() -> None:
 
     assert layers == ()
     assert weight == 0.0
+
+
+def test_default_intermediate_ctc_layers_avoid_reduced_time_segments_for_all_variants() -> None:
+    for config in VARIANT_CONFIGS.values():
+        reduced_layers: set[int] = set()
+        for reduce_idx, recover_idx in zip(
+            sorted(config.time_reduce_idx),
+            sorted(config.time_recover_idx),
+            strict=False,
+        ):
+            reduced_layers.update(range(reduce_idx, recover_idx))
+
+        layers = _default_intermediate_ctc_layers(config)
+
+        assert all(layer not in reduced_layers for layer in layers)
+        assert all(layer < config.num_layers - 1 for layer in layers)

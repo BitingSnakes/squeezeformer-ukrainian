@@ -291,6 +291,8 @@ def _merge_evaluation_shards(
     total_top_nonblank_probability = 0.0
     total_target_tokens = 0.0
     total_samples = 0.0
+    intermediate_ctc_diagnostics_totals: dict[int, dict[str, float]] = {}
+    intermediate_ctc_diagnostics_totals: dict[int, dict[str, float]] = {}
     references: list[str] = []
     hypotheses: list[str] = []
     utterance_ids: list[str] = []
@@ -314,6 +316,21 @@ def _merge_evaluation_shards(
         total_top_nonblank_probability += float(shard.get("total_top_nonblank_probability", 0.0))
         total_target_tokens += float(shard.get("total_target_tokens", 0.0))
         total_samples += float(shard.get("total_samples", 0.0))
+        for layer_key, diagnostics in shard.get("intermediate_ctc_diagnostics_totals", {}).items():
+            layer_index = int(layer_key)
+            current = intermediate_ctc_diagnostics_totals.setdefault(
+                layer_index,
+                {
+                    "sample_count": 0.0,
+                    "impossible_sample_count": 0.0,
+                    "tight_sample_count": 0.0,
+                },
+            )
+            current["sample_count"] += float(diagnostics.get("sample_count", 0.0))
+            current["impossible_sample_count"] += float(
+                diagnostics.get("impossible_sample_count", 0.0)
+            )
+            current["tight_sample_count"] += float(diagnostics.get("tight_sample_count", 0.0))
         references.extend(shard["references"])
         hypotheses.extend(shard["hypotheses"])
         utterance_ids.extend(shard["utterance_ids"])
@@ -346,6 +363,14 @@ def _merge_evaluation_shards(
     )
     metrics.update(length_bucket_metrics(references, hypotheses))
     metrics.update(decoding_debug_metrics(hypotheses))
+    for layer_index, diagnostics in sorted(intermediate_ctc_diagnostics_totals.items()):
+        sample_count = max(1.0, float(diagnostics.get("sample_count", 0.0)))
+        metrics[f"layer{layer_index}_ctc_impossible_fraction"] = float(
+            diagnostics.get("impossible_sample_count", 0.0)
+        ) / sample_count
+        metrics[f"layer{layer_index}_ctc_tight_fraction"] = float(
+            diagnostics.get("tight_sample_count", 0.0)
+        ) / sample_count
     speaker_metrics = speaker_level_metrics(speaker_ids, has_speaker_ids, references, hypotheses)
     metrics["speaker_count"] = float(speaker_metrics["speaker_count"])
     metrics["speaker_macro_wer"] = float(speaker_metrics["speaker_macro_wer"])
@@ -365,6 +390,7 @@ def _merge_evaluation_shards(
             "teacher_seconds": total_teacher_seconds,
             "decode_seconds": total_decode_seconds,
         },
+        "intermediate_ctc_diagnostics_totals": intermediate_ctc_diagnostics_totals,
         "hardest_examples": hardest_examples,
         "random_examples": random_examples,
         "speaker_metrics": speaker_metrics,
@@ -413,6 +439,7 @@ def evaluate(
     total_top_nonblank_probability = 0.0
     total_target_tokens = 0.0
     total_samples = 0.0
+    intermediate_ctc_diagnostics_totals: dict[int, dict[str, float]] = {}
     references: list[str] = []
     hypotheses: list[str] = []
     utterance_ids: list[str] = []
@@ -462,6 +489,10 @@ def evaluate(
                     log_probs = forward_outputs["main_log_probs"]
                     main_ctc_loss = forward_outputs["main_ctc_loss"]
                     intermediate_ctc_losses_map = forward_outputs["intermediate_ctc_losses"]
+                    intermediate_ctc_diagnostics_map = forward_outputs.get(
+                        "intermediate_ctc_diagnostics",
+                        {},
+                    )
                     if intermediate_ctc_losses_map:
                         intermediate_ctc_loss = torch.stack(
                             [
@@ -566,6 +597,22 @@ def evaluate(
                 total_top_nonblank_probability += diagnostics["top_nonblank_probability_sum"]
                 total_target_tokens += diagnostics.get("target_tokens_sum", 0.0)
                 total_samples += diagnostics["sample_count"]
+                for layer_index, layer_diagnostics in intermediate_ctc_diagnostics_map.items():
+                    current = intermediate_ctc_diagnostics_totals.setdefault(
+                        int(layer_index),
+                        {
+                            "sample_count": 0.0,
+                            "impossible_sample_count": 0.0,
+                            "tight_sample_count": 0.0,
+                        },
+                    )
+                    current["sample_count"] += float(layer_diagnostics.get("sample_count", 0.0))
+                    current["impossible_sample_count"] += float(
+                        layer_diagnostics.get("impossible_sample_count", 0.0)
+                    )
+                    current["tight_sample_count"] += float(
+                        layer_diagnostics.get("tight_sample_count", 0.0)
+                    )
                 decode_start_time = time.perf_counter()
                 decoded_hypotheses = decode_batch(
                     log_probs,
@@ -599,6 +646,7 @@ def evaluate(
         "total_top_nonblank_probability": total_top_nonblank_probability,
         "total_target_tokens": total_target_tokens,
         "total_samples": total_samples,
+        "intermediate_ctc_diagnostics_totals": intermediate_ctc_diagnostics_totals,
         "references": references,
         "hypotheses": hypotheses,
         "utterance_ids": utterance_ids,
@@ -989,6 +1037,18 @@ def _evaluate_and_checkpoint(
             output_dir / "checkpoint_best.pt",
             averaged_path if averaged_path is not None else "n/a",
         )
+        intermediate_length_detail = " ".join(
+            (
+                f"layer{layer_index}_ctc_impossible="
+                f"{float(val_metrics[f'layer{layer_index}_ctc_impossible_fraction']):.4f} "
+                f"layer{layer_index}_ctc_tight="
+                f"{float(val_metrics[f'layer{layer_index}_ctc_tight_fraction']):.4f}"
+            )
+            for layer_index in model.intermediate_ctc_layers
+            if f"layer{layer_index}_ctc_impossible_fraction" in val_metrics
+        )
+        if intermediate_length_detail:
+            logger.info("%s intermediate CTC feasibility %s", report_stem, intermediate_length_detail)
         logger.info(
             (
                 "%s timing detail report_write=%.2fs checkpoint_build=%.2fs "

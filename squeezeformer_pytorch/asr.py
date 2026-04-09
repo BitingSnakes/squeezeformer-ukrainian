@@ -518,6 +518,17 @@ class SqueezeformerCTC(nn.Module):
             bias.zero_()
             bias[0] = _INITIAL_CTC_BLANK_BIAS
 
+    @staticmethod
+    def _ctc_length_diagnostics(output_lengths: Tensor, target_lengths: Tensor) -> dict[str, float]:
+        sample_count = max(1, int(output_lengths.numel()))
+        impossible = int(output_lengths.lt(target_lengths).sum().item())
+        tight = int(output_lengths.le(target_lengths).sum().item())
+        return {
+            "sample_count": float(sample_count),
+            "impossible_sample_count": float(impossible),
+            "tight_sample_count": float(tight),
+        }
+
     def encode_with_intermediates(
         self,
         features: Tensor,
@@ -543,13 +554,14 @@ class SqueezeformerCTC(nn.Module):
         target_lengths: Tensor,
         *,
         blank_id: int,
-    ) -> tuple[Tensor, Tensor, dict[int, Tensor]]:
+    ) -> tuple[Tensor, Tensor, dict[int, Tensor], dict[int, dict[str, float]]]:
         intermediate_ctc_losses: dict[int, Tensor] = {}
+        intermediate_ctc_diagnostics: dict[int, dict[str, float]] = {}
         if not self.intermediate_classifiers and (
             self.blank_prune_layer is None or self.blank_prune_threshold <= 0.0
         ):
             encoded, output_lengths = self.encoder(features, feature_lengths)
-            return encoded, output_lengths, intermediate_ctc_losses
+            return encoded, output_lengths, intermediate_ctc_losses, intermediate_ctc_diagnostics
 
         def accumulate_intermediate_ctc_loss(layer_index: int, x: Tensor, lengths: Tensor) -> None:
             intermediate_ctc_losses[layer_index] = self._chunked_ctc_loss_from_classifier(
@@ -559,6 +571,10 @@ class SqueezeformerCTC(nn.Module):
                 targets,
                 target_lengths,
                 blank_id=blank_id,
+            )
+            intermediate_ctc_diagnostics[layer_index] = self._ctc_length_diagnostics(
+                lengths,
+                target_lengths,
             )
 
         encoded, output_lengths = self.encoder.forward_with_intermediate_callback(
@@ -570,7 +586,7 @@ class SqueezeformerCTC(nn.Module):
                 minimum_required_lengths=target_lengths,
             ),
         )
-        return encoded, output_lengths, intermediate_ctc_losses
+        return encoded, output_lengths, intermediate_ctc_losses, intermediate_ctc_diagnostics
 
     def ctc_log_probs_from_encoded(
         self,
@@ -786,7 +802,7 @@ class SqueezeformerCTC(nn.Module):
     ) -> tuple[Tensor, Tensor] | dict[str, Any]:
         if return_training_outputs or decoder_inputs is not None:
             if targets is not None and target_lengths is not None and blank_id is not None:
-                encoded, output_lengths, intermediate_ctc_losses = (
+                encoded, output_lengths, intermediate_ctc_losses, intermediate_ctc_diagnostics = (
                     self.encode_with_online_intermediate_ctc_losses(
                         features,
                         feature_lengths,
@@ -808,6 +824,7 @@ class SqueezeformerCTC(nn.Module):
                     self.encode_with_intermediates(features, feature_lengths)
                 )
                 intermediate_ctc_losses = {}
+                intermediate_ctc_diagnostics = {}
                 main_ctc_loss = None
             output = TrainingOutputs(
                 {
@@ -815,6 +832,7 @@ class SqueezeformerCTC(nn.Module):
                     "output_lengths": output_lengths,
                     "main_ctc_loss": main_ctc_loss,
                     "intermediate_ctc_losses": intermediate_ctc_losses,
+                    "intermediate_ctc_diagnostics": intermediate_ctc_diagnostics,
                 }
             )
             if return_main_log_probs:

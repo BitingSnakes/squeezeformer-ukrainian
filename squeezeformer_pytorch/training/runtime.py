@@ -545,11 +545,32 @@ def _dedupe_sorted_layers(layers: tuple[int, ...]) -> tuple[int, ...]:
 def _default_intermediate_ctc_layers(encoder_config: SqueezeformerConfig) -> tuple[int, ...]:
     if encoder_config.num_layers < 4:
         return (max(0, encoder_config.num_layers - 2),)
+
+    reduced_time_layers: set[int] = set()
+    for reduce_idx, recover_idx in zip(
+        sorted(encoder_config.time_reduce_idx),
+        sorted(encoder_config.time_recover_idx),
+        strict=False,
+    ):
+        reduced_time_layers.update(range(reduce_idx, recover_idx))
+
+    candidate_layers = tuple(
+        layer_index
+        for layer_index in range(max(0, encoder_config.num_layers - 1))
+        if layer_index not in reduced_time_layers
+    )
+    if not candidate_layers:
+        candidate_layers = tuple(range(max(1, encoder_config.num_layers - 1)))
+
+    if len(candidate_layers) == 1:
+        return candidate_layers
+
+    position_indices = (
+        len(candidate_layers) // 3,
+        (2 * len(candidate_layers)) // 3,
+    )
     return _dedupe_sorted_layers(
-        (
-            max(0, (encoder_config.num_layers // 3) - 1),
-            max(0, ((2 * encoder_config.num_layers) // 3) - 1),
-        )
+        tuple(candidate_layers[min(len(candidate_layers) - 1, position)] for position in position_indices)
     )
 
 

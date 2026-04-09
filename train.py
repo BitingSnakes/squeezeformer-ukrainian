@@ -1309,6 +1309,10 @@ def main() -> None:
                     )
                     main_ctc_loss = forward_outputs["main_ctc_loss"]
                     intermediate_ctc_losses_map = forward_outputs["intermediate_ctc_losses"]
+                    intermediate_ctc_diagnostics_map = forward_outputs.get(
+                        "intermediate_ctc_diagnostics",
+                        {},
+                    )
                     output_lengths = forward_outputs["output_lengths"]
                     log_probs = forward_outputs.get("main_log_probs")
                     aed_logits = forward_outputs.get("aed_logits")
@@ -1514,6 +1518,19 @@ def main() -> None:
                         if intermediate_ctc_losses_map
                         else ""
                     )
+                    intermediate_length_detail = (
+                        " ".join(
+                            (
+                                f"layer{layer_index}_ctc_impossible="
+                                f"{(intermediate_ctc_diagnostics_map[layer_index].get('impossible_sample_count', 0.0) / max(1.0, intermediate_ctc_diagnostics_map[layer_index].get('sample_count', 1.0))):.4f} "
+                                f"layer{layer_index}_ctc_tight="
+                                f"{(intermediate_ctc_diagnostics_map[layer_index].get('tight_sample_count', 0.0) / max(1.0, intermediate_ctc_diagnostics_map[layer_index].get('sample_count', 1.0))):.4f}"
+                            )
+                            for layer_index in sorted(intermediate_ctc_diagnostics_map)
+                        )
+                        if intermediate_ctc_diagnostics_map
+                        else ""
+                    )
                     logger.info(
                         (
                             "epoch=%s step=%s/%s global_step=%s train_loss=%.4f "
@@ -1524,7 +1541,7 @@ def main() -> None:
                             "train_avg_blank_prob=%.4f train_argmax_blank_frac=%.4f "
                             "train_avg_top_nonblank_prob=%.4f train_target_tokens_per_frame=%.4f "
                             "train_ctc_impossible_frac=%.4f train_ctc_tight_frac=%.4f "
-                            "%s %s %s"
+                            "%s %s %s %s"
                         ),
                         epoch,
                         batch_index,
@@ -1546,6 +1563,7 @@ def main() -> None:
                         ctc_diagnostics["impossible_sample_fraction"],
                         ctc_diagnostics["tight_sample_fraction"],
                         intermediate_loss_detail,
+                        intermediate_length_detail,
                         memory_snapshot,
                         " ".join(f"{name}={value:.6g}" for name, value in learning_rates.items()),
                     )
