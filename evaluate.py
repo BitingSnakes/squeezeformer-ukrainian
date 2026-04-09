@@ -29,7 +29,7 @@ from squeezeformer_pytorch.evaluation_runtime import (
     resolve_lowercase_transcripts,
 )
 from squeezeformer_pytorch.model import SqueezeformerConfig
-from squeezeformer_pytorch.runtime_types import DecodeStrategy, DTypeChoice
+from squeezeformer_pytorch.runtime_types import DecodeStrategy, DTypeChoice, ValidationModelSource
 from squeezeformer_pytorch.training.cli import (
     _validate_device_argument,
     _validate_existing_local_path_argument,
@@ -145,6 +145,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lm-scorer", default=None)
     parser.add_argument("--lm-weight", type=float, default=0.0)
     parser.add_argument("--example-limit", type=int, default=5)
+    parser.add_argument(
+        "--validation-model-source",
+        type=ValidationModelSource,
+        choices=list(ValidationModelSource),
+        default=None,
+        help=(
+            "Which checkpoint weights to evaluate when both exported validation weights and "
+            "resume-time raw weights are available. Defaults to the checkpoint's recorded "
+            "validation source, or raw when that metadata is missing."
+        ),
+    )
     parser.add_argument("--report-path", default=None)
     parser.add_argument("--trackio-project", default="squeezeformer-cv22")
     parser.add_argument("--trackio-space-id", default=None)
@@ -180,7 +191,21 @@ def main() -> None:
             requested_dtype=args.dtype,
         ),
     )
-    model.load_state_dict(checkpoint["model_state_dict"])
+    selected_validation_model_source = (
+        args.validation_model_source
+        if args.validation_model_source is not None
+        else ValidationModelSource(
+            checkpoint.get("validation_model_source", ValidationModelSource.RAW)
+        )
+    )
+    if (
+        selected_validation_model_source == ValidationModelSource.RAW
+        and checkpoint.get("resume_model_state_dict") is not None
+    ):
+        state_dict = checkpoint["resume_model_state_dict"]
+    else:
+        state_dict = checkpoint["model_state_dict"]
+    model.load_state_dict(state_dict)
     device = resolve_device(args.device)
     _validate_device_ready(device)
     model.to(device)
