@@ -4,9 +4,7 @@ import json
 import logging
 import os
 import re
-import subprocess
 import sys
-import threading
 import time
 from contextlib import nullcontext
 from copy import deepcopy
@@ -203,43 +201,39 @@ def _build_trackio_cli_arguments_table(argv: list[str]) -> trackio.Table | None:
     return trackio.Table(data=rows)
 
 
-def _relay_trackio_ui_output(
+def _launch_trackio_ui(
     *,
-    stream,
+    trackio_dir: Path,
     logger: logging.Logger,
-) -> None:
-    if stream is None:
-        return
+    project: str | None = None,
+) -> tuple[object, str, str | None, str]:
+    original_trackio_dir = os.environ.get("TRACKIO_DIR")
+    original_gradio_share = os.environ.get("GRADIO_SHARE")
     try:
-        for raw_line in iter(stream.readline, ""):
-            line = raw_line.strip()
-            if line:
-                logger.info("trackio ui | %s", line)
+        os.environ["TRACKIO_DIR"] = str(trackio_dir)
+        os.environ["GRADIO_SHARE"] = "True"
+        app, url, share_url, full_url = trackio.show(
+            project=project,
+            open_browser=False,
+            block_thread=False,
+        )
     finally:
-        stream.close()
-
-
-def _launch_trackio_ui(*, trackio_dir: Path, logger: logging.Logger) -> subprocess.Popen[str]:
-    env = os.environ.copy()
-    env["TRACKIO_DIR"] = str(trackio_dir)
-    env["GRADIO_SHARE"] = "True"
-    process = subprocess.Popen(
-        ["uv", "run", "python", "-c", "import trackio; trackio.show()"],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-        text=True,
-        bufsize=1,
-        start_new_session=True,
+        if original_trackio_dir is None:
+            os.environ.pop("TRACKIO_DIR", None)
+        else:
+            os.environ["TRACKIO_DIR"] = original_trackio_dir
+        if original_gradio_share is None:
+            os.environ.pop("GRADIO_SHARE", None)
+        else:
+            os.environ["GRADIO_SHARE"] = original_gradio_share
+    logger.info(
+        "trackio ui launched trackio_dir=%s local_url=%s share_url=%s full_url=%s",
+        trackio_dir,
+        url,
+        share_url,
+        full_url,
     )
-    threading.Thread(
-        target=_relay_trackio_ui_output,
-        kwargs={"stream": process.stdout, "logger": logger},
-        name="trackio-ui-log-relay",
-        daemon=True,
-    ).start()
-    return process
+    return app, url, share_url, full_url
 
 
 def _validate_resume_tokenizer_configuration(
@@ -591,12 +585,10 @@ def main() -> None:
     )
     trackio_dir = _configure_trackio_storage(output_dir)
     if is_main_process and args.run_trackio_ui:
-        trackio_ui_process = _launch_trackio_ui(trackio_dir=trackio_dir, logger=logger)
-        logger.info(
-            "started trackio ui pid=%s trackio_dir=%s command=%r",
-            trackio_ui_process.pid,
-            trackio_dir,
-            ["uv", "run", "python", "-c", "import trackio; trackio.show()"],
+        _launch_trackio_ui(
+            trackio_dir=trackio_dir,
+            logger=logger,
+            project=args.trackio_project,
         )
     resume_path = _resolve_resume_checkpoint_path(args, output_dir=output_dir, logger=logger)
     logger.info(

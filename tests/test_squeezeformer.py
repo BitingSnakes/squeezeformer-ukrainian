@@ -2,10 +2,9 @@ import array
 import json
 import logging
 import math
+import os
 import pickle
-import subprocess
 import sys
-import threading
 from dataclasses import asdict
 from io import BytesIO
 from pathlib import Path
@@ -14,6 +13,7 @@ import polars as pl
 import pytest
 import torch
 
+import train
 import squeezeformer_pytorch.model as squeezeformer_model
 from squeezeformer_pytorch import (
     NGramLanguageModel,
@@ -189,50 +189,37 @@ def test_build_trackio_metric_group_tables_returns_structured_tables() -> None:
     ]
 
 
-def test_launch_trackio_ui_uses_trackio_dir_environment(monkeypatch, tmp_path: Path) -> None:
+def test_launch_trackio_ui_uses_trackio_show_without_blocking(
+    monkeypatch, tmp_path: Path
+) -> None:
     captured: dict[str, object] = {}
 
-    class DummyProcess:
-        pid = 4321
-        stdout = object()
-
-    class DummyThread:
-        def __init__(self, *args, **kwargs):
-            captured["thread_args"] = args
-            captured["thread_kwargs"] = kwargs
-
-        def start(self):
-            captured["thread_started"] = True
-
-    def fake_popen(*args, **kwargs):
-        captured["args"] = args
+    def fake_show(**kwargs):
         captured["kwargs"] = kwargs
-        return DummyProcess()
+        captured["trackio_dir_during_call"] = os.environ.get("TRACKIO_DIR")
+        captured["gradio_share_during_call"] = os.environ.get("GRADIO_SHARE")
+        return ("app", "http://127.0.0.1:7860/", "https://demo.gradio.live", "https://full")
 
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(threading, "Thread", DummyThread)
+    monkeypatch.setattr(train.trackio, "show", fake_show)
+    monkeypatch.delenv("TRACKIO_DIR", raising=False)
+    monkeypatch.delenv("GRADIO_SHARE", raising=False)
 
-    process = _launch_trackio_ui(
+    result = _launch_trackio_ui(
         trackio_dir=tmp_path / "trackio",
         logger=logging.getLogger("test"),
+        project="demo-project",
     )
 
-    assert process.pid == 4321
-    assert captured["args"] == (
-        ["uv", "run", "python", "-c", "import trackio; trackio.show()"],
-    )
-    assert captured["kwargs"]["env"]["TRACKIO_DIR"] == str(tmp_path / "trackio")
-    assert captured["kwargs"]["env"]["GRADIO_SHARE"] == "True"
-    assert captured["kwargs"]["stdout"] is subprocess.PIPE
-    assert captured["kwargs"]["stderr"] is subprocess.STDOUT
-    assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
-    assert captured["kwargs"]["text"] is True
-    assert captured["kwargs"]["bufsize"] == 1
-    assert captured["kwargs"]["start_new_session"] is True
-    assert captured["thread_kwargs"]["kwargs"]["stream"] is process.stdout
-    assert captured["thread_kwargs"]["kwargs"]["logger"].name == "test"
-    assert captured["thread_kwargs"]["daemon"] is True
-    assert captured["thread_started"] is True
+    assert result == ("app", "http://127.0.0.1:7860/", "https://demo.gradio.live", "https://full")
+    assert captured["kwargs"] == {
+        "project": "demo-project",
+        "open_browser": False,
+        "block_thread": False,
+    }
+    assert captured["trackio_dir_during_call"] == str(tmp_path / "trackio")
+    assert captured["gradio_share_during_call"] == "True"
+    assert "TRACKIO_DIR" not in os.environ
+    assert "GRADIO_SHARE" not in os.environ
 
 
 @torch.no_grad()
