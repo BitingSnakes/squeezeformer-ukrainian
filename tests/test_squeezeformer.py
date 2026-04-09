@@ -618,6 +618,20 @@ def test_initial_ctc_blank_bias_applies_to_all_ctc_heads() -> None:
 
 
 @torch.no_grad()
+def test_identical_initial_ctc_heads_copy_main_head_weights_to_auxiliary_heads() -> None:
+    model = SqueezeformerCTC(
+        encoder_config=squeezeformer_variant("xs"),
+        vocab_size=16,
+        intermediate_ctc_layers=(1, 3),
+        identical_initial_ctc_heads=True,
+    )
+
+    for classifier in model.intermediate_classifiers.values():
+        assert torch.equal(model.classifier.weight, classifier.weight)
+        assert torch.equal(model.classifier.bias, classifier.bias)
+
+
+@torch.no_grad()
 def test_blank_logit_offset_applies_only_during_training() -> None:
     model = SqueezeformerCTC(
         encoder_config=squeezeformer_variant("xs"),

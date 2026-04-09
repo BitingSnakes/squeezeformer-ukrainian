@@ -35,6 +35,9 @@ def resolve_inference_checkpoint_settings(checkpoint_data: dict[str, Any]) -> di
         ),
         "blank_prune_min_keep_frames": int(training_args.get("blank_prune_min_keep_frames", 1)),
         "initial_ctc_blank_bias": float(training_args.get("initial_ctc_blank_bias", 0.0)),
+        "identical_initial_ctc_heads": bool(
+            training_args.get("identical_initial_ctc_heads", False)
+        ),
         "aed_decoder_enabled": bool(training_args.get("aed_decoder", False)),
         "aed_decoder_layers": int(training_args.get("aed_decoder_layers", 1)),
         "aed_decoder_heads": int(training_args.get("aed_decoder_heads", 4)),

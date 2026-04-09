@@ -194,6 +194,7 @@ def main() -> None:
         blank_prune_threshold=checkpoint_settings["blank_prune_threshold"],
         blank_prune_min_keep_frames=checkpoint_settings["blank_prune_min_keep_frames"],
         initial_ctc_blank_bias=checkpoint_settings["initial_ctc_blank_bias"],
+        identical_initial_ctc_heads=checkpoint_settings["identical_initial_ctc_heads"],
         aed_decoder_enabled=checkpoint_settings["aed_decoder_enabled"],
         aed_decoder_layers=checkpoint_settings["aed_decoder_layers"],
         aed_decoder_heads=checkpoint_settings["aed_decoder_heads"],

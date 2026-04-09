@@ -667,6 +667,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--identical-initial-ctc-heads",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Copy the main CTC head parameters into every auxiliary CTC head at "
+            "initialization so they all start identically."
+        ),
+    )
+    parser.add_argument(
         "--blank-logit-regularization-weight",
         type=float,
         default=0.0,

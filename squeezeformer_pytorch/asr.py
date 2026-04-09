@@ -475,6 +475,7 @@ class SqueezeformerCTC(nn.Module):
         audio_teacher_hidden_size: int = 1024,
         audio_teacher_target: str = "encoder",
         initial_ctc_blank_bias: float = DEFAULT_INITIAL_CTC_BLANK_BIAS,
+        identical_initial_ctc_heads: bool = False,
         blank_logit_offset: float = 0.0,
         blank_logit_regularization_weight: float = 0.0,
         use_transformer_engine: bool = False,
@@ -490,6 +491,7 @@ class SqueezeformerCTC(nn.Module):
         self.audio_teacher_enabled = audio_teacher_enabled
         self.audio_teacher_target = audio_teacher_target
         self.initial_ctc_blank_bias = float(initial_ctc_blank_bias)
+        self.identical_initial_ctc_heads = bool(identical_initial_ctc_heads)
         self.blank_logit_offset = float(blank_logit_offset)
         self.blank_logit_regularization_weight = float(blank_logit_regularization_weight)
         self.use_transformer_engine = use_transformer_engine
@@ -540,6 +542,8 @@ class SqueezeformerCTC(nn.Module):
         self._initialize_ctc_head(self.classifier, blank_bias=self.initial_ctc_blank_bias)
         for classifier in self.intermediate_classifiers.values():
             self._initialize_ctc_head(classifier, blank_bias=self.initial_ctc_blank_bias)
+        if self.identical_initial_ctc_heads:
+            self._copy_main_ctc_head_to_intermediates()
 
     @staticmethod
     def _initialize_ctc_head(classifier: nn.Module, *, blank_bias: float) -> None:
@@ -549,6 +553,13 @@ class SqueezeformerCTC(nn.Module):
         with torch.no_grad():
             bias.zero_()
             bias[0] = float(blank_bias)
+
+    def _copy_main_ctc_head_to_intermediates(self) -> None:
+        if not self.intermediate_classifiers:
+            return
+        main_state_dict = self.classifier.state_dict()
+        for classifier in self.intermediate_classifiers.values():
+            classifier.load_state_dict(main_state_dict)
 
     @staticmethod
     def _ctc_length_diagnostics(output_lengths: Tensor, target_lengths: Tensor) -> dict[str, float]:

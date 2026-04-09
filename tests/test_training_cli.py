@@ -110,6 +110,7 @@ def test_parse_args_accepts_blank_logit_training_controls() -> None:
             "cpu",
             "--initial-ctc-blank-bias",
             "-0.5",
+            "--identical-initial-ctc-heads",
             "--blank-logit-offset",
             "0.25",
             "--blank-logit-regularization-weight",
@@ -118,6 +119,7 @@ def test_parse_args_accepts_blank_logit_training_controls() -> None:
     )
 
     assert args.initial_ctc_blank_bias == -0.5
+    assert args.identical_initial_ctc_heads is True
     assert args.blank_logit_offset == 0.25
     assert args.blank_logit_regularization_weight == 0.01
 
@@ -151,6 +153,7 @@ def test_parse_args_defaults_match_paper_recipe() -> None:
     assert args.hold_epochs == 160
     assert args.intermediate_ctc_weight == 0.0
     assert args.initial_ctc_blank_bias == 0.0
+    assert args.identical_initial_ctc_heads is False
     assert args.ema_decay == 0.0
     assert args.validation_model_source == ValidationModelSource.RAW
     assert args.attention_backend == "relative"

@@ -1147,11 +1147,12 @@ def main() -> None:
     )
     stage_start_time = time.perf_counter()
     logger.info(
-        "building model variant=%s dtype=%s compile=%s intermediate_ctc_layers=%s aed=%s liberta=%s audio_teacher=%s blank_prune_layer=%s",
+        "building model variant=%s dtype=%s compile=%s intermediate_ctc_layers=%s identical_initial_ctc_heads=%s aed=%s liberta=%s audio_teacher=%s blank_prune_layer=%s",
         args.variant,
         args.dtype,
         args.compile,
         list(intermediate_ctc_layers),
+        args.identical_initial_ctc_heads,
         aed_decoder_enabled,
         liberta_distill_enabled,
         audio_teacher_enabled,
@@ -1175,6 +1176,7 @@ def main() -> None:
         ),
         audio_teacher_target=audio_teacher_target,
         initial_ctc_blank_bias=args.initial_ctc_blank_bias,
+        identical_initial_ctc_heads=args.identical_initial_ctc_heads,
         blank_logit_offset=args.blank_logit_offset,
         blank_logit_regularization_weight=args.blank_logit_regularization_weight,
         use_transformer_engine=args.dtype == DTypeChoice.FP8,
