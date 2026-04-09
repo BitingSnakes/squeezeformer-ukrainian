@@ -96,6 +96,7 @@ def decode_batch(
     beam_size: int = 8,
     lm_scorer=None,
     lm_weight: float = 0.0,
+    beam_length_bonus: float = 0.1,
 ) -> list[str]:
     if strategy == DecodeStrategy.GREEDY:
         return greedy_decode(log_probs, output_lengths, tokenizer)
@@ -106,6 +107,7 @@ def decode_batch(
             beam_size=beam_size,
             lm_scorer=lm_scorer,
             lm_weight=lm_weight,
+            length_bonus=beam_length_bonus,
         )
         for sequence, length in zip(log_probs, output_lengths.cpu().tolist(), strict=True)
     ]
@@ -556,6 +558,7 @@ def evaluate(
     beam_size: int = 8,
     lm_scorer=None,
     lm_weight: float = 0.0,
+    beam_length_bonus: float = 0.1,
     example_limit: int = 5,
     intermediate_ctc_weight: float = 0.0,
     aed_loss_weight: float = 0.0,
@@ -769,6 +772,7 @@ def evaluate(
                     beam_size=beam_size,
                     lm_scorer=lm_scorer,
                     lm_weight=lm_weight,
+                    beam_length_bonus=beam_length_bonus,
                 )
                 total_decode_seconds += time.perf_counter() - decode_start_time
                 hypotheses.extend(decoded_hypotheses)
@@ -919,6 +923,7 @@ def _evaluate_and_checkpoint(
     beam_size: int,
     lm_scorer,
     lm_weight: float,
+    beam_length_bonus: float,
     example_limit: int,
     intermediate_ctc_weight: float,
     aed_loss_weight: float,
@@ -968,6 +973,7 @@ def _evaluate_and_checkpoint(
             beam_size=beam_size,
             lm_scorer=lm_scorer,
             lm_weight=lm_weight,
+            beam_length_bonus=beam_length_bonus,
             example_limit=example_limit,
             intermediate_ctc_weight=intermediate_ctc_weight,
             aed_loss_weight=aed_loss_weight,

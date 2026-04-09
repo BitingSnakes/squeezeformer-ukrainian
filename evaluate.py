@@ -146,6 +146,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--beam-size", type=int, default=8)
     parser.add_argument("--lm-scorer", default=None)
     parser.add_argument("--lm-weight", type=float, default=0.0)
+    parser.add_argument("--beam-length-bonus", type=float, default=0.1)
     parser.add_argument("--example-limit", type=int, default=5)
     parser.add_argument(
         "--validation-model-source",
@@ -172,11 +173,14 @@ def parse_args() -> argparse.Namespace:
         _validate_existing_local_path_argument("--dataset-source", source)
     for source in args.validation_dataset_source or []:
         _validate_existing_local_path_argument("--validation-dataset-source", source)
+    if args.beam_length_bonus < 0:
+        raise ValueError(f"--beam-length-bonus must be >= 0, got {args.beam_length_bonus}.")
     return args
 
 
 def main() -> None:
     args = parse_args()
+    beam_length_bonus = getattr(args, "beam_length_bonus", 0.1)
     checkpoint = load_checkpoint(args.checkpoint, map_location="cpu")
     tokenizer = tokenizer_from_dict(checkpoint["tokenizer"])
     checkpoint_tokenizer_type = str(checkpoint["tokenizer"].get("type", ""))
@@ -304,6 +308,7 @@ def main() -> None:
         beam_size=args.beam_size,
         lm_scorer=lm_scorer,
         lm_weight=args.lm_weight,
+        beam_length_bonus=beam_length_bonus,
         example_limit=args.example_limit,
         intermediate_ctc_weight=checkpoint_settings["intermediate_ctc_weight"],
         aed_loss_weight=checkpoint_settings["aed_loss_weight"],
@@ -345,7 +350,7 @@ def main() -> None:
             output_dir=Path(args.checkpoint).expanduser().resolve().parent,
             start_epoch=1,
             global_step=0,
-            process_start_time=time.time(),
+            process_start_timestamp=time.time(),
         )
         trackio_config = {
             "evaluation_split": args.split,

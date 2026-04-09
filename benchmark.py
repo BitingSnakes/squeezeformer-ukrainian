@@ -31,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-iters", type=int, default=5)
     parser.add_argument("--iters", type=int, default=20)
     parser.add_argument("--beam-size", type=int, default=8)
+    parser.add_argument("--beam-length-bonus", type=float, default=0.1)
     parser.add_argument(
         "--decode-strategy",
         type=DecodeStrategy,
@@ -111,16 +112,23 @@ def main() -> None:
     for _ in range(args.warmup_iters):
         with torch.no_grad():
             with _autocast_context(device, args.dtype):
-                log_probs, _ = model.log_probs(features, lengths)
+                log_probs, output_lengths = model.log_probs(features, lengths)
                 if args.decode_strategy == DecodeStrategy.BEAM:
                     decode_batch(
                         log_probs,
+                        output_lengths,
                         tokenizer,
                         strategy=args.decode_strategy,
                         beam_size=args.beam_size,
+                        beam_length_bonus=args.beam_length_bonus,
                     )
                 else:
-                    decode_batch(log_probs, tokenizer, strategy=args.decode_strategy)
+                    decode_batch(
+                        log_probs,
+                        output_lengths,
+                        tokenizer,
+                        strategy=args.decode_strategy,
+                    )
         _synchronize(device)
 
     start = time.perf_counter()
@@ -134,9 +142,11 @@ def main() -> None:
             forward_end = time.perf_counter()
             decode_batch(
                 log_probs,
+                output_lengths,
                 tokenizer,
                 strategy=args.decode_strategy,
                 beam_size=args.beam_size,
+                beam_length_bonus=args.beam_length_bonus,
             )
             _synchronize(device)
             iter_end = time.perf_counter()

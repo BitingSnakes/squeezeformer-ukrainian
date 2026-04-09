@@ -117,6 +117,19 @@ def test_parse_args_accepts_blank_logit_training_controls() -> None:
     assert args.blank_logit_regularization_weight == 0.01
 
 
+def test_parse_args_accepts_beam_length_bonus() -> None:
+    args = parse_args(
+        [
+            "--device",
+            "cpu",
+            "--beam-length-bonus",
+            "0.25",
+        ]
+    )
+
+    assert args.beam_length_bonus == 0.25
+
+
 def test_parse_args_accepts_run_trackio_ui_flag() -> None:
     args = parse_args(
         [

@@ -56,6 +56,7 @@ from squeezeformer_pytorch.masking import (
     make_sequence_mask,
 )
 from squeezeformer_pytorch.runtime_types import DTypeChoice, OptimizerChoice
+from squeezeformer_pytorch.runtime_types import DecodeStrategy
 from squeezeformer_pytorch.secrets import REDACTED, sanitize_for_serialization
 from train import (
     DiskBackedRecordStore,
@@ -68,6 +69,7 @@ from train import (
     _build_trackio_grouped_metrics,
     _build_trackio_run_name,
     _configure_console_logger,
+    _decode_train_preview_hypotheses,
     _ensure_opus_decode_support,
     _launch_trackio_ui,
     _load_records_from_dataset_roots,
@@ -143,6 +145,35 @@ def test_should_warn_on_blank_starvation_ignores_healthy_blank_signal() -> None:
         argmax_blank_fraction=0.8,
         avg_top_nonblank_probability=0.2,
     )
+
+
+def test_decode_train_preview_hypotheses_returns_greedy_and_beam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_decode_batch(*_args, **kwargs):
+        calls.append(kwargs)
+        strategy = kwargs["strategy"]
+        if strategy == DecodeStrategy.GREEDY:
+            return ["greedy"]
+        return ["beam"]
+
+    monkeypatch.setattr(train, "decode_batch", fake_decode_batch)
+
+    greedy, beam = _decode_train_preview_hypotheses(
+        log_probs=torch.zeros(1, 2, 3),
+        output_lengths=torch.tensor([2]),
+        tokenizer=object(),
+        beam_size=5,
+        lm_scorer=None,
+        lm_weight=0.0,
+        beam_length_bonus=0.25,
+    )
+
+    assert (greedy, beam) == ("greedy", "beam")
+    assert [call["strategy"] for call in calls] == [DecodeStrategy.GREEDY, DecodeStrategy.BEAM]
+    assert calls[1]["beam_length_bonus"] == 0.25
 
 
 def test_validate_resume_tokenizer_configuration_rejects_tokenizer_path_mismatch(

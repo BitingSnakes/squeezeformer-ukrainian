@@ -41,7 +41,7 @@ from squeezeformer_pytorch.model import (
     squeezeformer_variant,
     transformer_engine_available,
 )
-from squeezeformer_pytorch.runtime_types import DTypeChoice, ValidationModelSource
+from squeezeformer_pytorch.runtime_types import DecodeStrategy, DTypeChoice, ValidationModelSource
 from squeezeformer_pytorch.training import data_loading as _training_data_loading
 from squeezeformer_pytorch.training import runtime as _training_runtime
 from squeezeformer_pytorch.training.cli import (
@@ -372,6 +372,37 @@ def _should_warn_on_blank_starvation(
     if avg_top_nonblank_probability <= 0.0:
         return False
     return avg_blank_probability <= (0.5 * avg_top_nonblank_probability)
+
+
+def _decode_train_preview_hypotheses(
+    *,
+    log_probs: torch.Tensor,
+    output_lengths: torch.Tensor,
+    tokenizer,
+    beam_size: int,
+    lm_scorer,
+    lm_weight: float,
+    beam_length_bonus: float,
+) -> tuple[str, str]:
+    preview_log_probs = log_probs[:1]
+    preview_output_lengths = output_lengths[:1]
+    greedy_hypothesis = decode_batch(
+        preview_log_probs,
+        preview_output_lengths,
+        tokenizer=tokenizer,
+        strategy=DecodeStrategy.GREEDY,
+    )[0]
+    beam_hypothesis = decode_batch(
+        preview_log_probs,
+        preview_output_lengths,
+        tokenizer=tokenizer,
+        strategy=DecodeStrategy.BEAM,
+        beam_size=beam_size,
+        lm_scorer=lm_scorer,
+        lm_weight=lm_weight,
+        beam_length_bonus=beam_length_bonus,
+    )[0]
+    return greedy_hypothesis, beam_hypothesis
 
 
 def _distributed_barrier() -> None:
@@ -1766,19 +1797,22 @@ def main() -> None:
                                 ctc_diagnostics["argmax_blank_fraction"],
                                 ctc_diagnostics["avg_top_nonblank_probability"],
                             )
-                        preview_hypothesis = decode_batch(
-                            log_probs[:1],
-                            output_lengths[:1],
-                            tokenizer=tokenizer,
-                            strategy=args.decode_strategy,
-                            beam_size=args.beam_size,
-                            lm_scorer=lm_scorer,
-                            lm_weight=args.lm_weight,
-                        )[0]
+                        preview_greedy_hypothesis, preview_beam_hypothesis = (
+                            _decode_train_preview_hypotheses(
+                                log_probs=log_probs,
+                                output_lengths=output_lengths,
+                                tokenizer=tokenizer,
+                                beam_size=args.beam_size,
+                                lm_scorer=lm_scorer,
+                                lm_weight=args.lm_weight,
+                                beam_length_bonus=args.beam_length_bonus,
+                            )
+                        )
                         logger.info(
-                            "train preview ref=%r hyp=%r avg_output_frames=%.1f avg_target_tokens=%.1f top_tokens=%s",
+                            "train preview ref=%r hyp_greedy=%r hyp_beam=%r avg_output_frames=%.1f avg_target_tokens=%.1f top_tokens=%s",
                             _truncate_for_log(batch["transcripts"][0]),
-                            _truncate_for_log(preview_hypothesis),
+                            _truncate_for_log(preview_greedy_hypothesis),
+                            _truncate_for_log(preview_beam_hypothesis),
                             ctc_diagnostics["avg_output_frames"],
                             ctc_diagnostics["avg_target_tokens"],
                             top_token_histogram_text,
@@ -2055,6 +2089,7 @@ def main() -> None:
                         beam_size=args.beam_size,
                         lm_scorer=lm_scorer,
                         lm_weight=args.lm_weight,
+                        beam_length_bonus=args.beam_length_bonus,
                         example_limit=args.example_limit,
                         intermediate_ctc_weight=intermediate_ctc_weight,
                         aed_loss_weight=args.aed_loss_weight,
@@ -2154,6 +2189,7 @@ def main() -> None:
             beam_size=args.beam_size,
             lm_scorer=lm_scorer,
             lm_weight=args.lm_weight,
+            beam_length_bonus=args.beam_length_bonus,
             example_limit=args.example_limit,
             intermediate_ctc_weight=intermediate_ctc_weight,
             aed_loss_weight=args.aed_loss_weight,

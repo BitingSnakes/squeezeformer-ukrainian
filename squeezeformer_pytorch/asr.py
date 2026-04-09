@@ -25,6 +25,7 @@ from .model import (
 
 _BLANK_PRUNE_TARGET_BYTES = 128 * 1024 * 1024
 _INITIAL_CTC_BLANK_BIAS = -0.5
+DEFAULT_CTC_BEAM_LENGTH_BONUS = 0.1
 
 
 class TrainingOutputs(dict[str, Any]):
@@ -1099,12 +1100,23 @@ def _logaddexp(left: float, right: float) -> float:
     return right + math.log1p(math.exp(left - right))
 
 
+def _beam_total_score(
+    blank_score: float,
+    nonblank_score: float,
+    *,
+    prefix_length: int,
+    length_bonus: float,
+) -> float:
+    return _logaddexp(blank_score, nonblank_score) + (length_bonus * prefix_length)
+
+
 def ctc_prefix_beam_search(
     log_probs: Tensor,
     tokenizer: Tokenizer,
     beam_size: int = 8,
     lm_scorer: Callable[[str], float] | None = None,
     lm_weight: float = 0.0,
+    length_bonus: float = DEFAULT_CTC_BEAM_LENGTH_BONUS,
 ) -> str:
     blank_id = tokenizer.blank_id
     beams: dict[tuple[int, ...], tuple[float, float]] = {(): (0.0, float("-inf"))}
@@ -1179,13 +1191,23 @@ def ctc_prefix_beam_search(
 
         ranked = sorted(
             next_beams.items(),
-            key=lambda item: _logaddexp(item[1][0], item[1][1]),
+            key=lambda item: _beam_total_score(
+                item[1][0],
+                item[1][1],
+                prefix_length=len(item[0]),
+                length_bonus=length_bonus,
+            ),
             reverse=True,
         )[:beam_size]
         beams = dict(ranked)
 
     best_prefix = max(
         beams.items(),
-        key=lambda item: _logaddexp(item[1][0], item[1][1]),
+        key=lambda item: _beam_total_score(
+            item[1][0],
+            item[1][1],
+            prefix_length=len(item[0]),
+            length_bonus=length_bonus,
+        ),
     )[0]
     return tokenizer.decode(best_prefix)

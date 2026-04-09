@@ -166,6 +166,7 @@ def _validate_startup_args(
         "--adamw-learning-rate": args.adamw_learning_rate,
         "--preemphasis": args.preemphasis,
         "--lm-weight": args.lm_weight,
+        "--beam-length-bonus": args.beam_length_bonus,
     }
     for name, value in nonnegative_float_arguments.items():
         if value is not None and value < 0:
@@ -768,6 +769,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--beam-size", type=int, default=8)
     parser.add_argument("--lm-scorer", default=None)
     parser.add_argument("--lm-weight", type=float, default=0.0)
+    parser.add_argument("--beam-length-bonus", type=float, default=0.1)
     parser.add_argument(
         "--fit-shallow-fusion-lm",
         action=argparse.BooleanOptionalAction,

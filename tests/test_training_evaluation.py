@@ -77,6 +77,41 @@ def test_beam_decode_ignores_padded_frames() -> None:
     assert decoded == ["a"]
 
 
+def test_beam_decode_length_bonus_can_prefer_nonempty_prefix() -> None:
+    tokenizer = CharacterTokenizer(symbols=["a"])
+    log_probs = torch.log(
+        torch.tensor(
+            [
+                [
+                    [0.90, 0.10],
+                    [0.90, 0.10],
+                ]
+            ],
+            dtype=torch.float32,
+        )
+    )
+
+    decoded_without_bonus = training_evaluation.decode_batch(
+        log_probs,
+        output_lengths=torch.tensor([2]),
+        tokenizer=tokenizer,
+        strategy=training_evaluation.DecodeStrategy.BEAM,
+        beam_size=2,
+        beam_length_bonus=0.0,
+    )
+    decoded_with_bonus = training_evaluation.decode_batch(
+        log_probs,
+        output_lengths=torch.tensor([2]),
+        tokenizer=tokenizer,
+        strategy=training_evaluation.DecodeStrategy.BEAM,
+        beam_size=2,
+        beam_length_bonus=2.0,
+    )
+
+    assert decoded_without_bonus == [""]
+    assert decoded_with_bonus == ["a"]
+
+
 def test_ctc_batch_diagnostics_capture_blank_and_nonblank_signal() -> None:
     tokenizer = CharacterTokenizer(symbols=["a", "b"])
     log_probs = torch.log(
@@ -507,6 +542,7 @@ def test_evaluate_and_checkpoint_saves_validated_ema_weights_and_resume_raw(
         beam_size=1,
         lm_scorer=None,
         lm_weight=0.0,
+        beam_length_bonus=0.1,
         example_limit=1,
         intermediate_ctc_weight=0.0,
         aed_loss_weight=0.0,
