@@ -24,6 +24,7 @@ from .model import (
 )
 
 _BLANK_PRUNE_TARGET_BYTES = 128 * 1024 * 1024
+_INITIAL_CTC_BLANK_BIAS = -2.0
 
 
 class TrainingOutputs(dict[str, Any]):
@@ -506,6 +507,18 @@ class SqueezeformerCTC(nn.Module):
             if audio_teacher_enabled and audio_teacher_target == "encoder"
             else None
         )
+        self._initialize_ctc_head(self.classifier)
+        for classifier in self.intermediate_classifiers.values():
+            self._initialize_ctc_head(classifier)
+
+    @staticmethod
+    def _initialize_ctc_head(classifier: nn.Module) -> None:
+        bias = getattr(classifier, "bias", None)
+        if bias is None:
+            return
+        with torch.no_grad():
+            bias.zero_()
+            bias[0] = _INITIAL_CTC_BLANK_BIAS
 
     def encode_with_intermediates(
         self,

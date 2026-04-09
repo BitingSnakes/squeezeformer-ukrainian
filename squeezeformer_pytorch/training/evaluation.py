@@ -120,6 +120,10 @@ def ctc_batch_diagnostics(
     }
     if target_lengths is not None:
         diagnostics["target_tokens_sum"] = float(target_lengths.sum().item())
+        diagnostics["impossible_sample_count"] = float(
+            output_lengths.lt(target_lengths).sum().item()
+        )
+        diagnostics["tight_sample_count"] = float(output_lengths.le(target_lengths).sum().item())
     return diagnostics
 
 
@@ -138,6 +142,9 @@ def summarize_ctc_batch_diagnostics(diagnostics: dict[str, float]) -> dict[str, 
         "avg_output_frames": output_frames_sum / sample_count,
         "avg_target_tokens": target_tokens_sum / sample_count,
         "target_tokens_per_frame": target_tokens_sum / decoded_frames,
+        "impossible_sample_fraction": float(diagnostics.get("impossible_sample_count", 0.0))
+        / sample_count,
+        "tight_sample_fraction": float(diagnostics.get("tight_sample_count", 0.0)) / sample_count,
     }
 
 
@@ -946,6 +953,8 @@ def _evaluate_and_checkpoint(
             val_metrics.get("avg_top_nonblank_probability", 0.0)
         )
         target_tokens_per_frame = float(val_metrics.get("target_tokens_per_frame", 0.0))
+        impossible_sample_fraction = float(val_metrics.get("impossible_sample_fraction", 0.0))
+        tight_sample_fraction = float(val_metrics.get("tight_sample_fraction", 0.0))
         logger.info(
             (
                 "%s complete train_loss=%.4f val_loss=%.4f "
@@ -954,6 +963,7 @@ def _evaluate_and_checkpoint(
                 "val_liberta_distill_loss=%.4f val_audio_teacher_loss=%.4f val_cer=%.4f val_wer=%.4f "
                 "val_avg_blank_prob=%.4f val_argmax_blank_frac=%.4f "
                 "val_avg_top_nonblank_prob=%.4f val_target_tokens_per_frame=%.4f "
+                "val_ctc_impossible_frac=%.4f val_ctc_tight_frac=%.4f "
                 "val_empty_hyp_frac=%.4f "
                 "val_avg_hyp_chars=%.2f val_avg_hyp_words=%.2f "
                 "val_model_source=%s best_val_wer=%.4f timing_forward=%.2fs timing_teacher=%.2fs "
@@ -975,6 +985,8 @@ def _evaluate_and_checkpoint(
             argmax_blank_fraction,
             avg_top_nonblank_probability,
             target_tokens_per_frame,
+            impossible_sample_fraction,
+            tight_sample_fraction,
             float(val_metrics["decoded_empty_fraction"]),
             float(val_metrics["decoded_avg_char_length"]),
             float(val_metrics["decoded_avg_word_length"]),

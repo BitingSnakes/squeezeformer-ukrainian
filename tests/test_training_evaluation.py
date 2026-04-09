@@ -105,7 +105,34 @@ def test_ctc_batch_diagnostics_capture_blank_and_nonblank_signal() -> None:
     assert diagnostics["avg_output_frames"] == 2.0
     assert diagnostics["avg_target_tokens"] == 1.0
     assert diagnostics["target_tokens_per_frame"] == 0.5
+    assert diagnostics["impossible_sample_fraction"] == 0.0
+    assert diagnostics["tight_sample_fraction"] == 0.0
     assert diagnostics["avg_blank_probability"] > diagnostics["avg_top_nonblank_probability"]
+
+
+def test_ctc_batch_diagnostics_capture_impossible_and_tight_samples() -> None:
+    tokenizer = CharacterTokenizer(symbols=["a"])
+    log_probs = torch.log(
+        torch.tensor(
+            [
+                [[0.8, 0.2], [0.8, 0.2]],
+                [[0.8, 0.2], [0.8, 0.2]],
+            ],
+            dtype=torch.float32,
+        )
+    )
+
+    diagnostics = training_evaluation.summarize_ctc_batch_diagnostics(
+        training_evaluation.ctc_batch_diagnostics(
+            log_probs,
+            output_lengths=torch.tensor([1, 2]),
+            tokenizer=tokenizer,
+            target_lengths=torch.tensor([2, 2]),
+        )
+    )
+
+    assert diagnostics["impossible_sample_fraction"] == 0.5
+    assert diagnostics["tight_sample_fraction"] == 1.0
 
 
 def test_evaluate_restores_model_mode(monkeypatch) -> None:

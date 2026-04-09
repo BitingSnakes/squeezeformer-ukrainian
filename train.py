@@ -1497,6 +1497,8 @@ def main() -> None:
                             "avg_output_frames": 0.0,
                             "avg_target_tokens": 0.0,
                             "target_tokens_per_frame": 0.0,
+                            "impossible_sample_fraction": 0.0,
+                            "tight_sample_fraction": 0.0,
                         }
                 if is_main_process and should_log_step:
                     learning_rates = {
@@ -1521,6 +1523,7 @@ def main() -> None:
                             "batch_audio_minutes=%.2f grad_norm=%.4f max_feature_frames=%s "
                             "train_avg_blank_prob=%.4f train_argmax_blank_frac=%.4f "
                             "train_avg_top_nonblank_prob=%.4f train_target_tokens_per_frame=%.4f "
+                            "train_ctc_impossible_frac=%.4f train_ctc_tight_frac=%.4f "
                             "%s %s %s"
                         ),
                         epoch,
@@ -1540,6 +1543,8 @@ def main() -> None:
                         ctc_diagnostics["argmax_blank_fraction"],
                         ctc_diagnostics["avg_top_nonblank_probability"],
                         ctc_diagnostics["target_tokens_per_frame"],
+                        ctc_diagnostics["impossible_sample_fraction"],
+                        ctc_diagnostics["tight_sample_fraction"],
                         intermediate_loss_detail,
                         memory_snapshot,
                         " ".join(f"{name}={value:.6g}" for name, value in learning_rates.items()),
@@ -1580,6 +1585,12 @@ def main() -> None:
                             ],
                             "train_target_tokens_per_frame_step": ctc_diagnostics[
                                 "target_tokens_per_frame"
+                            ],
+                            "train_ctc_impossible_frac_step": ctc_diagnostics[
+                                "impossible_sample_fraction"
+                            ],
+                            "train_ctc_tight_frac_step": ctc_diagnostics[
+                                "tight_sample_fraction"
                             ],
                             "ema_decay": ema.current_decay() if ema is not None else 0.0,
                             "cpu_rss_bytes": _read_proc_status_memory_bytes("VmRSS:") or 0,

@@ -569,7 +569,7 @@ class ConvolutionModule(nn.Module):
             padding=kernel_size // 2,
             groups=hidden_dim,
         )
-        self.batch_norm = nn.BatchNorm1d(hidden_dim)
+        self.batch_norm = nn.GroupNorm(1, hidden_dim)
         self.activation2 = nn.SiLU()
         self.pointwise_out = nn.Conv1d(hidden_dim, dim, kernel_size=1)
         self.dropout = nn.Dropout(dropout)
