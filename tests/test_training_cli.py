@@ -98,6 +98,18 @@ def test_parse_args_accepts_disable_flash_attention_flag() -> None:
     assert args.disable_flash_attention is True
 
 
+def test_parse_args_accepts_run_trackio_ui_flag() -> None:
+    args = parse_args(
+        [
+            "--device",
+            "cpu",
+            "--run-trackio-ui",
+        ]
+    )
+
+    assert args.run_trackio_ui is True
+
+
 def test_no_intermediate_ctc_layers_overrides_checkpoint_settings() -> None:
     args = Namespace(
         intermediate_ctc=None,

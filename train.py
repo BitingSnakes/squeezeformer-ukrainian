@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 from contextlib import nullcontext
@@ -199,6 +200,20 @@ def _build_trackio_cli_arguments_table(argv: list[str]) -> trackio.Table | None:
     if not rows:
         return None
     return trackio.Table(data=rows)
+
+
+def _launch_trackio_ui(*, trackio_dir: Path) -> subprocess.Popen[bytes]:
+    env = os.environ.copy()
+    env["TRACKIO_DIR"] = str(trackio_dir)
+    env["GRADIO_SHARE"] = "True"
+    return subprocess.Popen(
+        ["uv", "run", "python", "-c", "import trackio; trackio.show()"],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 def _validate_resume_tokenizer_configuration(
@@ -549,6 +564,13 @@ def main() -> None:
         log_path=training_log_path,
     )
     trackio_dir = _configure_trackio_storage(output_dir)
+    if is_main_process and args.run_trackio_ui:
+        trackio_ui_process = _launch_trackio_ui(trackio_dir=trackio_dir)
+        logger.info(
+            "started trackio ui pid=%s trackio_dir=%s",
+            trackio_ui_process.pid,
+            trackio_dir,
+        )
     resume_path = _resolve_resume_checkpoint_path(args, output_dir=output_dir, logger=logger)
     logger.info(
         "starting training variant=%s device=%s distributed=%s world_size=%s output_dir=%s",

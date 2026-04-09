@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import pickle
+import subprocess
 import sys
 from dataclasses import asdict
 from io import BytesIO
@@ -66,6 +67,7 @@ from train import (
     _build_trackio_metric_group_tables,
     _configure_console_logger,
     _ensure_opus_decode_support,
+    _launch_trackio_ui,
     _load_records_from_dataset_roots,
     _load_train_val_records,
     _resolve_dataset_roots,
@@ -184,6 +186,33 @@ def test_build_trackio_metric_group_tables_returns_structured_tables() -> None:
             "value": 0.2,
         },
     ]
+
+
+def test_launch_trackio_ui_uses_trackio_dir_environment(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    class DummyProcess:
+        pid = 4321
+
+    def fake_popen(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return DummyProcess()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    process = _launch_trackio_ui(trackio_dir=tmp_path / "trackio")
+
+    assert process.pid == 4321
+    assert captured["args"] == (
+        ["uv", "run", "python", "-c", "import trackio; trackio.show()"],
+    )
+    assert captured["kwargs"]["env"]["TRACKIO_DIR"] == str(tmp_path / "trackio")
+    assert captured["kwargs"]["env"]["GRADIO_SHARE"] == "True"
+    assert captured["kwargs"]["stdout"] is subprocess.DEVNULL
+    assert captured["kwargs"]["stderr"] is subprocess.DEVNULL
+    assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
+    assert captured["kwargs"]["start_new_session"] is True
 
 
 @torch.no_grad()

@@ -518,6 +518,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--trackio-project", default="squeezeformer-cv22")
     parser.add_argument("--trackio-space-id", default=None)
+    parser.add_argument(
+        "--run-trackio-ui",
+        action="store_true",
+        help=(
+            "Launch a detached Trackio UI process with TRACKIO_DIR pointed at the current "
+            "training run's output directory."
+        ),
+    )
     parser.add_argument("--log-every", type=int, default=25)
     parser.add_argument(
         "--memory-tune-steps",
