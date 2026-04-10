@@ -94,6 +94,21 @@ def _validate_startup_args(
         raise ValueError("--distributed expects a torchrun-style environment with WORLD_SIZE > 1.")
     if world_size > 1 and args.compile:
         raise ValueError("--compile is not currently supported together with distributed training.")
+    if args.zipformer:
+        if args.dtype == DTypeChoice.FP8:
+            raise ValueError("--zipformer does not support --dtype fp8.")
+        if args.intermediate_ctc is not None or args.intermediate_ctc_layer is not None:
+            raise ValueError("--zipformer does not support intermediate CTC heads.")
+        if args.intermediate_ctc_layers is not None or args.no_intermediate_ctc_layers:
+            raise ValueError("--zipformer does not support intermediate CTC heads.")
+        if args.blank_prune is not None or args.blank_prune_layer is not None:
+            raise ValueError("--zipformer does not support blank pruning.")
+        if args.aed_decoder:
+            raise ValueError("--zipformer does not support the AED decoder.")
+        if args.liberta_distill:
+            raise ValueError("--zipformer does not support LiBERTa distillation.")
+        if args.audio_teacher:
+            raise ValueError("--zipformer does not support audio-teacher distillation.")
 
     requested_device = resolve_device(args.device)
     _validate_device_ready(requested_device)
@@ -351,6 +366,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--distributed",
         action=argparse.BooleanOptionalAction,
         default=False,
+    )
+    parser.add_argument(
+        "--zipformer",
+        action="store_true",
+        help="Train with Zipformer blocks from zipformer_pytorch instead of Squeezeformer.",
     )
     parser.add_argument("--variant", default="sm", choices=["xs", "s", "sm", "m", "ml", "l"])
     parser.add_argument("--output-dir", default="artifacts/squeezeformer-cv22")

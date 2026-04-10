@@ -178,6 +178,18 @@ def test_parse_args_accepts_run_trackio_ui_flag() -> None:
     assert args.run_trackio_ui is True
 
 
+def test_parse_args_accepts_zipformer_flag() -> None:
+    args = parse_args(
+        [
+            "--device",
+            "cpu",
+            "--zipformer",
+        ]
+    )
+
+    assert args.zipformer is True
+
+
 def test_no_intermediate_ctc_layers_overrides_checkpoint_settings() -> None:
     args = Namespace(
         intermediate_ctc=None,

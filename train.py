@@ -121,6 +121,7 @@ from squeezeformer_pytorch.training.runtime import (
 from squeezeformer_pytorch.training.runtime import (
     _validate_device_ready as _runtime_validate_device_ready,
 )
+from zipformer_pytorch.asr import ZipformerCTC, ZipformerConfig, zipformer_variant
 
 DiskBackedRecordStore = _DiskBackedRecordStore
 _build_disk_backed_record_store = _data_loading_build_disk_backed_record_store
@@ -269,6 +270,51 @@ def _validate_resume_tokenizer_configuration(
             f"tokenizer loaded from '{tokenizer_path}'. Use the tokenizer artifact that created "
             "this checkpoint or start a fresh run."
         )
+
+
+def _checkpoint_uses_zipformer(checkpoint: dict[str, object] | None) -> bool:
+    if checkpoint is None:
+        return False
+    training_args = checkpoint.get("training_args")
+    if isinstance(training_args, dict) and bool(training_args.get("zipformer")):
+        return True
+    encoder_config = checkpoint.get("encoder_config")
+    return isinstance(encoder_config, dict) and str(encoder_config.get("architecture", "")) == "zipformer"
+
+
+def _resolve_zipformer_usage(
+    *,
+    args,
+    checkpoint: dict[str, object] | None,
+    checkpoint_path: Path | None,
+) -> bool:
+    checkpoint_uses_zipformer = _checkpoint_uses_zipformer(checkpoint)
+    if checkpoint is None:
+        return bool(args.zipformer)
+    if args.zipformer and not checkpoint_uses_zipformer:
+        raise RuntimeError(
+            f"Resume checkpoint '{checkpoint_path}' was created for Squeezeformer, so it cannot "
+            "be resumed with --zipformer."
+        )
+    args.zipformer = checkpoint_uses_zipformer or bool(args.zipformer)
+    return bool(args.zipformer)
+
+
+def _validate_zipformer_runtime_args(args) -> None:
+    if args.dtype == DTypeChoice.FP8:
+        raise ValueError("--zipformer does not support --dtype fp8.")
+    if args.intermediate_ctc is not None or args.intermediate_ctc_layer is not None:
+        raise ValueError("--zipformer does not support intermediate CTC heads.")
+    if args.intermediate_ctc_layers is not None or args.no_intermediate_ctc_layers:
+        raise ValueError("--zipformer does not support intermediate CTC heads.")
+    if args.blank_prune is not None or args.blank_prune_layer is not None:
+        raise ValueError("--zipformer does not support blank pruning.")
+    if args.aed_decoder:
+        raise ValueError("--zipformer does not support the AED decoder.")
+    if args.liberta_distill:
+        raise ValueError("--zipformer does not support LiBERTa distillation.")
+    if args.audio_teacher:
+        raise ValueError("--zipformer does not support audio-teacher distillation.")
 
 
 def _distributed_mean(value: float, *, device: torch.device, distributed: bool) -> float:
@@ -742,8 +788,9 @@ def main() -> None:
         )
     resume_path = _resolve_resume_checkpoint_path(args, output_dir=output_dir, logger=logger)
     logger.info(
-        "starting training variant=%s device=%s distributed=%s world_size=%s output_dir=%s",
+        "starting training variant=%s zipformer_requested=%s device=%s distributed=%s world_size=%s output_dir=%s",
         args.variant,
+        args.zipformer,
         requested_device,
         distributed,
         world_size,
@@ -832,38 +879,72 @@ def main() -> None:
             resume_path,
             _format_elapsed_seconds(time.perf_counter() - stage_start_time),
         )
-    (
-        aed_decoder_enabled,
-        aed_decoder_layers,
-        aed_decoder_heads,
-        aed_decoder_dropout,
-        aed_loss_weight,
-    ) = _resolve_aed_settings(args, checkpoint)
-    (
-        liberta_distill_enabled,
-        liberta_model_name,
-        liberta_model_path,
-        liberta_distill_weight,
-        liberta_max_length,
-    ) = _resolve_liberta_settings(
-        args,
-        checkpoint,
-        aed_enabled=aed_decoder_enabled,
+    use_zipformer = _resolve_zipformer_usage(
+        args=args,
+        checkpoint=checkpoint,
+        checkpoint_path=resume_path,
     )
-    (
-        audio_teacher_enabled,
-        audio_teacher_model_name,
-        audio_teacher_model_path,
-        audio_teacher_weight,
-        audio_teacher_objective,
-        audio_teacher_target,
-        audio_teacher_layer,
-        audio_teacher_sample_rate,
-        audio_teacher_max_seconds,
-    ) = _resolve_audio_teacher_settings(
-        args,
-        checkpoint,
-    )
+    if use_zipformer:
+        _validate_zipformer_runtime_args(args)
+    if use_zipformer:
+        (
+            aed_decoder_enabled,
+            aed_decoder_layers,
+            aed_decoder_heads,
+            aed_decoder_dropout,
+            aed_loss_weight,
+        ) = (False, 1, 4, 0.1, 0.0)
+        (
+            liberta_distill_enabled,
+            liberta_model_name,
+            liberta_model_path,
+            liberta_distill_weight,
+            liberta_max_length,
+        ) = (False, None, None, 0.0, 256)
+        (
+            audio_teacher_enabled,
+            audio_teacher_model_name,
+            audio_teacher_model_path,
+            audio_teacher_weight,
+            audio_teacher_objective,
+            audio_teacher_target,
+            audio_teacher_layer,
+            audio_teacher_sample_rate,
+            audio_teacher_max_seconds,
+        ) = (False, None, None, 0.0, "hidden_mse", "encoder", 0, 16000, 20.0)
+    else:
+        (
+            aed_decoder_enabled,
+            aed_decoder_layers,
+            aed_decoder_heads,
+            aed_decoder_dropout,
+            aed_loss_weight,
+        ) = _resolve_aed_settings(args, checkpoint)
+        (
+            liberta_distill_enabled,
+            liberta_model_name,
+            liberta_model_path,
+            liberta_distill_weight,
+            liberta_max_length,
+        ) = _resolve_liberta_settings(
+            args,
+            checkpoint,
+            aed_enabled=aed_decoder_enabled,
+        )
+        (
+            audio_teacher_enabled,
+            audio_teacher_model_name,
+            audio_teacher_model_path,
+            audio_teacher_weight,
+            audio_teacher_objective,
+            audio_teacher_target,
+            audio_teacher_layer,
+            audio_teacher_sample_rate,
+            audio_teacher_max_seconds,
+        ) = _resolve_audio_teacher_settings(
+            args,
+            checkpoint,
+        )
     stage_start_time = time.perf_counter()
     logger.info(
         "preparing tokenizer mode=%s resume=%s tokenizer_path=%s",
@@ -1060,41 +1141,51 @@ def main() -> None:
         _format_elapsed_seconds(time.perf_counter() - stage_start_time),
     )
 
-    encoder_config = (
-        SqueezeformerConfig(**checkpoint["encoder_config"])
-        if checkpoint is not None
-        else squeezeformer_variant(args.variant)
-    )
-    if checkpoint is None:
-        attention_backend = (
-            "relative" if args.disable_flash_attention else args.attention_backend
+    if use_zipformer:
+        encoder_config = (
+            ZipformerConfig(**checkpoint["encoder_config"])
+            if checkpoint is not None
+            else replace(zipformer_variant(args.variant), input_dim=args.n_mels)
         )
-        encoder_config = replace(
-            deepcopy(encoder_config),
-            block_pattern=_resolve_block_pattern(args.block_pattern),
-            activation_checkpointing=args.activation_checkpointing,
-            attention_backend=attention_backend,
+        intermediate_ctc_layers = ()
+        intermediate_ctc_weight = 0.0
+        blank_prune_layer, blank_prune_threshold, blank_prune_min_keep_frames = (None, 0.0, 1)
+    else:
+        encoder_config = (
+            SqueezeformerConfig(**checkpoint["encoder_config"])
+            if checkpoint is not None
+            else squeezeformer_variant(args.variant)
         )
-    if args.disable_flash_attn2_kernels:
-        encoder_config = replace(
-            deepcopy(encoder_config),
-            flash_attn2_enabled=False,
+        if checkpoint is None:
+            attention_backend = (
+                "relative" if args.disable_flash_attention else args.attention_backend
+            )
+            encoder_config = replace(
+                deepcopy(encoder_config),
+                block_pattern=_resolve_block_pattern(args.block_pattern),
+                activation_checkpointing=args.activation_checkpointing,
+                attention_backend=attention_backend,
+            )
+        if args.disable_flash_attn2_kernels:
+            encoder_config = replace(
+                deepcopy(encoder_config),
+                flash_attn2_enabled=False,
+            )
+        intermediate_ctc_layers, intermediate_ctc_weight = _resolve_intermediate_ctc_settings(
+            args,
+            encoder_config,
+            checkpoint,
         )
-    intermediate_ctc_layers, intermediate_ctc_weight = _resolve_intermediate_ctc_settings(
-        args,
-        encoder_config,
-        checkpoint,
-    )
-    if any(layer == encoder_config.num_layers - 1 for layer in intermediate_ctc_layers):
-        logger.warning(
-            "intermediate CTC layer selection includes the final encoder block %s. "
-            "That auxiliary head will attach to the exact same representation as the main "
-            "CTC head, so it is not true intermediate supervision.",
-            encoder_config.num_layers - 1,
+        if any(layer == encoder_config.num_layers - 1 for layer in intermediate_ctc_layers):
+            logger.warning(
+                "intermediate CTC layer selection includes the final encoder block %s. "
+                "That auxiliary head will attach to the exact same representation as the main "
+                "CTC head, so it is not true intermediate supervision.",
+                encoder_config.num_layers - 1,
+            )
+        blank_prune_layer, blank_prune_threshold, blank_prune_min_keep_frames = (
+            _resolve_blank_pruning_settings(args, encoder_config, checkpoint)
         )
-    blank_prune_layer, blank_prune_threshold, blank_prune_min_keep_frames = (
-        _resolve_blank_pruning_settings(args, encoder_config, checkpoint)
-    )
     args.intermediate_ctc_layers = list(intermediate_ctc_layers)
     args.intermediate_ctc_layer = (
         intermediate_ctc_layers[0] if len(intermediate_ctc_layers) == 1 else None
@@ -1125,7 +1216,7 @@ def main() -> None:
     args.blank_prune_threshold = blank_prune_threshold
     args.blank_prune_min_keep_frames = blank_prune_min_keep_frames
     fp8_recipe = _build_fp8_recipe(args)
-    if args.dtype == DTypeChoice.FP8:
+    if not use_zipformer and args.dtype == DTypeChoice.FP8:
         _validate_fp8_runtime(device, encoder_config)
     requested_audio_teacher_device = resolve_device(args.audio_teacher_device)
     if distributed and requested_audio_teacher_device.type == "cuda":
@@ -1155,7 +1246,8 @@ def main() -> None:
     )
     stage_start_time = time.perf_counter()
     logger.info(
-        "building model variant=%s dtype=%s compile=%s intermediate_ctc_layers=%s identical_initial_ctc_heads=%s aed=%s liberta=%s audio_teacher=%s blank_prune_layer=%s",
+        "building model architecture=%s variant=%s dtype=%s compile=%s intermediate_ctc_layers=%s identical_initial_ctc_heads=%s aed=%s liberta=%s audio_teacher=%s blank_prune_layer=%s",
+        "zipformer" if use_zipformer else "squeezeformer",
         args.variant,
         args.dtype,
         args.compile,
@@ -1166,36 +1258,51 @@ def main() -> None:
         audio_teacher_enabled,
         blank_prune_layer,
     )
-    model = SqueezeformerCTC(
-        encoder_config=encoder_config,
-        vocab_size=tokenizer.vocab_size,
-        intermediate_ctc_layers=intermediate_ctc_layers,
-        blank_prune_layer=blank_prune_layer,
-        blank_prune_threshold=blank_prune_threshold,
-        blank_prune_min_keep_frames=blank_prune_min_keep_frames,
-        aed_decoder_enabled=aed_decoder_enabled,
-        aed_decoder_layers=aed_decoder_layers,
-        aed_decoder_heads=aed_decoder_heads,
-        aed_decoder_dropout=aed_decoder_dropout,
-        liberta_distill_enabled=liberta_distill_enabled,
-        audio_teacher_enabled=audio_teacher is not None,
-        audio_teacher_hidden_size=(
-            audio_teacher.hidden_size if audio_teacher is not None else encoder_config.d_model
-        ),
-        audio_teacher_target=audio_teacher_target,
-        initial_ctc_blank_bias=args.initial_ctc_blank_bias,
-        identical_initial_ctc_heads=args.identical_initial_ctc_heads,
-        blank_logit_offset=args.blank_logit_offset,
-        blank_logit_regularization_weight=args.blank_logit_regularization_weight,
-        use_transformer_engine=args.dtype == DTypeChoice.FP8,
-    )
+    if use_zipformer:
+        model = ZipformerCTC(
+            encoder_config=encoder_config,
+            vocab_size=tokenizer.vocab_size,
+            audio_teacher_enabled=audio_teacher is not None,
+            audio_teacher_hidden_size=(
+                audio_teacher.hidden_size if audio_teacher is not None else encoder_config.model_dim
+            ),
+            audio_teacher_target=audio_teacher_target,
+            initial_ctc_blank_bias=args.initial_ctc_blank_bias,
+            blank_logit_offset=args.blank_logit_offset,
+            blank_logit_regularization_weight=args.blank_logit_regularization_weight,
+        )
+    else:
+        model = SqueezeformerCTC(
+            encoder_config=encoder_config,
+            vocab_size=tokenizer.vocab_size,
+            intermediate_ctc_layers=intermediate_ctc_layers,
+            blank_prune_layer=blank_prune_layer,
+            blank_prune_threshold=blank_prune_threshold,
+            blank_prune_min_keep_frames=blank_prune_min_keep_frames,
+            aed_decoder_enabled=aed_decoder_enabled,
+            aed_decoder_layers=aed_decoder_layers,
+            aed_decoder_heads=aed_decoder_heads,
+            aed_decoder_dropout=aed_decoder_dropout,
+            liberta_distill_enabled=liberta_distill_enabled,
+            audio_teacher_enabled=audio_teacher is not None,
+            audio_teacher_hidden_size=(
+                audio_teacher.hidden_size if audio_teacher is not None else encoder_config.d_model
+            ),
+            audio_teacher_target=audio_teacher_target,
+            initial_ctc_blank_bias=args.initial_ctc_blank_bias,
+            identical_initial_ctc_heads=args.identical_initial_ctc_heads,
+            blank_logit_offset=args.blank_logit_offset,
+            blank_logit_regularization_weight=args.blank_logit_regularization_weight,
+            use_transformer_engine=args.dtype == DTypeChoice.FP8,
+        )
     model.to(device)
     if checkpoint is not None:
         model.load_state_dict(
             checkpoint.get("resume_model_state_dict", checkpoint["model_state_dict"])
         )
     ddp_find_unused_parameters = (
-        blank_prune_layer is not None
+        not use_zipformer
+        and blank_prune_layer is not None
         and blank_prune_threshold > 0.0
         and blank_prune_layer not in intermediate_ctc_layers
     )
@@ -2361,6 +2468,7 @@ def main() -> None:
             json.dumps(
                 {
                     "best_val_wer": best_val_wer,
+                    "architecture": "zipformer" if use_zipformer else "squeezeformer",
                     "variant": args.variant,
                     "keep_top_k": args.keep_top_k,
                     "decode_strategy": args.decode_strategy,
