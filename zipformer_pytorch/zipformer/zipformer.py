@@ -100,7 +100,7 @@ class Downsample(nn.Module):
         self.factor = factor
         self.weights = nn.Parameter(torch.zeros(factor))
 
-    def _apply(self, x: Tensor, mask: Tensor | None) -> tuple[Tensor, Tensor | None]:
+    def _downsample(self, x: Tensor, mask: Tensor | None) -> tuple[Tensor, Tensor | None]:
         if self.factor == 1:
             return x, mask
 
@@ -129,11 +129,11 @@ class Downsample(nn.Module):
         return y, output_mask
 
     def forward(self, x: Tensor) -> Tensor:
-        y, _ = self._apply(x, None)
+        y, _ = self._downsample(x, None)
         return y
 
     def apply_masked(self, x: Tensor, mask: Tensor) -> tuple[Tensor, Tensor]:
-        y, output_mask = self._apply(x, mask)
+        y, output_mask = self._downsample(x, mask)
         assert output_mask is not None
         return y, output_mask
 
@@ -145,7 +145,7 @@ class Upsample(nn.Module):
             raise ValueError(f"Upsample factor must be >= 1, got {factor}.")
         self.factor = factor
 
-    def _apply(
+    def _upsample(
         self,
         x: Tensor,
         mask: Tensor | None,
@@ -166,7 +166,7 @@ class Upsample(nn.Module):
         return y, output_mask
 
     def forward(self, x: Tensor) -> Tensor:
-        y, _ = self._apply(x, None, target_length=None)
+        y, _ = self._upsample(x, None, target_length=None)
         return y
 
     def apply_masked(
@@ -176,7 +176,7 @@ class Upsample(nn.Module):
         *,
         target_length: int,
     ) -> tuple[Tensor, Tensor]:
-        y, output_mask = self._apply(x, mask, target_length=target_length)
+        y, output_mask = self._upsample(x, mask, target_length=target_length)
         assert output_mask is not None
         return y, output_mask
 
