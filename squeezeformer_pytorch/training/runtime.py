@@ -592,19 +592,15 @@ def _default_intermediate_ctc_layers(encoder_config: SqueezeformerConfig) -> tup
     if len(candidate_layers) == 1:
         return candidate_layers
 
-    # Use one early full-resolution head and one late full-resolution head so
-    # auxiliary supervision covers both the front-end and the post-recovery
-    # encoder stack. The previous 1/3 + 2/3 placement for Squeezeformer
-    # variants with a single temporal U-Net often landed both heads before time
-    # reduction, leaving the later stack unsupervised except through the final
-    # classifier.
-    position_indices = (
-        len(candidate_layers) // 3,
-        len(candidate_layers) - 1,
-    )
-    return _dedupe_sorted_layers(
-        tuple(candidate_layers[min(len(candidate_layers) - 1, position)] for position in position_indices)
-    )
+    early_layer = candidate_layers[len(candidate_layers) // 3]
+    late_layer = candidate_layers[-1]
+    if late_layer == encoder_config.num_layers - 1 and len(candidate_layers) > 1:
+        # The main CTC head already supervises the final encoder output. Using
+        # the last block again as an "intermediate" head only adds a duplicate
+        # classifier on the exact same representation, which is not real
+        # intermediate supervision.
+        late_layer = candidate_layers[-2]
+    return _dedupe_sorted_layers((early_layer, late_layer))
 
 
 def _resolve_intermediate_ctc_settings(

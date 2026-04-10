@@ -1085,6 +1085,13 @@ def main() -> None:
         encoder_config,
         checkpoint,
     )
+    if any(layer == encoder_config.num_layers - 1 for layer in intermediate_ctc_layers):
+        logger.warning(
+            "intermediate CTC layer selection includes the final encoder block %s. "
+            "That auxiliary head will attach to the exact same representation as the main "
+            "CTC head, so it is not true intermediate supervision.",
+            encoder_config.num_layers - 1,
+        )
     blank_prune_layer, blank_prune_threshold, blank_prune_min_keep_frames = (
         _resolve_blank_pruning_settings(args, encoder_config, checkpoint)
     )
