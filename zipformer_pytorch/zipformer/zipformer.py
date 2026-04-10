@@ -68,10 +68,16 @@ class BiasNorm(nn.Module):
         self.weight = nn.Parameter(torch.zeros(1, 1,num_features))
         
 
-    def forward(self, x):
+    def forward(self, x, mask = None):
         biased_x = x - self.bias
         squared = biased_x.pow(2)
-        mean_squared = squared.mean(dim=-1, keepdim=True).mean(dim=-2, keepdim=True)
+        if exists(mask):
+            mask = mask.to(device=x.device, dtype=x.dtype).unsqueeze(-1)
+            squared = squared * mask
+            denom = (mask.sum(dim = -2, keepdim = True) * x.size(-1)).clamp_min(1.0)
+            mean_squared = squared.sum(dim = -1, keepdim = True).sum(dim = -2, keepdim = True) / denom
+        else:
+            mean_squared = squared.mean(dim=-1, keepdim=True).mean(dim=-2, keepdim=True)
         rms = torch.sqrt(mean_squared)
         return (x / rms) * torch.exp(self.weight)
     
@@ -212,20 +218,27 @@ class ZipformerConvModule(nn.Module):
         inner_dim = dim * expansion_factor
         padding = calc_same_padding(kernel_size) if not causal else (kernel_size - 1, 0)
 
-        self.net = nn.Sequential(
-            BiasNorm(dim),
-            Rearrange('b n c -> b c n'),
-            nn.Conv1d(dim, inner_dim * 2, 1),
-            SwooshR(),
-            DepthWiseConv1d(inner_dim*2, inner_dim*2, kernel_size = kernel_size, padding = padding),
-            SwooshR(),
-            nn.Conv1d(inner_dim*2, dim, 1),
-            Rearrange('b c n -> b n c'),
-            nn.Dropout(dropout)
-        )
+        self.norm = BiasNorm(dim)
+        self.to_channels = Rearrange('b n c -> b c n')
+        self.pointwise_in = nn.Conv1d(dim, inner_dim * 2, 1)
+        self.act_in = SwooshR()
+        self.depthwise = DepthWiseConv1d(inner_dim*2, inner_dim*2, kernel_size = kernel_size, padding = padding)
+        self.act_depthwise = SwooshR()
+        self.pointwise_out = nn.Conv1d(inner_dim*2, dim, 1)
+        self.to_sequence = Rearrange('b c n -> b n c')
+        self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
-        return self.net(x)
+    def forward(self, x, mask = None):
+        x = self.norm(x, mask = mask)
+        x = self.to_channels(x)
+        x = self.pointwise_in(x)
+        x = self.act_in(x)
+        x = self.depthwise(x)
+        x = self.act_depthwise(x)
+        x = self.pointwise_out(x)
+        x = self.to_sequence(x)
+        x = self.dropout(x)
+        return x
 
 
 
@@ -351,33 +364,45 @@ class ZipformerBlock(nn.Module):
         self.byp2 = ByPass(dim)
         self.norm = BiasNorm(dim)
 
-    def forward(self,x):
+    def forward(self, x, mask = None):
+        if exists(mask):
+            mask_expanded = mask.unsqueeze(-1)
+            x = x.masked_fill(~mask_expanded, 0.0)
+        else:
+            mask_expanded = None
         inp = x
-        # print(x.shape)
         x = x + self.ff1(x)
-        # print(x.shape)
-        attn_wts = self.mhaw(x)
-        # print(x.shape)
+        if exists(mask_expanded):
+            x = x.masked_fill(~mask_expanded, 0.0)
+        attn_wts = self.mhaw(x, mask = mask)
         x = x + self.nla(x,attn_wts)
-        # print(x.shape)
+        if exists(mask_expanded):
+            x = x.masked_fill(~mask_expanded, 0.0)
         x = x + self.sa1(x,attn_wts)
-        # print(x.shape)
-        x = x + self.conv1(x)
-        # print(x.shape)
+        if exists(mask_expanded):
+            x = x.masked_fill(~mask_expanded, 0.0)
+        x = x + self.conv1(x, mask = mask)
+        if exists(mask_expanded):
+            x = x.masked_fill(~mask_expanded, 0.0)
         x = x + self.ff2(x)
-        # print(x.shape)
+        if exists(mask_expanded):
+            x = x.masked_fill(~mask_expanded, 0.0)
         x = self.byp1(inp,x)
-        # print(x.shape)
+        if exists(mask_expanded):
+            x = x.masked_fill(~mask_expanded, 0.0)
         x = x + self.sa2(x,attn_wts)
-        # print(x.shape)
-        x = x + self.conv2(x)
-        # print(x.shape)
+        if exists(mask_expanded):
+            x = x.masked_fill(~mask_expanded, 0.0)
+        x = x + self.conv2(x, mask = mask)
+        if exists(mask_expanded):
+            x = x.masked_fill(~mask_expanded, 0.0)
         x = x + self.ff3(x)
-        # print(x.shape)
-        x = self.norm(x)
-        # print(x.shape)
+        if exists(mask_expanded):
+            x = x.masked_fill(~mask_expanded, 0.0)
+        x = self.norm(x, mask = mask)
         x = self.byp2(inp,x)
-        # print(x.shape)
+        if exists(mask_expanded):
+            x = x.masked_fill(~mask_expanded, 0.0)
         return x
 
 class Zipformer(nn.Module):

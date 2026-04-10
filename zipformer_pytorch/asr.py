@@ -72,16 +72,16 @@ class ZipformerEncoder(nn.Module):
                 f"{self.config.input_dim}, got {features.size(-1)}."
             )
         output_lengths = feature_lengths.to(dtype=torch.int64).clamp_(1, features.size(1))
-        padding_mask = _make_padding_mask(output_lengths, max_length=features.size(1)).unsqueeze(-1)
+        padding_mask = _make_padding_mask(output_lengths, max_length=features.size(1))
 
         x = self.input_projection(self.input_norm(features))
         x = self.input_dropout(x)
-        x = x.masked_fill(~padding_mask, 0.0)
+        x = x.masked_fill(~padding_mask.unsqueeze(-1), 0.0)
         for block in self.blocks:
-            x = block(x)
-            x = x.masked_fill(~padding_mask, 0.0)
+            x = block(x, mask=padding_mask)
+            x = x.masked_fill(~padding_mask.unsqueeze(-1), 0.0)
         x = self.output_norm(x)
-        x = x.masked_fill(~padding_mask, 0.0)
+        x = x.masked_fill(~padding_mask.unsqueeze(-1), 0.0)
         return x, output_lengths
 
 
