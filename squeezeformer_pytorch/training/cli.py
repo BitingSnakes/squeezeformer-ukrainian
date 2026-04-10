@@ -682,8 +682,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=0.0,
         help=(
-            "Initial bias assigned to the blank row of every CTC classifier head. "
-            "Defaults to 0.0."
+            "Initial bias assigned to the blank row of every CTC classifier head. Defaults to 0.0."
         ),
     )
     parser.add_argument(

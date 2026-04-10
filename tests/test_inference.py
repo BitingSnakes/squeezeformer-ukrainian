@@ -426,7 +426,9 @@ def test_asr_session_uses_zipformer_for_zipformer_checkpoint(
     }
 
     monkeypatch.setattr(inference, "load_checkpoint", lambda *_args, **_kwargs: checkpoint_data)
-    monkeypatch.setattr(inference, "tokenizer_from_dict", lambda *_args, **_kwargs: DummyTokenizer())
+    monkeypatch.setattr(
+        inference, "tokenizer_from_dict", lambda *_args, **_kwargs: DummyTokenizer()
+    )
     monkeypatch.setattr(inference, "AudioFeaturizer", DummyFeaturizer)
     monkeypatch.setattr(inference, "ZipformerCTC", DummyZipformerModel)
     monkeypatch.setattr(

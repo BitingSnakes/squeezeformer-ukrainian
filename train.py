@@ -279,7 +279,10 @@ def _checkpoint_uses_zipformer(checkpoint: dict[str, object] | None) -> bool:
     if isinstance(training_args, dict) and bool(training_args.get("zipformer")):
         return True
     encoder_config = checkpoint.get("encoder_config")
-    return isinstance(encoder_config, dict) and str(encoder_config.get("architecture", "")) == "zipformer"
+    return (
+        isinstance(encoder_config, dict)
+        and str(encoder_config.get("architecture", "")) == "zipformer"
+    )
 
 
 def _resolve_zipformer_usage(
@@ -411,9 +414,7 @@ def _classifier_head_row_diagnostics(model: nn.Module) -> dict[str, float]:
     if isinstance(weight_grad, torch.Tensor):
         weight_grad_float = weight_grad.detach().float()
         blank_weight_grad_norm = float(weight_grad_float[0].norm().item())
-        nonblank_weight_grad_norm_mean = float(
-            weight_grad_float[1:].norm(dim=1).mean().item()
-        )
+        nonblank_weight_grad_norm_mean = float(weight_grad_float[1:].norm(dim=1).mean().item())
     else:
         blank_weight_grad_norm = 0.0
         nonblank_weight_grad_norm_mean = 0.0
@@ -1615,8 +1616,7 @@ def main() -> None:
                         loss = main_ctc_loss
                     if blank_logit_regularization_loss is not None:
                         loss = loss + (
-                            args.blank_logit_regularization_weight
-                            * blank_logit_regularization_loss
+                            args.blank_logit_regularization_weight * blank_logit_regularization_loss
                         )
                     if aed_logits is not None and decoder_targets is not None:
                         aed_loss = _aed_cross_entropy_loss(
@@ -1668,21 +1668,31 @@ def main() -> None:
                     audio_teacher_loss = None
                 running_loss += float(loss.item()) * local_batch_size
                 running_main_ctc_loss += float(main_ctc_loss.item()) * local_batch_size
-                running_intermediate_ctc_loss += float(
-                    intermediate_ctc_loss.item() if intermediate_ctc_loss is not None else 0.0
-                ) * local_batch_size
-                running_blank_logit_regularization_loss += float(
-                    blank_logit_regularization_loss.item()
-                    if blank_logit_regularization_loss is not None
-                    else 0.0
-                ) * local_batch_size
-                running_aed_loss += float(aed_loss.item() if aed_loss is not None else 0.0) * local_batch_size
-                running_liberta_distill_loss += float(
-                    liberta_distill_loss.item() if liberta_distill_loss is not None else 0.0
-                ) * local_batch_size
-                running_audio_teacher_loss += float(
-                    audio_teacher_loss.item() if audio_teacher_loss is not None else 0.0
-                ) * local_batch_size
+                running_intermediate_ctc_loss += (
+                    float(
+                        intermediate_ctc_loss.item() if intermediate_ctc_loss is not None else 0.0
+                    )
+                    * local_batch_size
+                )
+                running_blank_logit_regularization_loss += (
+                    float(
+                        blank_logit_regularization_loss.item()
+                        if blank_logit_regularization_loss is not None
+                        else 0.0
+                    )
+                    * local_batch_size
+                )
+                running_aed_loss += (
+                    float(aed_loss.item() if aed_loss is not None else 0.0) * local_batch_size
+                )
+                running_liberta_distill_loss += (
+                    float(liberta_distill_loss.item() if liberta_distill_loss is not None else 0.0)
+                    * local_batch_size
+                )
+                running_audio_teacher_loss += (
+                    float(audio_teacher_loss.item() if audio_teacher_loss is not None else 0.0)
+                    * local_batch_size
+                )
                 running_sample_count += local_batch_size
                 backward_loss = loss * local_batch_size
                 if distributed and dist.is_initialized():
@@ -1973,16 +1983,13 @@ def main() -> None:
                             f"{token_text}:{fraction:.3f}"
                             for _token_id, fraction, token_text in top_token_histogram
                         )
-                        if (
-                            not blank_starvation_warning_logged
-                            and _should_warn_on_blank_starvation(
-                                global_step=global_step,
-                                avg_blank_probability=ctc_diagnostics["avg_blank_probability"],
-                                argmax_blank_fraction=ctc_diagnostics["argmax_blank_fraction"],
-                                avg_top_nonblank_probability=ctc_diagnostics[
-                                    "avg_top_nonblank_probability"
-                                ],
-                            )
+                        if not blank_starvation_warning_logged and _should_warn_on_blank_starvation(
+                            global_step=global_step,
+                            avg_blank_probability=ctc_diagnostics["avg_blank_probability"],
+                            argmax_blank_fraction=ctc_diagnostics["argmax_blank_fraction"],
+                            avg_top_nonblank_probability=ctc_diagnostics[
+                                "avg_top_nonblank_probability"
+                            ],
                         ):
                             blank_starvation_warning_logged = True
                             logger.warning(
@@ -2048,9 +2055,7 @@ def main() -> None:
                             "train_ctc_impossible_frac_step": ctc_diagnostics[
                                 "impossible_sample_fraction"
                             ],
-                            "train_ctc_tight_frac_step": ctc_diagnostics[
-                                "tight_sample_fraction"
-                            ],
+                            "train_ctc_tight_frac_step": ctc_diagnostics["tight_sample_fraction"],
                             "train_avg_blank_logit_step": ctc_logit_stats["avg_blank_logit"],
                             "train_avg_top_logit_step": ctc_logit_stats["avg_top_logit"],
                             "train_avg_top2_margin_step": ctc_logit_stats["avg_top2_margin"],
@@ -2060,13 +2065,9 @@ def main() -> None:
                             "train_avg_entropy_step": ctc_logit_stats["avg_entropy"],
                             "train_encoder_mean_step": encoder_stats["avg_mean"],
                             "train_encoder_std_step": encoder_stats["avg_std"],
-                            "train_encoder_token_l2_norm_step": encoder_stats[
-                                "avg_token_l2_norm"
-                            ],
+                            "train_encoder_token_l2_norm_step": encoder_stats["avg_token_l2_norm"],
                             "train_blank_bias_step": head_row_stats["blank_bias"],
-                            "train_blank_weight_norm_step": head_row_stats[
-                                "blank_weight_norm"
-                            ],
+                            "train_blank_weight_norm_step": head_row_stats["blank_weight_norm"],
                             "train_nonblank_weight_norm_mean_step": head_row_stats[
                                 "nonblank_weight_norm_mean"
                             ],
@@ -2076,9 +2077,7 @@ def main() -> None:
                             "train_nonblank_weight_grad_norm_mean_step": head_row_stats[
                                 "nonblank_weight_grad_norm_mean"
                             ],
-                            "train_blank_bias_grad_step": head_row_stats[
-                                "blank_bias_grad"
-                            ],
+                            "train_blank_bias_grad_step": head_row_stats["blank_bias_grad"],
                             "train_nonblank_bias_grad_mean_step": head_row_stats[
                                 "nonblank_bias_grad_mean"
                             ],
@@ -2143,13 +2142,9 @@ def main() -> None:
                                         "ctc_tight_frac_step": ctc_diagnostics[
                                             "tight_sample_fraction"
                                         ],
-                                        "avg_blank_logit_step": ctc_logit_stats[
-                                            "avg_blank_logit"
-                                        ],
+                                        "avg_blank_logit_step": ctc_logit_stats["avg_blank_logit"],
                                         "avg_top_logit_step": ctc_logit_stats["avg_top_logit"],
-                                        "avg_top2_margin_step": ctc_logit_stats[
-                                            "avg_top2_margin"
-                                        ],
+                                        "avg_top2_margin_step": ctc_logit_stats["avg_top2_margin"],
                                         "avg_blank_nonblank_margin_step": ctc_logit_stats[
                                             "avg_blank_nonblank_margin"
                                         ],
@@ -2172,9 +2167,7 @@ def main() -> None:
                                         "nonblank_weight_grad_norm_mean_step": head_row_stats[
                                             "nonblank_weight_grad_norm_mean"
                                         ],
-                                        "blank_bias_grad_step": head_row_stats[
-                                            "blank_bias_grad"
-                                        ],
+                                        "blank_bias_grad_step": head_row_stats["blank_bias_grad"],
                                         "nonblank_bias_grad_mean_step": head_row_stats[
                                             "nonblank_bias_grad_mean"
                                         ],
@@ -2191,7 +2184,8 @@ def main() -> None:
                                         "batch_audio_minutes": batch_audio_minutes,
                                     },
                                     "system": {
-                                        "cpu_rss_bytes": _read_proc_status_memory_bytes("VmRSS:") or 0,
+                                        "cpu_rss_bytes": _read_proc_status_memory_bytes("VmRSS:")
+                                        or 0,
                                         "cpu_peak_rss_bytes": (
                                             _read_proc_status_memory_bytes("VmHWM:")
                                             or _peak_process_memory_bytes()
@@ -2248,7 +2242,8 @@ def main() -> None:
                             distributed=distributed,
                         ),
                         "train_blank_logit_regularization_loss": _distributed_weighted_mean(
-                            running_blank_logit_regularization_loss / max(1.0, running_sample_count),
+                            running_blank_logit_regularization_loss
+                            / max(1.0, running_sample_count),
                             weight=running_sample_count,
                             device=device,
                             distributed=distributed,
@@ -2345,9 +2340,7 @@ def main() -> None:
         )
         local_train_aed_mean = running_aed_loss / max(1.0, running_sample_count)
         local_train_liberta_mean = running_liberta_distill_loss / max(1.0, running_sample_count)
-        local_train_audio_teacher_mean = running_audio_teacher_loss / max(
-            1.0, running_sample_count
-        )
+        local_train_audio_teacher_mean = running_audio_teacher_loss / max(1.0, running_sample_count)
         train_loss = _distributed_weighted_mean(
             local_train_mean,
             weight=running_sample_count,

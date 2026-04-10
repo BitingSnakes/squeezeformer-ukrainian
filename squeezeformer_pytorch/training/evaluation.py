@@ -166,7 +166,9 @@ def ctc_logit_diagnostics(
     output_lengths: torch.Tensor,
     tokenizer: Tokenizer,
 ) -> dict[str, float]:
-    valid_mask = torch.arange(logits.size(1), device=output_lengths.device).unsqueeze(0) < output_lengths.unsqueeze(1)
+    valid_mask = torch.arange(logits.size(1), device=output_lengths.device).unsqueeze(
+        0
+    ) < output_lengths.unsqueeze(1)
     valid_frames = int(valid_mask.sum().item())
     if valid_frames <= 0:
         return {
@@ -180,7 +182,9 @@ def ctc_logit_diagnostics(
 
     top2 = torch.topk(logits, k=min(2, logits.size(-1)), dim=-1).values
     top_logits = top2[..., 0]
-    top2_margins = top2[..., 0] - top2[..., 1] if logits.size(-1) > 1 else torch.zeros_like(top_logits)
+    top2_margins = (
+        top2[..., 0] - top2[..., 1] if logits.size(-1) > 1 else torch.zeros_like(top_logits)
+    )
     blank_logits = logits[..., tokenizer.blank_id]
     nonblank_logits = logits.clone()
     nonblank_logits[..., tokenizer.blank_id] = float("-inf")
@@ -207,9 +211,7 @@ def summarize_ctc_logit_diagnostics(diagnostics: dict[str, float]) -> dict[str, 
         "avg_blank_logit": float(diagnostics.get("blank_logit_sum", 0.0)) / decoded_frames,
         "avg_top_logit": float(diagnostics.get("top_logit_sum", 0.0)) / decoded_frames,
         "avg_top2_margin": float(diagnostics.get("top2_margin_sum", 0.0)) / decoded_frames,
-        "avg_blank_nonblank_margin": float(
-            diagnostics.get("blank_nonblank_margin_sum", 0.0)
-        )
+        "avg_blank_nonblank_margin": float(diagnostics.get("blank_nonblank_margin_sum", 0.0))
         / decoded_frames,
         "avg_entropy": float(diagnostics.get("entropy_sum", 0.0)) / decoded_frames,
     }
@@ -219,10 +221,9 @@ def encoder_output_diagnostics(
     encoded: torch.Tensor,
     output_lengths: torch.Tensor,
 ) -> dict[str, float]:
-    valid_mask = (
-        torch.arange(encoded.size(1), device=output_lengths.device).unsqueeze(0)
-        < output_lengths.unsqueeze(1)
-    )
+    valid_mask = torch.arange(encoded.size(1), device=output_lengths.device).unsqueeze(
+        0
+    ) < output_lengths.unsqueeze(1)
     valid_frames = int(valid_mask.sum().item())
     if valid_frames <= 0:
         return {
@@ -252,7 +253,7 @@ def summarize_encoder_output_diagnostics(diagnostics: dict[str, float]) -> dict[
     variance = max(0.0, mean_square - (mean_value * mean_value))
     return {
         "avg_mean": mean_value,
-        "avg_std": variance ** 0.5,
+        "avg_std": variance**0.5,
         "avg_token_l2_norm": float(diagnostics.get("token_norm_sum", 0.0)) / decoded_frames,
     }
 
@@ -264,10 +265,9 @@ def top_emitted_token_histogram(
     *,
     top_k: int = 5,
 ) -> list[tuple[int, float, str]]:
-    valid_mask = (
-        torch.arange(log_probs.size(1), device=output_lengths.device).unsqueeze(0)
-        < output_lengths.unsqueeze(1)
-    )
+    valid_mask = torch.arange(log_probs.size(1), device=output_lengths.device).unsqueeze(
+        0
+    ) < output_lengths.unsqueeze(1)
     valid_frames = int(valid_mask.sum().item())
     if valid_frames <= 0:
         return []
@@ -525,12 +525,12 @@ def _merge_evaluation_shards(
     metrics.update(decoding_debug_metrics(hypotheses))
     for layer_index, diagnostics in sorted(intermediate_ctc_diagnostics_totals.items()):
         sample_count = max(1.0, float(diagnostics.get("sample_count", 0.0)))
-        metrics[f"layer{layer_index}_ctc_impossible_fraction"] = float(
-            diagnostics.get("impossible_sample_count", 0.0)
-        ) / sample_count
-        metrics[f"layer{layer_index}_ctc_tight_fraction"] = float(
-            diagnostics.get("tight_sample_count", 0.0)
-        ) / sample_count
+        metrics[f"layer{layer_index}_ctc_impossible_fraction"] = (
+            float(diagnostics.get("impossible_sample_count", 0.0)) / sample_count
+        )
+        metrics[f"layer{layer_index}_ctc_tight_fraction"] = (
+            float(diagnostics.get("tight_sample_count", 0.0)) / sample_count
+        )
     speaker_metrics = speaker_level_metrics(speaker_ids, has_speaker_ids, references, hypotheses)
     metrics["speaker_count"] = float(speaker_metrics["speaker_count"])
     metrics["speaker_macro_wer"] = float(speaker_metrics["speaker_macro_wer"])
@@ -731,17 +731,24 @@ def evaluate(
                 local_batch_size = float(features.size(0))
                 total_loss += float(loss.item()) * local_batch_size
                 total_main_ctc_loss += float(main_ctc_loss.item()) * local_batch_size
-                total_intermediate_ctc_loss += float(
-                    intermediate_ctc_loss.item() if intermediate_ctc_loss is not None else 0.0
-                ) * local_batch_size
+                total_intermediate_ctc_loss += (
+                    float(
+                        intermediate_ctc_loss.item() if intermediate_ctc_loss is not None else 0.0
+                    )
+                    * local_batch_size
+                )
                 total_combined_ctc_loss += float(combined_ctc_loss.item()) * local_batch_size
-                total_aed_loss += float(aed_loss.item() if aed_loss is not None else 0.0) * local_batch_size
-                total_liberta_distill_loss += float(
-                    liberta_distill_loss.item() if liberta_distill_loss is not None else 0.0
-                ) * local_batch_size
-                total_audio_teacher_loss += float(
-                    audio_teacher_loss.item() if audio_teacher_loss is not None else 0.0
-                ) * local_batch_size
+                total_aed_loss += (
+                    float(aed_loss.item() if aed_loss is not None else 0.0) * local_batch_size
+                )
+                total_liberta_distill_loss += (
+                    float(liberta_distill_loss.item() if liberta_distill_loss is not None else 0.0)
+                    * local_batch_size
+                )
+                total_audio_teacher_loss += (
+                    float(audio_teacher_loss.item() if audio_teacher_loss is not None else 0.0)
+                    * local_batch_size
+                )
                 total_batches += 1
                 references.extend(batch["transcripts"])
                 utterance_ids.extend(batch["utterance_ids"])
@@ -1150,9 +1157,7 @@ def _evaluate_and_checkpoint(
             + topk_average_seconds
         )
         argmax_blank_fraction = float(val_metrics.get("argmax_blank_fraction", 0.0))
-        avg_top_nonblank_probability = float(
-            val_metrics.get("avg_top_nonblank_probability", 0.0)
-        )
+        avg_top_nonblank_probability = float(val_metrics.get("avg_top_nonblank_probability", 0.0))
         target_tokens_per_frame = float(val_metrics.get("target_tokens_per_frame", 0.0))
         impossible_sample_fraction = float(val_metrics.get("impossible_sample_fraction", 0.0))
         tight_sample_fraction = float(val_metrics.get("tight_sample_fraction", 0.0))
@@ -1215,7 +1220,9 @@ def _evaluate_and_checkpoint(
             if f"layer{layer_index}_ctc_impossible_fraction" in val_metrics
         )
         if intermediate_length_detail:
-            logger.info("%s intermediate CTC feasibility %s", report_stem, intermediate_length_detail)
+            logger.info(
+                "%s intermediate CTC feasibility %s", report_stem, intermediate_length_detail
+            )
         logger.info(
             (
                 "%s timing detail report_write=%.2fs checkpoint_build=%.2fs "

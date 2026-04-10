@@ -54,7 +54,10 @@ def checkpoint_uses_zipformer(checkpoint_data: dict[str, object]) -> bool:
     if isinstance(training_args, dict) and bool(training_args.get("zipformer")):
         return True
     encoder_config = checkpoint_data.get("encoder_config")
-    return isinstance(encoder_config, dict) and str(encoder_config.get("architecture", "")) == "zipformer"
+    return (
+        isinstance(encoder_config, dict)
+        and str(encoder_config.get("architecture", "")) == "zipformer"
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -202,7 +205,9 @@ def main() -> None:
             encoder_config=encoder_config,
             vocab_size=tokenizer.vocab_size,
             initial_ctc_blank_bias=checkpoint_settings["initial_ctc_blank_bias"],
-            blank_logit_offset=float(checkpoint.get("training_args", {}).get("blank_logit_offset", 0.0)),
+            blank_logit_offset=float(
+                checkpoint.get("training_args", {}).get("blank_logit_offset", 0.0)
+            ),
             blank_logit_regularization_weight=float(
                 checkpoint.get("training_args", {}).get("blank_logit_regularization_weight", 0.0)
             ),

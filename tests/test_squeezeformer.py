@@ -240,9 +240,7 @@ def test_build_trackio_grouped_metrics_returns_slash_prefixed_metrics() -> None:
     }
 
 
-def test_launch_trackio_ui_uses_trackio_show_without_blocking(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_launch_trackio_ui_uses_trackio_show_without_blocking(monkeypatch, tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
     def fake_show(**kwargs):
@@ -2115,8 +2113,7 @@ def test_max_frames_batch_sampler_respects_frame_budget() -> None:
 
 def test_distributed_batch_sampler_repartitions_batches_each_epoch() -> None:
     records = [
-        AudioRecord(None, None, str(index), str(index), estimated_frames=30)
-        for index in range(8)
+        AudioRecord(None, None, str(index), str(index), estimated_frames=30) for index in range(8)
     ]
     batch_sampler_rank0 = MaxFramesBatchSampler(
         records,

@@ -144,10 +144,9 @@ class ZipformerCTC(nn.Module):
     ) -> Tensor:
         if self.blank_logit_regularization_weight <= 0.0:
             return logits.new_zeros((), dtype=torch.float32)
-        valid_mask = (
-            torch.arange(logits.size(1), device=output_lengths.device).unsqueeze(0)
-            < output_lengths.unsqueeze(1)
-        )
+        valid_mask = torch.arange(logits.size(1), device=output_lengths.device).unsqueeze(
+            0
+        ) < output_lengths.unsqueeze(1)
         if not bool(valid_mask.any()):
             return logits.new_zeros((), dtype=torch.float32)
         blank_logits = logits[..., blank_id]
@@ -184,7 +183,9 @@ class ZipformerCTC(nn.Module):
             raise RuntimeError("Audio teacher projection head is disabled for this model.")
         mask = _make_padding_mask(lengths, max_length=hidden.size(1)).unsqueeze(-1)
         pooled = hidden.masked_fill(~mask, 0.0).sum(dim=1)
-        pooled = pooled / lengths.clamp_min(1).to(device=hidden.device, dtype=hidden.dtype).unsqueeze(1)
+        pooled = pooled / lengths.clamp_min(1).to(
+            device=hidden.device, dtype=hidden.dtype
+        ).unsqueeze(1)
         return self.audio_teacher_projection(pooled)
 
     def forward(
@@ -227,10 +228,12 @@ class ZipformerCTC(nn.Module):
                 target_lengths,
                 blank_id=blank_id,
             )
-            output["blank_logit_regularization_loss"] = self._blank_logit_regularization_from_logits(
-                logits,
-                output_lengths,
-                blank_id=blank_id,
+            output["blank_logit_regularization_loss"] = (
+                self._blank_logit_regularization_from_logits(
+                    logits,
+                    output_lengths,
+                    blank_id=blank_id,
+                )
             )
         if return_main_log_probs:
             output["main_logits"] = logits

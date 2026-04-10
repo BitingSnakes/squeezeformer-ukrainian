@@ -601,10 +601,9 @@ class SqueezeformerCTC(nn.Module):
         targets: Tensor | None = None,
         target_lengths: Tensor | None = None,
     ) -> dict[str, float]:
-        valid_mask = (
-            torch.arange(log_probs.size(1), device=output_lengths.device).unsqueeze(0)
-            < output_lengths.unsqueeze(1)
-        )
+        valid_mask = torch.arange(log_probs.size(1), device=output_lengths.device).unsqueeze(
+            0
+        ) < output_lengths.unsqueeze(1)
         valid_frames = int(valid_mask.sum().item())
         blank_probabilities = log_probs[..., blank_id].exp()
         argmax_tokens = log_probs.argmax(dim=-1)
@@ -615,7 +614,9 @@ class SqueezeformerCTC(nn.Module):
         top_nonblank_probabilities = nonblank_log_probs.max(dim=-1).values.exp()
 
         diagnostics = {
-            "blank_probability_sum": float(blank_probabilities.masked_select(valid_mask).sum().item()),
+            "blank_probability_sum": float(
+                blank_probabilities.masked_select(valid_mask).sum().item()
+            ),
             "decoded_frames": float(valid_frames),
             "argmax_blank_frames": float(argmax_blank_frames),
             "top_nonblank_probability_sum": float(
@@ -646,10 +647,9 @@ class SqueezeformerCTC(nn.Module):
         *,
         blank_id: int,
     ) -> dict[str, float]:
-        valid_mask = (
-            torch.arange(logits.size(1), device=output_lengths.device).unsqueeze(0)
-            < output_lengths.unsqueeze(1)
-        )
+        valid_mask = torch.arange(logits.size(1), device=output_lengths.device).unsqueeze(
+            0
+        ) < output_lengths.unsqueeze(1)
         valid_frames = int(valid_mask.sum().item())
         if valid_frames <= 0:
             return {
@@ -708,10 +708,9 @@ class SqueezeformerCTC(nn.Module):
     ) -> Tensor:
         if self.blank_logit_regularization_weight <= 0.0:
             return logits.new_zeros((), dtype=torch.float32)
-        valid_mask = (
-            torch.arange(logits.size(1), device=output_lengths.device).unsqueeze(0)
-            < output_lengths.unsqueeze(1)
-        )
+        valid_mask = torch.arange(logits.size(1), device=output_lengths.device).unsqueeze(
+            0
+        ) < output_lengths.unsqueeze(1)
         if not bool(valid_mask.any()):
             return logits.new_zeros((), dtype=torch.float32)
         blank_logits = logits[..., blank_id]

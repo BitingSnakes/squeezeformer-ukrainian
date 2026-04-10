@@ -51,7 +51,10 @@ def checkpoint_uses_zipformer(checkpoint_data: dict[str, object]) -> bool:
     if isinstance(training_args, dict) and bool(training_args.get("zipformer")):
         return True
     encoder_config = checkpoint_data.get("encoder_config")
-    return isinstance(encoder_config, dict) and str(encoder_config.get("architecture", "")) == "zipformer"
+    return (
+        isinstance(encoder_config, dict)
+        and str(encoder_config.get("architecture", "")) == "zipformer"
+    )
 
 
 def _download_hf_checkpoint(repo_id: str, filename: str) -> str:
