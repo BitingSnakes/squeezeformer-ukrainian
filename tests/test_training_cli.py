@@ -4,13 +4,13 @@ from argparse import Namespace
 
 import pytest
 
-from squeezeformer_pytorch.model import SqueezeformerConfig, VARIANT_CONFIGS
-from squeezeformer_pytorch.training.cli import parse_args
+from squeezeformer_pytorch.model import VARIANT_CONFIGS, SqueezeformerConfig
 from squeezeformer_pytorch.runtime_types import OptimizerChoice, ValidationModelSource
+from squeezeformer_pytorch.training.cli import parse_args
 from squeezeformer_pytorch.training.runtime import (
     _default_intermediate_ctc_layers,
-    _variant_defaults,
     _resolve_intermediate_ctc_settings,
+    _variant_defaults,
 )
 
 

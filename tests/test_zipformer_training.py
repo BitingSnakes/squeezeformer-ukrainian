@@ -3,8 +3,8 @@ from __future__ import annotations
 import torch
 
 from zipformer_pytorch.asr import (
-    ZipformerCTC,
     ZipformerConfig,
+    ZipformerCTC,
     ZipformerEncoder,
     _make_padding_mask,
 )

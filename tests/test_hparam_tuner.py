@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from argparse import Namespace
 import sys
+from argparse import Namespace
 
 import hparam_tuner
 from hparam_tuner import build_train_command, estimate_training_hparams

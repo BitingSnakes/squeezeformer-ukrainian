@@ -1,6 +1,6 @@
 import torch
-from torch import nn, einsum
 import torch.nn.functional as F
+from torch import einsum, nn
 
 try:
     from einops import rearrange

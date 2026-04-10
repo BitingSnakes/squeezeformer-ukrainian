@@ -78,8 +78,8 @@ from squeezeformer_pytorch.training.evaluation import (
     ctc_logit_diagnostics,
     encoder_output_diagnostics,
     summarize_ctc_batch_diagnostics,
-    summarize_encoder_output_diagnostics,
     summarize_ctc_logit_diagnostics,
+    summarize_encoder_output_diagnostics,
     top_emitted_token_histogram,
 )
 from squeezeformer_pytorch.training.evaluation import (
@@ -121,7 +121,7 @@ from squeezeformer_pytorch.training.runtime import (
 from squeezeformer_pytorch.training.runtime import (
     _validate_device_ready as _runtime_validate_device_ready,
 )
-from zipformer_pytorch.asr import ZipformerCTC, ZipformerConfig, zipformer_variant
+from zipformer_pytorch.asr import ZipformerConfig, ZipformerCTC, zipformer_variant
 
 DiskBackedRecordStore = _DiskBackedRecordStore
 _build_disk_backed_record_store = _data_loading_build_disk_backed_record_store
@@ -760,7 +760,6 @@ def main() -> None:
         device = torch.device(f"cuda:{local_rank}")
     else:
         device = requested_device
-    sync_device = device
     is_main_process = rank == 0
     if distributed:
         backend = "nccl" if device.type == "cuda" else "gloo"

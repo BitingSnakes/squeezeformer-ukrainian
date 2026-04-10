@@ -13,9 +13,9 @@ import polars as pl
 import pytest
 import torch
 
-import train
 import squeezeformer_pytorch.asr as squeezeformer_asr
 import squeezeformer_pytorch.model as squeezeformer_model
+import train
 from squeezeformer_pytorch import (
     NGramLanguageModel,
     SentencePieceTokenizer,
@@ -58,8 +58,7 @@ from squeezeformer_pytorch.masking import (
     make_padding_mask,
     make_sequence_mask,
 )
-from squeezeformer_pytorch.runtime_types import DTypeChoice, OptimizerChoice
-from squeezeformer_pytorch.runtime_types import DecodeStrategy
+from squeezeformer_pytorch.runtime_types import DecodeStrategy, DTypeChoice, OptimizerChoice
 from squeezeformer_pytorch.secrets import REDACTED, sanitize_for_serialization
 from squeezeformer_pytorch.training.data_loading import _shard_records_for_rank
 from train import (

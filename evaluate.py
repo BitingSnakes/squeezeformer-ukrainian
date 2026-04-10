@@ -46,7 +46,7 @@ from squeezeformer_pytorch.training.runtime import (
     resolve_device,
 )
 from train import _build_trackio_run_name
-from zipformer_pytorch.asr import ZipformerCTC, ZipformerConfig
+from zipformer_pytorch.asr import ZipformerConfig, ZipformerCTC
 
 
 def checkpoint_uses_zipformer(checkpoint_data: dict[str, object]) -> bool:

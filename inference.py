@@ -31,7 +31,7 @@ from squeezeformer_pytorch.model import (
     transformer_engine_available,
 )
 from squeezeformer_pytorch.runtime_types import DTypeChoice
-from zipformer_pytorch.asr import ZipformerCTC, ZipformerConfig
+from zipformer_pytorch.asr import ZipformerConfig, ZipformerCTC
 
 try:
     import transformer_engine.pytorch as te
