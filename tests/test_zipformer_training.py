@@ -6,6 +6,14 @@ from zipformer_pytorch.asr import (
     ZipformerConfig,
     ZipformerCTC,
     ZipformerEncoder,
+    zipformer_variant,
+)
+from zipformer_pytorch.zipformer.zipformer import (
+    ActivationBalancer,
+    DownsampledZipformerStack,
+    PairwiseDownsample,
+    PairwiseUpsample,
+    Whiten,
 )
 
 
@@ -84,3 +92,73 @@ def test_zipformer_encoder_masks_padding_inside_blocks() -> None:
     new_diff = (new_short[:, :2] - new_long[:, :2]).abs().max().item()
 
     assert new_diff < 0.01
+
+
+def test_zipformer_variants_match_paper_scale_ladder() -> None:
+    s = zipformer_variant("s")
+    m = zipformer_variant("m")
+    l = zipformer_variant("l")
+
+    assert s.encoder_dim == (192, 256, 256, 256, 256, 256)
+    assert s.num_encoder_layers == (2, 2, 2, 2, 2, 2)
+    assert s.feedforward_dim == (512, 768, 768, 768, 768, 768)
+
+    assert m.encoder_dim == (192, 256, 384, 512, 384, 256)
+    assert m.num_encoder_layers == (2, 2, 3, 4, 3, 2)
+    assert m.feedforward_dim == (512, 768, 1024, 1536, 1024, 768)
+
+    assert l.encoder_dim == (192, 256, 512, 768, 512, 256)
+    assert l.num_encoder_layers == (2, 2, 4, 5, 4, 2)
+    assert l.feedforward_dim == (512, 768, 1536, 2048, 1536, 768)
+
+    assert zipformer_variant("sm") == m
+    assert zipformer_variant("ml") == l
+
+
+def test_zipformer_uses_pairwise_resampling_for_reduced_rate_stacks() -> None:
+    config = ZipformerConfig(
+        input_dim=8,
+        output_downsampling_factor=2,
+        downsampling_factor=(1, 4, 8),
+        encoder_dim=(16, 24, 32),
+        num_encoder_layers=(1, 1, 1),
+        num_heads=(4, 4, 4),
+        query_head_dim=(8,),
+        value_head_dim=(4,),
+        pos_head_dim=(4,),
+        feedforward_dim=(32, 48, 64),
+        cnn_module_kernel=(5, 5, 5),
+        pos_dim=16,
+        dropout=0.0,
+    )
+    encoder = ZipformerEncoder(config)
+    stack4 = encoder.encoder.stacks[1]
+    stack8 = encoder.encoder.stacks[2]
+
+    assert isinstance(stack4, DownsampledZipformerStack)
+    assert isinstance(stack4.downsample, PairwiseDownsample)
+    assert isinstance(stack4.upsample, PairwiseUpsample)
+    assert len(stack4.downsample.stages) == 2
+    assert len(stack4.upsample.stages) == 2
+
+    assert isinstance(stack8, DownsampledZipformerStack)
+    assert len(stack8.downsample.stages) == 3
+    assert len(stack8.upsample.stages) == 3
+
+
+def test_zipformer_blocks_include_balancers_and_whiteners() -> None:
+    encoder = ZipformerEncoder(_tiny_zipformer_config())
+    conv_embed = encoder.encoder.conv_embed
+    stack = encoder.encoder.stacks[0]
+    block = stack.blocks[0]
+
+    assert isinstance(conv_embed.conv1_balancer, ActivationBalancer)
+    assert isinstance(conv_embed.conv2_balancer, ActivationBalancer)
+    assert isinstance(conv_embed.conv3_balancer, ActivationBalancer)
+    assert isinstance(block.feed_forward1.balancer, ActivationBalancer)
+    assert isinstance(block.attention_weights.key_whiten, Whiten)
+    assert isinstance(block.self_attention1.value_whiten, Whiten)
+    assert isinstance(block.conv1.input_balancer, ActivationBalancer)
+    assert isinstance(block.conv1.depthwise_balancer, ActivationBalancer)
+    assert isinstance(block.block_balancer, ActivationBalancer)
+    assert isinstance(block.whiten, Whiten)

@@ -80,47 +80,37 @@ ZIPFORMER_VARIANTS = {
         feedforward_dim=(192, 256, 384, 512, 384, 256),
         pos_dim=24,
     ),
+    # Paper S/M/L ladder from the Zipformer paper.
     "s": ZipformerConfig(
-        encoder_dim=(96, 128, 192, 256, 192, 128),
-        num_encoder_layers=(1, 1, 2, 2, 2, 1),
+        encoder_dim=(192, 256, 256, 256, 256, 256),
+        num_encoder_layers=(2, 2, 2, 2, 2, 2),
         num_heads=(4, 4, 4, 4, 4, 4),
-        query_head_dim=(24,),
-        value_head_dim=(8,),
-        feedforward_dim=(256, 384, 512, 768, 512, 384),
-        pos_dim=32,
-    ),
-    "sm": ZipformerConfig(),
-    "m": ZipformerConfig(
-        encoder_dim=(256, 320, 512, 640, 512, 320),
-        num_encoder_layers=(2, 2, 4, 6, 4, 2),
-        num_heads=(4, 4, 8, 8, 8, 4),
         query_head_dim=(32,),
         value_head_dim=(12,),
-        feedforward_dim=(768, 1024, 1536, 2048, 1536, 1024),
+        feedforward_dim=(512, 768, 768, 768, 768, 768),
         pos_dim=48,
     ),
-    "ml": ZipformerConfig(
-        encoder_dim=(256, 384, 576, 768, 576, 384),
-        num_encoder_layers=(3, 3, 5, 7, 5, 3),
+    "m": ZipformerConfig(),
+    "l": ZipformerConfig(
+        encoder_dim=(192, 256, 512, 768, 512, 256),
+        num_encoder_layers=(2, 2, 4, 5, 4, 2),
         num_heads=(4, 4, 8, 8, 8, 4),
         query_head_dim=(32,),
         value_head_dim=(12,),
-        feedforward_dim=(1024, 1280, 2048, 3072, 2048, 1280),
-        pos_dim=64,
+        feedforward_dim=(512, 768, 1536, 2048, 1536, 768),
+        pos_dim=48,
     ),
-    "l": ZipformerConfig(
-        encoder_dim=(320, 512, 768, 1024, 768, 512),
-        num_encoder_layers=(4, 4, 6, 8, 6, 4),
-        num_heads=(8, 8, 8, 8, 8, 8),
-        query_head_dim=(32,),
-        value_head_dim=(16,),
-        feedforward_dim=(1280, 1792, 2560, 3584, 2560, 1792),
-        pos_dim=64,
-    ),
+}
+
+_ZIPFORMER_VARIANT_ALIASES = {
+    # Backward-compatible legacy names.
+    "sm": "m",
+    "ml": "l",
 }
 
 
 def zipformer_variant(name: str) -> ZipformerConfig:
+    name = _ZIPFORMER_VARIANT_ALIASES.get(name, name)
     try:
         return ZIPFORMER_VARIANTS[name]
     except KeyError as error:
