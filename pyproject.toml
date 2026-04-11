@@ -21,10 +21,16 @@ squeezeformer-torchrun = "squeezeformer_pytorch.training.torchrun_launcher:main"
 [tool.uv]
 conflicts = [
     [
+        { group = "cu126" },
         { group = "cu12" },
         { group = "cu13" },
     ],
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
@@ -38,10 +44,12 @@ explicit = true
 
 [tool.uv.sources]
 torch = [
+    { index = "pytorch-cu126", group = "cu126" },
     { index = "pytorch-cu128", group = "cu12" },
     { index = "pytorch-cu130", group = "cu13" },
 ]
 torchaudio = [
+    { index = "pytorch-cu126", group = "cu126" },
     { index = "pytorch-cu128", group = "cu12" },
     { index = "pytorch-cu130", group = "cu13" },
 ]
@@ -88,6 +96,11 @@ ignore = ["E501"]
 dev = [
     "pytest>=9.0.2",
     "ruff>=0.15.8",
+]
+cu126 = [
+    "nvidia-npp-cu12>=12.4.1.87",
+    "torch>=2.9.0,<=2.11.0",
+    "torchaudio>=2.9.0,<=2.11.0",
 ]
 cu12 = [
     "nvidia-npp-cu12>=12.4.1.87",
