@@ -154,6 +154,7 @@ def test_parse_args_keeps_hf_checkpoint_upload_disabled_by_default() -> None:
 
     assert args.hf_upload_checkpoints is False
     assert args.hf_upload_repo_id is None
+    assert args.hf_upload_checkpoint_format == "all"
 
 
 def test_parse_args_rejects_hf_checkpoint_upload_without_repo() -> None:
@@ -177,6 +178,8 @@ def test_parse_args_accepts_hf_checkpoint_upload_options() -> None:
             "runs/demo",
             "--hf-upload-revision",
             "main",
+            "--hf-upload-checkpoint-format",
+            "safetensors",
             "--hf-upload-ignore-pattern",
             "*.tmp",
             "--hf-upload-allow-pattern",
@@ -189,5 +192,6 @@ def test_parse_args_accepts_hf_checkpoint_upload_options() -> None:
     assert args.hf_upload_repo_type == "model"
     assert args.hf_upload_path_in_repo == "runs/demo"
     assert args.hf_upload_revision == "main"
+    assert args.hf_upload_checkpoint_format == "safetensors"
     assert args.hf_upload_ignore_pattern == ["*.tmp"]
     assert args.hf_upload_allow_pattern == ["checkpoint*"]

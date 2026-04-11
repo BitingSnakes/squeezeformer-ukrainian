@@ -1172,6 +1172,7 @@ def test_upload_checkpoint_folder_to_hf_uses_cli_options(
             "hf_upload_repo_type": "dataset",
             "hf_upload_path_in_repo": "/runs/demo/",
             "hf_upload_revision": "main",
+            "hf_upload_checkpoint_format": "safetensors",
             "hf_upload_allow_pattern": ["checkpoint*"],
             "hf_upload_ignore_pattern": ["*.tmp"],
             "hf_upload_fail_on_error": True,
@@ -1199,9 +1200,34 @@ def test_upload_checkpoint_folder_to_hf_uses_cli_options(
         "feature_cache/**",
         "trackio/**",
         "audio_previews/**",
+        "*.pt",
+        "**/*.pt",
         "*.tmp",
     ]
     assert calls[0]["token"] == "hf_abcdefghijklmnopqrstuvwxyz123456"
+
+
+def test_hf_upload_checkpoint_format_pt_ignores_safetensors_artifacts() -> None:
+    args = type(
+        "Args",
+        (),
+        {
+            "hf_upload_checkpoint_format": "pt",
+            "hf_upload_ignore_pattern": ["*.tmp"],
+        },
+    )()
+
+    assert train._hf_upload_ignore_patterns(args) == [
+        "record_cache/**",
+        "feature_cache/**",
+        "trackio/**",
+        "audio_previews/**",
+        "*.safetensors",
+        "**/*.safetensors",
+        "checkpoint_*.json",
+        "**/checkpoint_*.json",
+        "*.tmp",
+    ]
 
 
 def test_parse_args_supports_alignment_filter_thresholds(

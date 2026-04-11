@@ -150,6 +150,16 @@ _HF_UPLOAD_DEFAULT_IGNORE_PATTERNS = (
     "trackio/**",
     "audio_previews/**",
 )
+_HF_UPLOAD_PT_CHECKPOINT_IGNORE_PATTERNS = (
+    "*.pt",
+    "**/*.pt",
+)
+_HF_UPLOAD_SAFETENSORS_CHECKPOINT_IGNORE_PATTERNS = (
+    "*.safetensors",
+    "**/*.safetensors",
+    "checkpoint_*.json",
+    "**/checkpoint_*.json",
+)
 
 
 def _truncate_for_log(value: str, *, limit: int = 120) -> str:
@@ -271,8 +281,22 @@ def _hf_upload_allow_patterns(args) -> list[str] | None:
     return patterns or None
 
 
+def _hf_upload_checkpoint_format(args) -> str:
+    checkpoint_format = str(getattr(args, "hf_upload_checkpoint_format", "all")).lower()
+    if checkpoint_format not in {"pt", "safetensors", "all"}:
+        raise ValueError(
+            "--hf-upload-checkpoint-format must be one of 'pt', 'safetensors', or 'all'."
+        )
+    return checkpoint_format
+
+
 def _hf_upload_ignore_patterns(args) -> list[str]:
     patterns = list(_HF_UPLOAD_DEFAULT_IGNORE_PATTERNS)
+    checkpoint_format = _hf_upload_checkpoint_format(args)
+    if checkpoint_format == "pt":
+        patterns.extend(_HF_UPLOAD_SAFETENSORS_CHECKPOINT_IGNORE_PATTERNS)
+    elif checkpoint_format == "safetensors":
+        patterns.extend(_HF_UPLOAD_PT_CHECKPOINT_IGNORE_PATTERNS)
     patterns.extend(getattr(args, "hf_upload_ignore_pattern", None) or [])
     return patterns
 
@@ -293,10 +317,11 @@ def _prepare_hf_checkpoint_upload(
     repo_type = _hf_upload_repo_type(args)
     if not getattr(args, "hf_upload_create_repo", True):
         logger.info(
-            "hugging face checkpoint upload enabled repo_id=%s repo_type=%s path_in_repo=%s folder=%s create_repo=false",
+            "hugging face checkpoint upload enabled repo_id=%s repo_type=%s path_in_repo=%s checkpoint_format=%s folder=%s create_repo=false",
             repo_id,
             repo_type or "model",
             _hf_upload_path_in_repo(args) or ".",
+            _hf_upload_checkpoint_format(args),
             output_dir,
         )
         return
@@ -320,10 +345,11 @@ def _prepare_hf_checkpoint_upload(
         return
 
     logger.info(
-        "hugging face checkpoint upload enabled repo_id=%s repo_type=%s path_in_repo=%s folder=%s",
+        "hugging face checkpoint upload enabled repo_id=%s repo_type=%s path_in_repo=%s checkpoint_format=%s folder=%s",
         repo_id,
         repo_type or "model",
         _hf_upload_path_in_repo(args) or ".",
+        _hf_upload_checkpoint_format(args),
         output_dir,
     )
 
@@ -376,10 +402,11 @@ def _upload_checkpoint_folder_to_hf(
 
     commit_url = getattr(upload_info, "commit_url", None)
     logger.info(
-        "hugging face checkpoint upload complete repo_id=%s repo_type=%s path_in_repo=%s commit=%s elapsed=%s",
+        "hugging face checkpoint upload complete repo_id=%s repo_type=%s path_in_repo=%s checkpoint_format=%s commit=%s elapsed=%s",
         repo_id,
         repo_type or "model",
         path_in_repo or ".",
+        _hf_upload_checkpoint_format(args),
         commit_url or upload_info,
         _format_elapsed_seconds(time.perf_counter() - upload_start),
     )

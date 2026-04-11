@@ -294,7 +294,9 @@ def _validate_startup_args(
         raise ValueError(
             f"--audio-teacher-max-seconds must be > 0, got {args.audio_teacher_max_seconds}."
         )
-    if args.hf_upload_checkpoints and not args.hf_upload_repo_id:
+    if getattr(args, "hf_upload_checkpoints", False) and not getattr(
+        args, "hf_upload_repo_id", None
+    ):
         raise ValueError("--hf-upload-repo-id is required when --hf-upload-checkpoints is set.")
 
     for source in args.dataset_source or []:
@@ -362,6 +364,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--hf-upload-revision",
         default=None,
         help="Optional branch or revision to upload checkpoint artifacts to.",
+    )
+    parser.add_argument(
+        "--hf-upload-checkpoint-format",
+        choices=["pt", "safetensors", "all"],
+        default="all",
+        help=(
+            "Checkpoint artifact format to upload. 'safetensors' keeps required JSON metadata "
+            "sidecars; 'all' preserves the current behavior."
+        ),
     )
     parser.add_argument(
         "--hf-upload-private",
