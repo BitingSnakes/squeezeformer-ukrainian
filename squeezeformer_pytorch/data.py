@@ -743,7 +743,7 @@ def probe_audio_metadata(audio_path: str | None, audio_bytes: bytes | None) -> t
     except ImportError:
         pass
     except Exception:
-        return 0, 0
+        pass
 
     try:
         waveform, sample_rate = load_audio(audio_path, audio_bytes)
@@ -1633,10 +1633,11 @@ def estimate_record_frames(
     record: AudioRecord,
     hop_length: int,
     featurizer: AudioFeaturizer | None = None,
+    force_audio_metadata_probe: bool = False,
 ) -> int:
     num_samples = int(record.num_samples)
     sample_rate = int(record.sample_rate)
-    if num_samples <= 0 or sample_rate <= 0:
+    if force_audio_metadata_probe or num_samples <= 0 or sample_rate <= 0:
         num_samples, sample_rate = probe_audio_metadata(record.audio_path, record.audio_bytes)
     if num_samples <= 0 or sample_rate <= 0:
         return max(0, int(record.estimated_frames))
@@ -1657,9 +1658,15 @@ def materialize_record_metadata(
     hop_length: int,
     num_workers: int = 4,
     featurizer: AudioFeaturizer | None = None,
+    force_audio_metadata_probe: bool = False,
 ) -> list[AudioRecord]:
     def populate(record: AudioRecord) -> AudioRecord:
-        estimate_record_frames(record, hop_length=hop_length, featurizer=featurizer)
+        estimate_record_frames(
+            record,
+            hop_length=hop_length,
+            featurizer=featurizer,
+            force_audio_metadata_probe=force_audio_metadata_probe,
+        )
         return record
 
     if num_workers <= 1:
@@ -1740,6 +1747,7 @@ def create_dataloader(
     persistent_workers: bool = True,
     prefetch_factor: int = 2,
     metadata_workers: int = 4,
+    force_audio_metadata_probe: bool = False,
     longest_batches_first: bool = False,
     multiprocessing_context: str | None = None,
     distributed: bool = False,
@@ -1753,6 +1761,7 @@ def create_dataloader(
             hop_length=dataset.featurizer.hop_length,
             num_workers=metadata_workers,
             featurizer=dataset.featurizer,
+            force_audio_metadata_probe=force_audio_metadata_probe,
         )
     else:
         materialize_record_metadata(
@@ -1760,6 +1769,7 @@ def create_dataloader(
             hop_length=dataset.featurizer.hop_length,
             num_workers=metadata_workers,
             featurizer=dataset.featurizer,
+            force_audio_metadata_probe=force_audio_metadata_probe,
         )
     dataloader_kwargs = {
         "num_workers": num_workers,

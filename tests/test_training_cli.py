@@ -122,3 +122,15 @@ def test_parse_args_accepts_zipformer_flag() -> None:
     )
 
     assert args.zipformer is True
+
+
+def test_parse_args_accepts_force_audio_metadata_probe_flag() -> None:
+    args = parse_args(
+        [
+            "--device",
+            "cpu",
+            "--force-audio-metadata-probe",
+        ]
+    )
+
+    assert args.force_audio_metadata_probe is True

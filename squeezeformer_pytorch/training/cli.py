@@ -496,6 +496,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--prefetch-factor", type=int, default=2)
     parser.add_argument("--metadata-workers", type=int, default=4)
     parser.add_argument(
+        "--force-audio-metadata-probe",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Probe decoded audio metadata before constructing length-aware samplers, even when "
+            "manifest durations already supplied sample counts. This makes dynamic batching "
+            "match codecs such as Opus that decode at 48 kHz, but adds startup I/O."
+        ),
+    )
+    parser.add_argument(
         "--longest-batches-first",
         action=argparse.BooleanOptionalAction,
         default=False,

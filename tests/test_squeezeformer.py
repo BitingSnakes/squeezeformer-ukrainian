@@ -50,6 +50,7 @@ from squeezeformer_pytorch.data import (
     load_corpus_texts,
     load_records,
     normalize_transcript,
+    probe_audio_metadata,
     transcript_is_usable,
 )
 from squeezeformer_pytorch.frontend import (
@@ -119,6 +120,21 @@ def test_estimate_num_feature_frames_matches_torchaudio_frontend() -> None:
         )
 
         assert estimated_frames == actual_frames
+
+
+def test_probe_audio_metadata_falls_back_to_load_when_info_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_info(_source):
+        raise AttributeError("torchaudio.info is unavailable")
+
+    def fake_load(_source):
+        return torch.zeros(1, 48_000), 48_000
+
+    monkeypatch.setattr("squeezeformer_pytorch.data.torchaudio.info", fake_info, raising=False)
+    monkeypatch.setattr("squeezeformer_pytorch.data.torchaudio.load", fake_load)
+
+    assert probe_audio_metadata(None, b"opus") == (48_000, 48_000)
 
 
 def test_validate_resume_tokenizer_configuration_rejects_tokenizer_type_mismatch() -> None:
@@ -2440,6 +2456,48 @@ def test_disk_backed_record_store_recomputes_centered_frame_estimate(tmp_path: P
     )
 
     assert store[0].estimated_frames == 21
+
+
+def test_disk_backed_record_store_force_probe_overwrites_manifest_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records_path = tmp_path / "records.jsonl"
+    payload = {
+        "audio_path": "dummy.wav",
+        "audio_blob_path": None,
+        "transcript": "це тест",
+        "utterance_id": "utt0",
+        "speaker_id": None,
+        "has_speaker_id": False,
+    }
+    records_path.write_text(json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    offsets = array.array("Q", [0])
+    estimated_frames = array.array("I", [303])
+    num_samples = array.array("Q", [48_384])
+    sample_rates = array.array("I", [16_000])
+    store = DiskBackedRecordStore(
+        records_path, offsets, estimated_frames, num_samples, sample_rates
+    )
+    featurizer = AudioFeaturizer(**zipformer_paper_featurizer_config())
+
+    monkeypatch.setattr(
+        "squeezeformer_pytorch.training.data_loading.probe_audio_metadata",
+        lambda _audio_path, _audio_bytes: (145_920, 48_000),
+    )
+
+    store.populate_metadata(
+        hop_length=featurizer.hop_length,
+        num_workers=1,
+        featurizer=featurizer,
+        force_audio_metadata_probe=True,
+    )
+
+    record = store[0]
+    assert record.num_samples == 145_920
+    assert record.sample_rate == 48_000
+    assert record.estimated_frames == 305
 
 
 def test_muon_optimizer_partition_uses_encoder_hidden_weights(

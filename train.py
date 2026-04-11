@@ -1148,7 +1148,7 @@ def main() -> None:
     )
     stage_start_time = time.perf_counter()
     logger.info(
-        "building dataloaders train_samples=%s val_samples=%s distributed=%s world_size=%s train_hours=%.2f val_hours=%.2f num_workers=%s metadata_workers=%s persistent_workers=%s prefetch_factor=%s",
+        "building dataloaders train_samples=%s val_samples=%s distributed=%s world_size=%s train_hours=%.2f val_hours=%.2f num_workers=%s metadata_workers=%s force_audio_metadata_probe=%s persistent_workers=%s prefetch_factor=%s",
         len(train_records),
         len(val_records),
         distributed,
@@ -1157,6 +1157,7 @@ def main() -> None:
         _record_store_duration_hours(val_records, hop_length=featurizer.hop_length),
         args.num_workers,
         args.metadata_workers,
+        args.force_audio_metadata_probe,
         args.persistent_workers,
         args.prefetch_factor,
     )
@@ -1174,6 +1175,7 @@ def main() -> None:
         persistent_workers=args.persistent_workers,
         prefetch_factor=args.prefetch_factor,
         metadata_workers=args.metadata_workers,
+        force_audio_metadata_probe=args.force_audio_metadata_probe,
         longest_batches_first=args.longest_batches_first,
         multiprocessing_context=args.dataloader_mp_context,
         distributed=distributed,
@@ -1196,6 +1198,7 @@ def main() -> None:
         persistent_workers=args.persistent_workers,
         prefetch_factor=args.prefetch_factor,
         metadata_workers=args.metadata_workers,
+        force_audio_metadata_probe=args.force_audio_metadata_probe,
         longest_batches_first=False,
         multiprocessing_context=args.dataloader_mp_context,
         distributed=distributed,

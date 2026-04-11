@@ -195,8 +195,13 @@ class DiskBackedRecordStore:
         hop_length: int,
         num_workers: int = 4,
         featurizer: AudioFeaturizer | None = None,
+        force_audio_metadata_probe: bool = False,
     ) -> None:
-        if self.num_samples is not None and self.sample_rates is not None:
+        if (
+            not force_audio_metadata_probe
+            and self.num_samples is not None
+            and self.sample_rates is not None
+        ):
             for index in range(len(self)):
                 global_index = self._global_index(index)
                 num_samples = int(self.num_samples[global_index])
@@ -210,17 +215,20 @@ class DiskBackedRecordStore:
                     featurizer=featurizer,
                 )
                 self.estimated_frames[global_index] = max(0, int(frames))
-        global_indices = [
-            self._global_index(index)
-            for index in range(len(self))
-            if (
-                int(self.estimated_frames[self._global_index(index)]) <= 0
-                or self.num_samples is None
-                or int(self.num_samples[self._global_index(index)]) <= 0
-                or self.sample_rates is None
-                or int(self.sample_rates[self._global_index(index)]) <= 0
-            )
-        ]
+        if force_audio_metadata_probe:
+            global_indices = [self._global_index(index) for index in range(len(self))]
+        else:
+            global_indices = [
+                self._global_index(index)
+                for index in range(len(self))
+                if (
+                    int(self.estimated_frames[self._global_index(index)]) <= 0
+                    or self.num_samples is None
+                    or int(self.num_samples[self._global_index(index)]) <= 0
+                    or self.sample_rates is None
+                    or int(self.sample_rates[self._global_index(index)]) <= 0
+                )
+            ]
         if not global_indices:
             return
 
