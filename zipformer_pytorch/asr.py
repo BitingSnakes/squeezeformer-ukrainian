@@ -163,7 +163,7 @@ class ZipformerEncoder(nn.Module):
                 "Zipformer encoder expected feature dimension "
                 f"{self.config.input_dim}, got {features.size(-1)}."
             )
-        output_lengths = feature_lengths.to(dtype=torch.int64).clamp_(1, features.size(1))
+        output_lengths = feature_lengths.to(dtype=torch.int64).clamp(1, features.size(1))
         encoded, output_lengths = self.encoder(features, output_lengths)
         return encoded, output_lengths
 

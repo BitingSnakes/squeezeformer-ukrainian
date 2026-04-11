@@ -2228,6 +2228,12 @@ def test_collate_asr_batch_includes_waveforms_when_present() -> None:
     assert batch["waveform_lengths"].tolist() == [3, 2]
     assert batch["sample_rates"].tolist() == [16_000, 16_000]
     assert batch["waveforms"][1].tolist() == [4.0, 5.0, 0.0]
+    assert batch["targets"].tolist() == [1, 2, 3]
+    assert batch["target_lengths"].tolist() == [2, 1]
+    assert batch["transcripts"] == ["це тест", "тест"]
+    assert batch["utterance_ids"] == ["utt0", "utt1"]
+    assert batch["speaker_ids"] == [None, "spk1"]
+    assert batch["has_speaker_ids"] == [False, True]
 
 
 def test_asr_dataset_returns_waveform_when_requested(

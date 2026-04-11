@@ -112,6 +112,19 @@ def test_zipformer_ctc_forward_runs_on_meta_device() -> None:
     assert output_lengths.device.type == "meta"
 
 
+def test_zipformer_encoder_does_not_mutate_input_lengths() -> None:
+    model = ZipformerEncoder(_tiny_zipformer_config())
+    features = torch.randn(2, 12, 8)
+    feature_lengths = torch.tensor([12, 20], dtype=torch.long)
+    original_lengths = feature_lengths.clone()
+
+    with torch.no_grad():
+        _encoded, output_lengths = model(features, feature_lengths)
+
+    assert torch.equal(feature_lengths, original_lengths)
+    assert output_lengths.tolist() == [3, 3]
+
+
 def test_zipformer_transducer_decodes_with_greedy_and_beam_search() -> None:
     model = ZipformerTransducer(
         encoder_config=_tiny_zipformer_config(),
