@@ -51,7 +51,7 @@ class ScaledAdam(torch.optim.Optimizer):
                     state["step"] = 0
                     state["exp_avg"] = torch.zeros_like(parameter)
                     state["exp_avg_sq"] = torch.zeros_like(parameter)
-                    if parameter.numel() > 1:
+                    if parameter.ndim > 1 and parameter.numel() > 1:
                         state["scale_exp_avg"] = torch.zeros(
                             (), device=parameter.device, dtype=torch.float32
                         )
@@ -70,7 +70,7 @@ class ScaledAdam(torch.optim.Optimizer):
                 bias_correction = math.sqrt(1.0 - beta2**step) / (1.0 - beta1**step)
                 denom = exp_avg_sq.sqrt().add_(eps)
 
-                if parameter.numel() == 1:
+                if parameter.ndim < 2:
                     parameter.add_(exp_avg / denom, alpha=-lr * bias_correction)
                     continue
 
