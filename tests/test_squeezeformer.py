@@ -1149,6 +1149,61 @@ def test_parse_args_supports_audio_teacher_flags(monkeypatch: pytest.MonkeyPatch
     assert args.audio_teacher_layer == 5
 
 
+def test_upload_checkpoint_folder_to_hf_uses_cli_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "checkpoint_last.pt").write_bytes(b"checkpoint")
+    calls: list[dict[str, object]] = []
+
+    class FakeHfApi:
+        def upload_folder(self, **kwargs):
+            calls.append(kwargs)
+            return type("CommitInfo", (), {"commit_url": "https://huggingface.co/commit"})()
+
+    monkeypatch.setattr(train, "HfApi", lambda: FakeHfApi())
+
+    args = type(
+        "Args",
+        (),
+        {
+            "hf_upload_checkpoints": True,
+            "hf_upload_repo_id": "speech-uk/checkpoints",
+            "hf_upload_repo_type": "dataset",
+            "hf_upload_path_in_repo": "/runs/demo/",
+            "hf_upload_revision": "main",
+            "hf_upload_allow_pattern": ["checkpoint*"],
+            "hf_upload_ignore_pattern": ["*.tmp"],
+            "hf_upload_fail_on_error": True,
+            "hf_token": "hf_abcdefghijklmnopqrstuvwxyz123456",
+        },
+    )()
+
+    upload_info = train._upload_checkpoint_folder_to_hf(
+        args=args,
+        output_dir=tmp_path,
+        logger=logging.getLogger("test"),
+        commit_message="Upload checkpoints",
+    )
+
+    assert upload_info is not None
+    assert len(calls) == 1
+    assert calls[0]["repo_id"] == "speech-uk/checkpoints"
+    assert calls[0]["repo_type"] == "dataset"
+    assert calls[0]["folder_path"] == tmp_path
+    assert calls[0]["path_in_repo"] == "runs/demo"
+    assert calls[0]["revision"] == "main"
+    assert calls[0]["allow_patterns"] == ["checkpoint*"]
+    assert calls[0]["ignore_patterns"] == [
+        "record_cache/**",
+        "feature_cache/**",
+        "trackio/**",
+        "audio_previews/**",
+        "*.tmp",
+    ]
+    assert calls[0]["token"] == "hf_abcdefghijklmnopqrstuvwxyz123456"
+
+
 def test_parse_args_supports_alignment_filter_thresholds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

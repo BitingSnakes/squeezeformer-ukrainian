@@ -21,6 +21,7 @@ from squeezeformer_pytorch.data import AudioFeaturizer
 from squeezeformer_pytorch.metrics import char_error_rate, word_error_rate
 from squeezeformer_pytorch.model import SqueezeformerConfig
 from squeezeformer_pytorch.runtime_types import DecodeStrategy, DTypeChoice, ValidationModelSource
+from squeezeformer_pytorch.secrets import sanitize_for_serialization
 from squeezeformer_pytorch.training.runtime import (
     ExponentialMovingAverage,
     FrozenAudioTeacher,
@@ -1204,7 +1205,7 @@ def _build_checkpoint(
         "scheduler_state_dicts": [scheduler.state_dict() for scheduler in schedulers],
         "scaler_state_dict": scaler.state_dict(),
         "ema_state_dict": ema.state_dict() if ema is not None else None,
-        "training_args": vars(args),
+        "training_args": sanitize_for_serialization(vars(args)),
         "validation_model_source": validation_model_source,
     }
     if resume_model_state_dict is not None:

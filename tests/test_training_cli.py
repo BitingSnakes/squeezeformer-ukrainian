@@ -147,3 +147,47 @@ def test_parse_args_accepts_audio_preview_sample_count() -> None:
     )
 
     assert args.save_audio_preview_samples == 3
+
+
+def test_parse_args_keeps_hf_checkpoint_upload_disabled_by_default() -> None:
+    args = parse_args(["--device", "cpu"])
+
+    assert args.hf_upload_checkpoints is False
+    assert args.hf_upload_repo_id is None
+
+
+def test_parse_args_rejects_hf_checkpoint_upload_without_repo() -> None:
+    with pytest.raises(ValueError) as error:
+        parse_args(["--device", "cpu", "--hf-upload-checkpoints"])
+
+    assert str(error.value) == "--hf-upload-repo-id is required when --hf-upload-checkpoints is set."
+
+
+def test_parse_args_accepts_hf_checkpoint_upload_options() -> None:
+    args = parse_args(
+        [
+            "--device",
+            "cpu",
+            "--hf-upload-checkpoints",
+            "--hf-upload-repo-id",
+            "speech-uk/checkpoints",
+            "--hf-upload-repo-type",
+            "model",
+            "--hf-upload-path-in-repo",
+            "runs/demo",
+            "--hf-upload-revision",
+            "main",
+            "--hf-upload-ignore-pattern",
+            "*.tmp",
+            "--hf-upload-allow-pattern",
+            "checkpoint*",
+        ]
+    )
+
+    assert args.hf_upload_checkpoints is True
+    assert args.hf_upload_repo_id == "speech-uk/checkpoints"
+    assert args.hf_upload_repo_type == "model"
+    assert args.hf_upload_path_in_repo == "runs/demo"
+    assert args.hf_upload_revision == "main"
+    assert args.hf_upload_ignore_pattern == ["*.tmp"]
+    assert args.hf_upload_allow_pattern == ["checkpoint*"]

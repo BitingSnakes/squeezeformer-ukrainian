@@ -294,6 +294,8 @@ def _validate_startup_args(
         raise ValueError(
             f"--audio-teacher-max-seconds must be > 0, got {args.audio_teacher_max_seconds}."
         )
+    if args.hf_upload_checkpoints and not args.hf_upload_repo_id:
+        raise ValueError("--hf-upload-repo-id is required when --hf-upload-checkpoints is set.")
 
     for source in args.dataset_source or []:
         _validate_existing_local_path_argument("--dataset-source", source)
@@ -331,6 +333,75 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--hf-token", default=os.environ.get("HF_TOKEN"))
     parser.add_argument("--cache-dir", default=None)
+    parser.add_argument(
+        "--hf-upload-checkpoints",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Upload checkpoint artifacts from OUTPUT_DIR to Hugging Face after checkpoint saves. "
+            "Disabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--hf-upload-repo-id",
+        default=None,
+        help="Destination Hugging Face repo ID for --hf-upload-checkpoints.",
+    )
+    parser.add_argument(
+        "--hf-upload-repo-type",
+        choices=["model", "dataset", "space"],
+        default="model",
+        help="Destination Hugging Face repo type.",
+    )
+    parser.add_argument(
+        "--hf-upload-path-in-repo",
+        default=None,
+        help="Optional destination folder inside the Hugging Face repo.",
+    )
+    parser.add_argument(
+        "--hf-upload-revision",
+        default=None,
+        help="Optional branch or revision to upload checkpoint artifacts to.",
+    )
+    parser.add_argument(
+        "--hf-upload-private",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Privacy setting used when creating the destination repo. If omitted, Hugging Face "
+            "keeps its default for new repos and leaves existing repos unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--hf-upload-create-repo",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Create the destination Hugging Face repo if it does not exist.",
+    )
+    parser.add_argument(
+        "--hf-upload-fail-on-error",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Abort training when a Hugging Face checkpoint upload fails.",
+    )
+    parser.add_argument(
+        "--hf-upload-allow-pattern",
+        action="append",
+        default=None,
+        help=(
+            "Optional Hugging Face upload allow pattern. Repeat to include multiple patterns. "
+            "When omitted, all non-ignored files under OUTPUT_DIR are considered."
+        ),
+    )
+    parser.add_argument(
+        "--hf-upload-ignore-pattern",
+        action="append",
+        default=None,
+        help=(
+            "Additional Hugging Face upload ignore pattern. Repeat to ignore multiple patterns. "
+            "Local caches and Trackio artifacts are ignored automatically."
+        ),
+    )
     parser.add_argument(
         "--record-cache-dir",
         default=None,

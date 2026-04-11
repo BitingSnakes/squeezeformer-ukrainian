@@ -23,6 +23,7 @@ DTypeChoice = importlib.import_module("squeezeformer_pytorch.runtime_types").DTy
 ValidationModelSource = importlib.import_module(
     "squeezeformer_pytorch.runtime_types"
 ).ValidationModelSource
+REDACTED = importlib.import_module("squeezeformer_pytorch.secrets").REDACTED
 squeezeformer_variant = importlib.import_module("squeezeformer_pytorch.model").squeezeformer_variant
 training_evaluation = importlib.import_module("squeezeformer_pytorch.training.evaluation")
 
@@ -447,6 +448,41 @@ def test_merge_evaluation_shards_combines_all_examples(monkeypatch) -> None:
     assert merged["metrics"]["missing_speaker_id_samples"] == 1.0
     assert merged["hardest_examples"][0]["utterance_id"] == "utt-1"
     assert merged["random_examples"][0]["utterance_id"] == "utt-2"
+
+
+def test_build_checkpoint_redacts_secret_training_args() -> None:
+    class DummyTokenizer:
+        def to_dict(self) -> dict[str, object]:
+            return {"type": "character", "symbols": ["a"]}
+
+    class DummyFeaturizer:
+        def config_dict(self) -> dict[str, object]:
+            return {"sample_rate": 16_000}
+
+    checkpoint = training_evaluation._build_checkpoint(
+        model=torch.nn.Linear(1, 1, bias=False),
+        encoder_config=squeezeformer_variant("xs"),
+        tokenizer=DummyTokenizer(),
+        featurizer=DummyFeaturizer(),
+        epoch=1,
+        global_step=2,
+        best_val_wer=0.5,
+        metrics={},
+        optimizers=[],
+        optimizer_names=[],
+        schedulers=[],
+        scaler=torch.amp.GradScaler("cuda", enabled=False),
+        ema=None,
+        args=Namespace(
+            hf_token="hf_abcdefghijklmnopqrstuvwxyz123456",
+            hf_upload_repo_id="speech-uk/checkpoints",
+            nested={"authorization": "Bearer hf_abcdefghijklmnopqrstuvwxyz123456"},
+        ),
+    )
+
+    assert checkpoint["training_args"]["hf_token"] == REDACTED
+    assert checkpoint["training_args"]["hf_upload_repo_id"] == "speech-uk/checkpoints"
+    assert REDACTED in checkpoint["training_args"]["nested"]["authorization"]
 
 
 def test_evaluate_and_checkpoint_saves_validated_ema_weights_and_resume_raw(

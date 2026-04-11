@@ -16,6 +16,7 @@ import torch
 import torch.distributed as dist
 import torchaudio
 import trackio
+from huggingface_hub import HfApi
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -143,6 +144,13 @@ DelayedScaling = _training_runtime.DelayedScaling
 ExternalMuon = _training_runtime.ExternalMuon
 _export_inference_checkpoint = _training_runtime._export_inference_checkpoint
 
+_HF_UPLOAD_DEFAULT_IGNORE_PATTERNS = (
+    "record_cache/**",
+    "feature_cache/**",
+    "trackio/**",
+    "audio_previews/**",
+)
+
 
 def _truncate_for_log(value: str, *, limit: int = 120) -> str:
     if len(value) <= limit:
@@ -243,6 +251,159 @@ def _launch_trackio_ui(
         full_url,
     )
     return app, url, share_url, full_url
+
+
+def _hf_upload_repo_type(args) -> str | None:
+    repo_type = str(getattr(args, "hf_upload_repo_type", "model"))
+    return None if repo_type == "model" else repo_type
+
+
+def _hf_upload_path_in_repo(args) -> str | None:
+    path_in_repo = getattr(args, "hf_upload_path_in_repo", None)
+    if path_in_repo is None:
+        return None
+    normalized = str(path_in_repo).strip().strip("/")
+    return normalized or None
+
+
+def _hf_upload_allow_patterns(args) -> list[str] | None:
+    patterns = list(getattr(args, "hf_upload_allow_pattern", None) or [])
+    return patterns or None
+
+
+def _hf_upload_ignore_patterns(args) -> list[str]:
+    patterns = list(_HF_UPLOAD_DEFAULT_IGNORE_PATTERNS)
+    patterns.extend(getattr(args, "hf_upload_ignore_pattern", None) or [])
+    return patterns
+
+
+def _prepare_hf_checkpoint_upload(
+    args,
+    *,
+    output_dir: Path,
+    logger: logging.Logger,
+) -> None:
+    if not getattr(args, "hf_upload_checkpoints", False):
+        return
+
+    repo_id = getattr(args, "hf_upload_repo_id", None)
+    if not repo_id:
+        raise ValueError("--hf-upload-repo-id is required when --hf-upload-checkpoints is set.")
+
+    repo_type = _hf_upload_repo_type(args)
+    if not getattr(args, "hf_upload_create_repo", True):
+        logger.info(
+            "hugging face checkpoint upload enabled repo_id=%s repo_type=%s path_in_repo=%s folder=%s create_repo=false",
+            repo_id,
+            repo_type or "model",
+            _hf_upload_path_in_repo(args) or ".",
+            output_dir,
+        )
+        return
+
+    try:
+        HfApi().create_repo(
+            repo_id=repo_id,
+            token=getattr(args, "hf_token", None),
+            private=getattr(args, "hf_upload_private", None),
+            repo_type=repo_type,
+            exist_ok=True,
+        )
+    except Exception:
+        logger.exception(
+            "failed to prepare hugging face checkpoint upload repo_id=%s repo_type=%s",
+            repo_id,
+            repo_type or "model",
+        )
+        if getattr(args, "hf_upload_fail_on_error", False):
+            raise
+        return
+
+    logger.info(
+        "hugging face checkpoint upload enabled repo_id=%s repo_type=%s path_in_repo=%s folder=%s",
+        repo_id,
+        repo_type or "model",
+        _hf_upload_path_in_repo(args) or ".",
+        output_dir,
+    )
+
+
+def _upload_checkpoint_folder_to_hf(
+    *,
+    args,
+    output_dir: Path,
+    logger: logging.Logger,
+    commit_message: str,
+    commit_description: str | None = None,
+):
+    if not getattr(args, "hf_upload_checkpoints", False):
+        return None
+
+    repo_id = getattr(args, "hf_upload_repo_id", None)
+    if not repo_id:
+        raise ValueError("--hf-upload-repo-id is required when --hf-upload-checkpoints is set.")
+    if not output_dir.exists():
+        logger.warning("skipping hugging face checkpoint upload; missing output_dir=%s", output_dir)
+        return None
+
+    repo_type = _hf_upload_repo_type(args)
+    path_in_repo = _hf_upload_path_in_repo(args)
+    upload_start = time.perf_counter()
+    try:
+        upload_info = HfApi().upload_folder(
+            repo_id=repo_id,
+            folder_path=output_dir,
+            path_in_repo=path_in_repo,
+            commit_message=commit_message,
+            commit_description=commit_description,
+            token=getattr(args, "hf_token", None),
+            repo_type=repo_type,
+            revision=getattr(args, "hf_upload_revision", None),
+            allow_patterns=_hf_upload_allow_patterns(args),
+            ignore_patterns=_hf_upload_ignore_patterns(args),
+        )
+    except Exception:
+        logger.exception(
+            "hugging face checkpoint upload failed repo_id=%s repo_type=%s folder=%s path_in_repo=%s",
+            repo_id,
+            repo_type or "model",
+            output_dir,
+            path_in_repo or ".",
+        )
+        if getattr(args, "hf_upload_fail_on_error", False):
+            raise
+        return None
+
+    commit_url = getattr(upload_info, "commit_url", None)
+    logger.info(
+        "hugging face checkpoint upload complete repo_id=%s repo_type=%s path_in_repo=%s commit=%s elapsed=%s",
+        repo_id,
+        repo_type or "model",
+        path_in_repo or ".",
+        commit_url or upload_info,
+        _format_elapsed_seconds(time.perf_counter() - upload_start),
+    )
+    return upload_info
+
+
+def _evaluate_and_checkpoint_with_hf_upload(**kwargs) -> float:
+    best_val_wer = _evaluate_and_checkpoint(**kwargs)
+    args = kwargs["args"]
+    if kwargs.get("is_main_process", True) and getattr(args, "hf_upload_checkpoints", False):
+        report_stem = str(kwargs.get("report_stem") or "checkpoint")
+        _upload_checkpoint_folder_to_hf(
+            args=args,
+            output_dir=kwargs["output_dir"],
+            logger=kwargs["logger"],
+            commit_message=f"Upload checkpoints {report_stem}",
+            commit_description=(
+                "Automatic checkpoint upload from train.py.\n\n"
+                f"Report stem: {report_stem}\n"
+                f"Epoch: {kwargs.get('epoch')}\n"
+                f"Global step: {kwargs.get('global_step')}"
+            ),
+        )
+    return best_val_wer
 
 
 def _validate_resume_tokenizer_configuration(
@@ -933,6 +1094,8 @@ def main() -> None:
             logger=logger,
             project=args.trackio_project,
         )
+    if is_main_process:
+        _prepare_hf_checkpoint_upload(args, output_dir=output_dir, logger=logger)
     resume_path = _resolve_resume_checkpoint_path(args, output_dir=output_dir, logger=logger)
     logger.info(
         "starting training variant=%s zipformer_requested=%s device=%s distributed=%s world_size=%s output_dir=%s",
@@ -2270,7 +2433,7 @@ def main() -> None:
                             train_batches,
                             global_step,
                         )
-                    best_val_wer = _evaluate_and_checkpoint(
+                    best_val_wer = _evaluate_and_checkpoint_with_hf_upload(
                         model=model,
                         val_loader=val_loader,
                         criterion=criterion,
@@ -2367,7 +2530,7 @@ def main() -> None:
                 train_audio_teacher_loss,
                 _format_elapsed_seconds(time.perf_counter() - epoch_start_time),
             )
-        best_val_wer = _evaluate_and_checkpoint(
+        best_val_wer = _evaluate_and_checkpoint_with_hf_upload(
             model=model,
             val_loader=val_loader,
             criterion=criterion,
@@ -2438,12 +2601,23 @@ def main() -> None:
             ),
             encoding="utf-8",
         )
-        trackio.finish()
         logger.info(
             "training finished epochs=%s best_val_wer=%.4f summary=%s",
             args.epochs,
             best_val_wer,
             output_dir / "train_summary.json",
+        )
+        trackio.finish()
+        _upload_checkpoint_folder_to_hf(
+            args=args,
+            output_dir=output_dir,
+            logger=logger,
+            commit_message="Upload final training checkpoint artifacts",
+            commit_description=(
+                "Automatic final checkpoint upload from train.py.\n\n"
+                f"Epochs: {args.epochs}\n"
+                f"Best validation WER: {best_val_wer:.6f}"
+            ),
         )
     if hasattr(train_records, "close"):
         train_records.close()
