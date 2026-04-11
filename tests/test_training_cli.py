@@ -134,3 +134,16 @@ def test_parse_args_accepts_force_audio_metadata_probe_flag() -> None:
     )
 
     assert args.force_audio_metadata_probe is True
+
+
+def test_parse_args_accepts_audio_preview_sample_count() -> None:
+    args = parse_args(
+        [
+            "--device",
+            "cpu",
+            "--save-audio-preview-samples",
+            "3",
+        ]
+    )
+
+    assert args.save_audio_preview_samples == 3

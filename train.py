@@ -14,6 +14,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
+import torchaudio
 import trackio
 from torch import nn
 from torch.nn import functional as F
@@ -654,6 +655,83 @@ def _ensure_opus_decode_support(records, *, split: str) -> None:
         _training_data_loading.load_audio = original_load_audio
 
 
+def _audio_preview_filename(index: int, utterance_id: str) -> str:
+    safe_utterance_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", utterance_id).strip("._")
+    if not safe_utterance_id:
+        safe_utterance_id = f"utt{index}"
+    return f"sample_{index:06d}_{safe_utterance_id[:80]}"
+
+
+def _save_audio_preview_samples(
+    records,
+    *,
+    output_dir: Path,
+    sample_count: int,
+    logger: logging.Logger,
+) -> int:
+    if sample_count <= 0:
+        return 0
+
+    preview_dir = output_dir / "audio_previews"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = preview_dir / "manifest.jsonl"
+    saved = 0
+    manifest_entries: list[dict[str, object]] = []
+    for record in records:
+        if saved >= sample_count:
+            break
+        try:
+            waveform, sample_rate = load_audio(record.audio_path, record.audio_bytes)
+        except Exception as exc:
+            logger.warning(
+                "failed to save audio preview utterance_id=%s error=%s",
+                record.utterance_id,
+                exc,
+            )
+            continue
+
+        waveform = waveform.detach().cpu()
+        if waveform.dim() == 1:
+            waveform = waveform.unsqueeze(0)
+        stem = _audio_preview_filename(saved, record.utterance_id)
+        audio_path = preview_dir / f"{stem}.wav"
+        transcript_path = preview_dir / f"{stem}.txt"
+        torchaudio.save(str(audio_path), waveform, int(sample_rate))
+        transcript_path.write_text(record.transcript + "\n", encoding="utf-8")
+        duration_seconds = (
+            float(waveform.size(-1)) / float(sample_rate) if int(sample_rate) > 0 else 0.0
+        )
+        manifest_entries.append(
+            {
+                "index": saved,
+                "audio_path": str(audio_path),
+                "transcript_path": str(transcript_path),
+                "utterance_id": record.utterance_id,
+                "source_audio_path": record.audio_path,
+                "sample_rate": int(sample_rate),
+                "num_samples": int(waveform.size(-1)),
+                "duration_seconds": duration_seconds,
+                "transcript": record.transcript,
+            }
+        )
+        saved += 1
+
+    manifest_path.write_text(
+        "".join(
+            json.dumps(entry, ensure_ascii=False) + "\n" for entry in manifest_entries
+        ),
+        encoding="utf-8",
+    )
+    logger.info(
+        "saved audio preview samples requested=%s saved=%s dir=%s manifest=%s",
+        sample_count,
+        saved,
+        preview_dir,
+        manifest_path,
+    )
+    return saved
+
+
 def _load_train_val_records(
     args,
     train_dataset_sources,
@@ -923,6 +1001,12 @@ def main() -> None:
             len(val_records),
             float(split_audit["speaker_balance_ratio"]),
             _format_elapsed_seconds(time.perf_counter() - stage_start_time),
+        )
+        _save_audio_preview_samples(
+            train_records,
+            output_dir=output_dir,
+            sample_count=args.save_audio_preview_samples,
+            logger=logger,
         )
 
     stage_start_time = time.perf_counter()

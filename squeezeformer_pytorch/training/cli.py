@@ -164,6 +164,7 @@ def _validate_startup_args(
         "--num-workers": args.num_workers,
         "--seed": args.seed,
         "--ema-warmup-steps": args.ema_warmup_steps,
+        "--save-audio-preview-samples": args.save_audio_preview_samples,
     }
     for name, value in nonnegative_int_arguments.items():
         if value is not None and value < 0:
@@ -452,6 +453,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--feature-cache-dir", default=None)
+    parser.add_argument(
+        "--save-audio-preview-samples",
+        type=int,
+        default=0,
+        help=(
+            "Decode and save this many training audio examples to "
+            "OUTPUT_DIR/audio_previews before training starts. Writes WAV files, "
+            "transcripts, and a manifest for listening/debugging."
+        ),
+    )
     parser.add_argument(
         "--max-batch-duration-sec",
         type=float,

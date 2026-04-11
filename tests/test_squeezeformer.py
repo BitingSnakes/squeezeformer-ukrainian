@@ -137,6 +137,52 @@ def test_probe_audio_metadata_falls_back_to_load_when_info_is_unavailable(
     assert probe_audio_metadata(None, b"opus") == (48_000, 48_000)
 
 
+def test_save_audio_preview_samples_writes_wav_transcripts_and_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = [
+        AudioRecord("a.opus", None, "перший текст", "utt/0", estimated_frames=10),
+        AudioRecord("b.opus", None, "другий текст", "utt/1", estimated_frames=20),
+    ]
+    saved_audio: list[tuple[str, tuple[int, ...], int]] = []
+
+    def fake_load_audio(audio_path: str | None, audio_bytes: bytes | None):
+        del audio_bytes
+        length = 4 if audio_path == "a.opus" else 6
+        return torch.arange(length, dtype=torch.float32).unsqueeze(0), 48_000
+
+    def fake_save(path: str, waveform: torch.Tensor, sample_rate: int) -> None:
+        saved_audio.append((path, tuple(waveform.shape), sample_rate))
+        Path(path).write_bytes(b"wav")
+
+    monkeypatch.setattr("train.load_audio", fake_load_audio)
+    monkeypatch.setattr("train.torchaudio.save", fake_save)
+
+    count = train._save_audio_preview_samples(
+        records,
+        output_dir=tmp_path,
+        sample_count=2,
+        logger=logging.getLogger("test"),
+    )
+
+    preview_dir = tmp_path / "audio_previews"
+    manifest = [
+        json.loads(line)
+        for line in (preview_dir / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert count == 2
+    assert len(saved_audio) == 2
+    assert saved_audio[0][1:] == ((1, 4), 48_000)
+    assert saved_audio[1][1:] == ((1, 6), 48_000)
+    assert manifest[0]["utterance_id"] == "utt/0"
+    assert manifest[0]["transcript"] == "перший текст"
+    assert manifest[0]["sample_rate"] == 48_000
+    assert Path(manifest[0]["audio_path"]).name.startswith("sample_000000_utt_0")
+    assert Path(manifest[0]["audio_path"]).suffix == ".wav"
+    assert Path(manifest[0]["transcript_path"]).read_text(encoding="utf-8") == "перший текст\n"
+
+
 def test_validate_resume_tokenizer_configuration_rejects_tokenizer_type_mismatch() -> None:
     checkpoint = {
         "tokenizer": {
