@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import os
 import socket
+import subprocess
 import sys
 from datetime import timedelta
 
@@ -87,6 +88,27 @@ def _nccl_version() -> str:
     return str(version)
 
 
+def _nvidia_smi_versions() -> str:
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=driver_version,cuda_version",
+                "--format=csv,noheader",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        return "nvidia-smi unavailable"
+    except subprocess.SubprocessError as exc:
+        return f"nvidia-smi error: {type(exc).__name__}: {exc}"
+    output = " | ".join(line.strip() for line in result.stdout.splitlines() if line.strip())
+    return output or "nvidia-smi returned no GPU rows"
+
+
 def _print_diagnostics() -> None:
     local_rank = _env_int("LOCAL_RANK", 0)
     world_size = _env_int("WORLD_SIZE", 1)
@@ -104,6 +126,7 @@ def _print_diagnostics() -> None:
             _nccl_version(),
         )
     )
+    _rank_print(f"nvidia_smi_driver_cuda={_nvidia_smi_versions()}")
     try:
         _rank_print(
             "cuda_is_available=%s cuda_device_count=%s current_device=%s"
