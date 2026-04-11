@@ -12,7 +12,7 @@ dependencies = [
     "sentencepiece>=0.2.0",
     "torch>=2.9.0,<=2.11.0",
     "torchaudio>=2.9.0,<=2.11.0",
-    "torchcodec>=0.11.0",
+    "torchcodec>=0.10.0",
 ]
 
 [project.scripts]
@@ -71,7 +71,7 @@ train = [
     "pytorch-optimizer>=3.10.0",
     "jiwer>=4.0.0",
     "polars[rtcompat]>=1.39.3",
-    "torchcodec>=0.11.0",
+    "torchcodec>=0.10.0",
     "trackio>=0.20.2",
     "transformers>=4.57.0",
 ]
@@ -99,8 +99,9 @@ dev = [
 ]
 cu126 = [
     "nvidia-npp-cu12>=12.4.1.87",
-    "torch>=2.9.0,<=2.11.0",
-    "torchaudio>=2.9.0,<=2.11.0",
+    "torch>=2.10.0,<2.11.0",
+    "torchaudio>=2.10.0,<2.11.0",
+    "torchcodec>=0.10.0,<0.11.0",
 ]
 cu12 = [
     "nvidia-npp-cu12>=12.4.1.87",

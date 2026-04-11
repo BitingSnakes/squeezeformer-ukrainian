@@ -63,9 +63,10 @@ uv sync --extra train --group cu12
 uv sync --extra train --group cu13
 ```
 
-Use exactly one CUDA group per environment. The `cu126` group uses PyTorch CUDA 12.6 wheels
-for hosts with older R560-series drivers, the `cu12` group uses PyTorch CUDA 12.8 wheels and
-CUDA 12 NPP, and the `cu13` group uses PyTorch CUDA 13.0 wheels and CUDA 13 NPP.
+Use exactly one CUDA group per environment. The `cu126` group uses PyTorch 2.10 CUDA 12.6
+wheels for hosts with older R560-series drivers, the `cu12` group uses PyTorch 2.11 CUDA
+12.8 wheels and CUDA 12 NPP, and the `cu13` group uses PyTorch 2.11 CUDA 13.0 wheels and
+CUDA 13 NPP.
 
 Optional extras:
 
