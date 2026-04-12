@@ -54,9 +54,10 @@ loader in `squeezeformer_pytorch.data` understands both this payload and legacy
   signal normalization, and per-bin feature normalization.
 - `zipformer` mirrors `zipformer_paper_featurizer_config()`: the same STFT/mel
   layout, but no pre-emphasis and no signal or feature normalization.
-- `w2v-bert` mirrors the repository's `W2VBertFeatureExtractor` cache contract:
-  16 kHz audio, SeamlessM4T-style 80-bin Kaldi fbank, pre-emphasis `0.97`,
-  per-mel normalization, and stride-2 stacking to 160 features.
+- `w2v-bert` mirrors the repository's `W2VBertFeatureExtractor` cache contract
+  and the Hugging Face `SeamlessM4TFeatureExtractor` algorithm: 16 kHz audio,
+  80-bin Kaldi fbank, Povey window, pre-emphasis `0.97`, per-mel unbiased
+  variance normalization, and stride-2 stacking to 160 features.
 
 The cache key is generated with the same Python `repr({"featurizer": ...})`
 hash inputs used by `ShardedParquetFeatureCache`, so a matching Python
