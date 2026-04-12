@@ -1553,7 +1553,7 @@ def main() -> None:
     )
     stage_start_time = time.perf_counter()
     logger.info(
-        "building dataloaders train_samples=%s val_samples=%s distributed=%s world_size=%s train_hours=%.2f val_hours=%.2f num_workers=%s metadata_workers=%s force_audio_metadata_probe=%s persistent_workers=%s prefetch_factor=%s",
+        "building dataloaders train_samples=%s val_samples=%s distributed=%s world_size=%s train_hours=%.2f val_hours=%.2f num_workers=%s metadata_workers=%s force_audio_metadata_probe=%s persistent_workers=%s prefetch_factor=%s train_in_order=%s",
         len(train_records),
         len(val_records),
         distributed,
@@ -1565,6 +1565,7 @@ def main() -> None:
         args.force_audio_metadata_probe,
         args.persistent_workers,
         args.prefetch_factor,
+        args.dataloader_in_order,
     )
     train_loader = create_dataloader(
         train_dataset,
@@ -1588,6 +1589,7 @@ def main() -> None:
         world_size=world_size,
         seed=args.seed,
         pad_distributed_batches=distributed,
+        in_order=args.dataloader_in_order,
         progress_logger=logger if is_main_process else None,
         progress_label="train dataloader",
     )
@@ -1613,6 +1615,7 @@ def main() -> None:
         world_size=world_size,
         seed=args.seed,
         pad_distributed_batches=False,
+        in_order=True,
         progress_logger=logger if is_main_process else None,
         progress_label="validation dataloader",
     )

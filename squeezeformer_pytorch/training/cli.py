@@ -151,7 +151,7 @@ def _validate_startup_args(
         "--num-freq-masks": args.num_freq_masks,
         "--freq-mask-param": args.freq_mask_param,
     }
-    if args.prefetch_factor is not None and args.num_workers > 0:
+    if args.prefetch_factor is not None:
         positive_int_arguments["--prefetch-factor"] = args.prefetch_factor
     if args.num_time_masks is not None:
         positive_int_arguments["--num-time-masks"] = args.num_time_masks
@@ -634,6 +634,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--prefetch-factor", type=int, default=2)
+    parser.add_argument(
+        "--dataloader-in-order",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Yield training DataLoader batches in sampler order. Disable this to let PyTorch "
+            "return whichever worker finishes first, reducing head-of-line stalls during cold "
+            "audio decode or feature-cache warmup. Validation remains ordered."
+        ),
+    )
     parser.add_argument("--metadata-workers", type=int, default=4)
     parser.add_argument(
         "--force-audio-metadata-probe",

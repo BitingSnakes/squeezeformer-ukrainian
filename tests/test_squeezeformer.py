@@ -2589,8 +2589,45 @@ def test_create_dataloader_uses_fork_context_on_linux(monkeypatch: pytest.Monkey
     kwargs = captured["kwargs"]
     if sys.platform.startswith("linux"):
         assert kwargs["multiprocessing_context"].get_start_method() == "fork"
+        assert kwargs["in_order"] is True
     else:
         assert "multiprocessing_context" not in kwargs
+
+
+def test_create_dataloader_can_disable_in_order_worker_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyTokenizer:
+        def encode(self, text: str) -> list[int]:
+            return [len(text)]
+
+    captured: dict[str, object] = {}
+
+    class FakeDataLoader:
+        def __init__(self, dataset, *args, **kwargs) -> None:
+            captured["dataset"] = dataset
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(
+        "squeezeformer_pytorch.data.materialize_record_metadata", lambda *args, **kwargs: args[0]
+    )
+    monkeypatch.setattr("squeezeformer_pytorch.data.DataLoader", FakeDataLoader)
+
+    dataset = ASRDataset(
+        records=[AudioRecord("dummy.wav", None, "це тест", "utt0", estimated_frames=2)],
+        tokenizer=DummyTokenizer(),
+        featurizer=AudioFeaturizer(),
+    )
+    create_dataloader(
+        dataset,
+        batch_size=1,
+        shuffle=True,
+        num_workers=2,
+        prefetch_factor=1,
+        in_order=False,
+    )
+
+    assert captured["kwargs"]["in_order"] is False
 
 
 def test_create_dataloader_uses_spawn_context_when_distributed_initialized(

@@ -2118,6 +2118,7 @@ def create_dataloader(
     world_size: int = 1,
     seed: int = 0,
     pad_distributed_batches: bool = False,
+    in_order: bool = True,
     progress_logger: logging.Logger | None = None,
     progress_label: str = "dataloader",
 ) -> DataLoader[dict[str, Any]]:
@@ -2170,6 +2171,7 @@ def create_dataloader(
     }
     if num_workers > 0:
         dataloader_kwargs["prefetch_factor"] = prefetch_factor
+        dataloader_kwargs["in_order"] = in_order
         resolved_multiprocessing_context = _dataloader_multiprocessing_context(
             num_workers,
             multiprocessing_context=multiprocessing_context,
