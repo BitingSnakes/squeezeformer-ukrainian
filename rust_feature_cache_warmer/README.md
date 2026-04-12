@@ -5,18 +5,15 @@ log-mel features with RustFFT, resamples non-16 kHz audio with Rubato, and write
 the sharded parquet cache layout consumed by `ShardedParquetFeatureCache`.
 Ogg/Vorbis is enabled through Symphonia's Ogg demuxer support. Ogg/Opus inputs
 are decoded with the pure Rust `opus-decoder` packet path before Symphonia,
-which avoids Symphonia's `OpusTags` requirement for some tagless blobs. The
-`symphonia-adapter-libopus` adapter is also registered for Symphonia-managed
-Opus streams and bundles libopus by default. For other unsupported or malformed
-audio streams, the CLI falls back to FFmpeg through `ffmpeg-next`/libavcodec;
-pass `--no-ffmpeg-fallback` to disable that final FFmpeg fallback. No external
-`ffmpeg` executable is spawned.
+which avoids Symphonia's `OpusTags` requirement for some tagless blobs. For
+other unsupported or malformed audio streams, the CLI falls back to FFmpeg
+through `ffmpeg-next`/libavcodec; pass `--no-ffmpeg-fallback` to disable that
+final FFmpeg fallback. No external `ffmpeg` executable is spawned.
 
 Build against the system FFmpeg development libraries with the default feature
-set. CMake is required because the libopus adapter bundles libopus by default:
+set:
 
 ```bash
-sudo apt-get install -y cmake
 cargo build --release --manifest-path rust_feature_cache_warmer/Cargo.toml --bin asr-features
 ```
 
@@ -24,7 +21,7 @@ To build and statically link the FFmpeg 8.x release used by `ffmpeg-sys-next`
 instead of system-installed FFmpeg libraries, enable `bundled-ffmpeg`:
 
 ```bash
-sudo apt-get install -y clang cmake nasm pkg-config
+sudo apt-get install -y clang nasm pkg-config
 cargo build --release --manifest-path rust_feature_cache_warmer/Cargo.toml --bin asr-features --features bundled-ffmpeg
 ```
 

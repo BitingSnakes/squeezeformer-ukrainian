@@ -86,8 +86,8 @@ uv sync --extra train --extra quantize --group dev
 Training, evaluation, inference, and `extract_features.py` use the Rust feature
 frontend through the local PyO3 package `asr-features`. `uv sync`
 builds it from [rust_feature_cache_warmer](rust_feature_cache_warmer), so the
-environment needs a Rust toolchain and CMake for the bundled libopus adapter.
-To rebuild only the extension in an active environment:
+environment needs a Rust toolchain. To rebuild only the extension in an active
+environment:
 
 ```bash
 cd rust_feature_cache_warmer
@@ -96,8 +96,8 @@ maturin develop --features python --release
 
 Use `maturin develop --features python,bundled-ffmpeg --release` to link the
 native feature extractor against the bundled FFmpeg 8.x build instead of system
-FFmpeg development libraries. On Debian/Ubuntu, install `clang`, `cmake`,
-`nasm`, and `pkg-config` first.
+FFmpeg development libraries. On Debian/Ubuntu, install `clang`, `nasm`, and
+`pkg-config` first.
 
 CUDA setup:
 

@@ -32,10 +32,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install bundled native build dependencies
+      - name: Install bundled FFmpeg build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake nasm pkg-config
+          sudo apt-get install -y clang nasm pkg-config
 
       - name: Build release binary
         run: |
@@ -73,10 +73,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install bundled native build dependencies
+      - name: Install bundled FFmpeg build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake nasm pkg-config
+          sudo apt-get install -y clang nasm pkg-config
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
