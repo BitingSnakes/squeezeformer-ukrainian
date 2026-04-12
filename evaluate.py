@@ -20,7 +20,6 @@ from squeezeformer_pytorch.checkpoints import (
 )
 from squeezeformer_pytorch.data import (
     ASRDataset,
-    AudioFeaturizer,
     create_dataloader,
     prevalidate_records,
 )
@@ -29,7 +28,7 @@ from squeezeformer_pytorch.evaluation_runtime import (
     resolve_evaluation_checkpoint_settings,
     resolve_lowercase_transcripts,
 )
-from squeezeformer_pytorch.frontend import resolve_checkpoint_featurizer_config
+from squeezeformer_pytorch.frontend import AudioFeaturizer, resolve_checkpoint_featurizer_config
 from squeezeformer_pytorch.model import SqueezeformerConfig
 from squeezeformer_pytorch.runtime_types import DecodeStrategy, DTypeChoice, ValidationModelSource
 from squeezeformer_pytorch.training.cli import (
@@ -47,6 +46,7 @@ from squeezeformer_pytorch.training.runtime import (
     resolve_device,
 )
 from train import _build_trackio_run_name
+from w2v_bert.asr import W2VBertConfig, W2VBertCTC, W2VBertFeatureExtractor
 from zipformer_pytorch.asr import ZipformerConfig, ZipformerCTC, ZipformerTransducer
 
 
@@ -59,6 +59,33 @@ def checkpoint_uses_zipformer(checkpoint_data: dict[str, object]) -> bool:
         isinstance(encoder_config, dict)
         and str(encoder_config.get("architecture", "")) == "zipformer"
     )
+
+
+def checkpoint_uses_w2v_bert(checkpoint_data: dict[str, object]) -> bool:
+    training_args = checkpoint_data.get("training_args")
+    if isinstance(training_args, dict) and bool(training_args.get("w2v_bert")):
+        return True
+    encoder_config = checkpoint_data.get("encoder_config")
+    return (
+        isinstance(encoder_config, dict)
+        and str(encoder_config.get("architecture", "")) == "w2v_bert"
+    )
+
+
+def build_checkpoint_featurizer(
+    featurizer_config: dict[str, object] | None,
+    *,
+    use_zipformer: bool,
+    use_w2v_bert: bool,
+):
+    config = resolve_checkpoint_featurizer_config(
+        featurizer_config,
+        use_zipformer=use_zipformer,
+        use_w2v_bert=use_w2v_bert,
+    )
+    if str(config.get("type", "")) == "w2v_bert":
+        return W2VBertFeatureExtractor.from_config(config)
+    return AudioFeaturizer(**config)
 
 
 def checkpoint_uses_zipformer_transducer(checkpoint_data: dict[str, object]) -> bool:
@@ -210,11 +237,20 @@ def main() -> None:
     checkpoint_tokenizer_type = str(checkpoint["tokenizer"].get("type", ""))
     checkpoint_settings = resolve_evaluation_checkpoint_settings(checkpoint)
     use_zipformer = checkpoint_uses_zipformer(checkpoint)
+    use_w2v_bert = checkpoint_uses_w2v_bert(checkpoint)
     use_transformer_engine = should_use_transformer_engine_for_checkpoint(
         checkpoint,
         requested_dtype=args.dtype,
     )
-    if use_zipformer:
+    if use_w2v_bert:
+        encoder_config = W2VBertConfig.from_mapping(checkpoint["encoder_config"])
+        model = W2VBertCTC(
+            encoder_config=encoder_config,
+            vocab_size=tokenizer.vocab_size,
+            load_pretrained=False,
+            use_transformer_engine=use_transformer_engine,
+        )
+    elif use_zipformer:
         encoder_config = ZipformerConfig(**checkpoint["encoder_config"])
         training_args = checkpoint.get("training_args", {})
         if checkpoint_uses_zipformer_transducer(checkpoint):
@@ -313,11 +349,10 @@ def main() -> None:
             raise RuntimeError(
                 "Audio prevalidation removed every sample from the evaluation split."
             )
-    featurizer = AudioFeaturizer(
-        **resolve_checkpoint_featurizer_config(
-            checkpoint.get("featurizer_config"),
-            use_zipformer=use_zipformer,
-        )
+    featurizer = build_checkpoint_featurizer(
+        checkpoint.get("featurizer_config"),
+        use_zipformer=use_zipformer,
+        use_w2v_bert=use_w2v_bert,
     )
     feature_cache_dir = (
         Path(args.feature_cache_dir) / args.split if args.feature_cache_dir else None

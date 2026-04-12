@@ -1030,6 +1030,9 @@ def _fp8_hidden_dimensions(encoder_config: object) -> tuple[int, ...]:
     model_dim = getattr(encoder_config, "model_dim", None)
     if isinstance(model_dim, int):
         return (model_dim,)
+    hidden_size = getattr(encoder_config, "hidden_size", None)
+    if isinstance(hidden_size, int):
+        return (hidden_size,)
     return ()
 
 

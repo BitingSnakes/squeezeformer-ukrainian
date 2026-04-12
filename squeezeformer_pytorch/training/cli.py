@@ -101,6 +101,17 @@ def _validate_startup_args(
             raise ValueError("--zipformer does not support LiBERTa distillation.")
         if args.audio_teacher:
             raise ValueError("--zipformer does not support audio-teacher distillation.")
+    if args.w2v_bert:
+        if args.zipformer:
+            raise ValueError("--w2v-bert cannot be combined with --zipformer.")
+        if args.zipformer_transducer:
+            raise ValueError("--w2v-bert does not support the Zipformer transducer objective.")
+        if args.aed_decoder:
+            raise ValueError("--w2v-bert does not support the AED decoder.")
+        if args.liberta_distill:
+            raise ValueError("--w2v-bert does not support LiBERTa distillation.")
+        if args.audio_teacher:
+            raise ValueError("--w2v-bert does not support audio-teacher distillation.")
     if args.zipformer_transducer and not args.zipformer:
         raise ValueError("--zipformer-transducer requires --zipformer.")
 
@@ -275,6 +286,12 @@ def _validate_startup_args(
             "--tokenizer-path",
             args.tokenizer_path,
             expected="file",
+        )
+    if args.w2v_bert and _is_explicit_local_path(args.w2v_bert_model_name):
+        _validate_existing_local_path_argument(
+            "--w2v-bert-model-name",
+            args.w2v_bert_model_name,
+            expected="dir",
         )
     if args.liberta_model_path is not None:
         _validate_existing_local_path_argument(
@@ -463,6 +480,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Use the Zipformer transducer objective and beam-search decoder instead of the "
             "Zipformer CTC head."
         ),
+    )
+    parser.add_argument(
+        "--w2v-bert",
+        action="store_true",
+        help="Fine-tune facebook/w2v-bert-2.0 with the current CTC training pipeline.",
+    )
+    parser.add_argument(
+        "--w2v-bert-model-name",
+        default="facebook/w2v-bert-2.0",
+        help="Hugging Face model ID or local directory to use for --w2v-bert.",
     )
     parser.add_argument("--variant", default="sm", choices=["xs", "s", "sm", "m", "ml", "l"])
     parser.add_argument("--zipformer-transducer-context-size", type=int, default=2)

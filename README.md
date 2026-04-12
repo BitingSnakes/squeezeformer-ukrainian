@@ -557,6 +557,19 @@ HF_TOKEN=... uv run squeezeformer-torchrun --nproc_per_node=2 train.py \
 FP8 Zipformer training requires CUDA and the `fp8` optional dependency; add `--dtype fp8`
 to the same command.
 
+W2V-BERT fine-tuning:
+
+```bash
+HF_TOKEN=... uv run python train.py \
+  --w2v-bert \
+  --tokenizer sentencepiece \
+  --output-dir artifacts/w2v-bert-cv22
+```
+
+This path fine-tunes `facebook/w2v-bert-2.0` with the same CTC data, logging,
+checkpointing, evaluation, and export pipeline. FP8 W2V-BERT training requires CUDA and
+the `fp8` optional dependency; add `--dtype fp8`.
+
 Local resumable smoke test:
 
 ```bash

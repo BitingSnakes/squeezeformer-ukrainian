@@ -19,10 +19,7 @@ from squeezeformer_pytorch.checkpoints import (
     load_checkpoint,
     should_use_transformer_engine_for_checkpoint,
 )
-from squeezeformer_pytorch.frontend import (
-    AudioFeaturizer,
-    resolve_checkpoint_featurizer_config,
-)
+from squeezeformer_pytorch.frontend import AudioFeaturizer, resolve_checkpoint_featurizer_config
 from squeezeformer_pytorch.inference_runtime import (
     merge_chunk_transcript as _merge_chunk_transcript,
 )
@@ -35,6 +32,7 @@ from squeezeformer_pytorch.model import (
     transformer_engine_available,
 )
 from squeezeformer_pytorch.runtime_types import DecodeStrategy, DTypeChoice
+from w2v_bert.asr import W2VBertConfig, W2VBertCTC, W2VBertFeatureExtractor
 from zipformer_pytorch.asr import ZipformerConfig, ZipformerCTC, ZipformerTransducer
 
 try:
@@ -59,6 +57,33 @@ def checkpoint_uses_zipformer(checkpoint_data: dict[str, object]) -> bool:
         isinstance(encoder_config, dict)
         and str(encoder_config.get("architecture", "")) == "zipformer"
     )
+
+
+def checkpoint_uses_w2v_bert(checkpoint_data: dict[str, object]) -> bool:
+    training_args = checkpoint_data.get("training_args")
+    if isinstance(training_args, dict) and bool(training_args.get("w2v_bert")):
+        return True
+    encoder_config = checkpoint_data.get("encoder_config")
+    return (
+        isinstance(encoder_config, dict)
+        and str(encoder_config.get("architecture", "")) == "w2v_bert"
+    )
+
+
+def build_checkpoint_featurizer(
+    featurizer_config: dict[str, object] | None,
+    *,
+    use_zipformer: bool,
+    use_w2v_bert: bool,
+):
+    config = resolve_checkpoint_featurizer_config(
+        featurizer_config,
+        use_zipformer=use_zipformer,
+        use_w2v_bert=use_w2v_bert,
+    )
+    if str(config.get("type", "")) == "w2v_bert":
+        return W2VBertFeatureExtractor.from_config(config)
+    return AudioFeaturizer(**config)
 
 
 def _download_hf_checkpoint(repo_id: str, filename: str) -> str:
@@ -122,11 +147,24 @@ class ASRInferenceSession:
         checkpoint_settings = resolve_inference_checkpoint_settings(checkpoint_data)
         is_torchao_quantized = is_torchao_quantized_checkpoint(checkpoint_data)
         use_zipformer = checkpoint_uses_zipformer(checkpoint_data)
+        use_w2v_bert = checkpoint_uses_w2v_bert(checkpoint_data)
         use_transformer_engine = should_use_transformer_engine_for_checkpoint(
             checkpoint_data,
             requested_dtype=dtype,
         )
-        if use_zipformer:
+        if use_w2v_bert:
+            encoder_config = W2VBertConfig.from_mapping(checkpoint_data["encoder_config"])
+            if dtype == DTypeChoice.FP8:
+                if is_torchao_quantized:
+                    raise ValueError("TorchAO quantized checkpoints do not support FP8 inference.")
+                validate_fp8_inference_runtime(device, encoder_config)
+            self.model = W2VBertCTC(
+                encoder_config=encoder_config,
+                vocab_size=self.tokenizer.vocab_size,
+                load_pretrained=False,
+                use_transformer_engine=use_transformer_engine,
+            )
+        elif use_zipformer:
             encoder_config = ZipformerConfig(**checkpoint_data["encoder_config"])
             if dtype == DTypeChoice.FP8:
                 if is_torchao_quantized:
@@ -177,11 +215,10 @@ class ASRInferenceSession:
         self.model.to(device)
         self.model.eval()
 
-        self.featurizer = AudioFeaturizer(
-            **resolve_checkpoint_featurizer_config(
-                checkpoint_data.get("featurizer_config"),
-                use_zipformer=use_zipformer,
-            )
+        self.featurizer = build_checkpoint_featurizer(
+            checkpoint_data.get("featurizer_config"),
+            use_zipformer=use_zipformer,
+            use_w2v_bert=use_w2v_bert,
         )
 
     def transcribe_file(self, audio_path: str | Path) -> str:
@@ -438,6 +475,9 @@ def _fp8_hidden_dimensions(encoder_config: object) -> tuple[int, ...]:
     model_dim = getattr(encoder_config, "model_dim", None)
     if isinstance(model_dim, int):
         return (model_dim,)
+    hidden_size = getattr(encoder_config, "hidden_size", None)
+    if isinstance(hidden_size, int):
+        return (hidden_size,)
     return ()
 
 

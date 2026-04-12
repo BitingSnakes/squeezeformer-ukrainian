@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 import math
+from collections.abc import Mapping
 
 import numpy as np
 import torch
@@ -75,12 +75,33 @@ def resolve_checkpoint_featurizer_config(
     featurizer_config: Mapping[str, object] | None,
     *,
     use_zipformer: bool,
+    use_w2v_bert: bool = False,
 ) -> dict[str, object]:
     if featurizer_config:
         return dict(featurizer_config)
+    if use_w2v_bert:
+        return {"type": "w2v_bert", "model_source": "facebook/w2v-bert-2.0"}
     if use_zipformer:
         return zipformer_paper_featurizer_config()
     return {}
+
+
+def build_featurizer_from_config(
+    featurizer_config: Mapping[str, object] | None,
+    *,
+    use_zipformer: bool = False,
+    use_w2v_bert: bool = False,
+):
+    config = resolve_checkpoint_featurizer_config(
+        featurizer_config,
+        use_zipformer=use_zipformer,
+        use_w2v_bert=use_w2v_bert,
+    )
+    if str(config.get("type", "")) == "w2v_bert":
+        from w2v_bert.asr import W2VBertFeatureExtractor
+
+        return W2VBertFeatureExtractor.from_config(config)
+    return AudioFeaturizer(**config)
 
 
 class AudioFeaturizer(torch.nn.Module):

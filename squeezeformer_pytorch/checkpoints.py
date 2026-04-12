@@ -49,9 +49,14 @@ def load_checkpoint(
         from .model import SqueezeformerConfig
 
         encoder_config = checkpoint["encoder_config"]
+        architecture = (
+            str(encoder_config.get("architecture", ""))
+            if isinstance(encoder_config, Mapping)
+            else ""
+        )
         if not (
             isinstance(encoder_config, Mapping)
-            and str(encoder_config.get("architecture", "")) == "zipformer"
+            and architecture in {"zipformer", "w2v_bert"}
         ):
             checkpoint["encoder_config"] = asdict(SqueezeformerConfig.from_mapping(encoder_config))
     checkpoint["model_state_dict"] = load_file(str(checkpoint_path), device=str(map_location))

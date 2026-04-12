@@ -139,6 +139,36 @@ def test_parse_args_accepts_zipformer_fp8() -> None:
     assert args.dtype == DTypeChoice.FP8
 
 
+def test_parse_args_accepts_w2v_bert_fp8() -> None:
+    args = parse_args(
+        [
+            "--device",
+            "cpu",
+            "--w2v-bert",
+            "--dtype",
+            "fp8",
+        ]
+    )
+
+    assert args.w2v_bert is True
+    assert args.w2v_bert_model_name == "facebook/w2v-bert-2.0"
+    assert args.dtype == DTypeChoice.FP8
+
+
+def test_parse_args_rejects_w2v_bert_with_zipformer() -> None:
+    with pytest.raises(ValueError) as error:
+        parse_args(
+            [
+                "--device",
+                "cpu",
+                "--w2v-bert",
+                "--zipformer",
+            ]
+        )
+
+    assert str(error.value) == "--w2v-bert cannot be combined with --zipformer."
+
+
 def test_parse_args_accepts_force_audio_metadata_probe_flag() -> None:
     args = parse_args(
         [

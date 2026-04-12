@@ -1223,6 +1223,7 @@ class ASRDataset(Dataset[dict[str, Any]]):
         batch_item = {
             "features": features,
             "feature_length": features.size(0),
+            "feature_padding_value": float(getattr(self.featurizer, "padding_value", 0.0)),
             "targets": target_ids,
             "target_length": target_ids.numel(),
             "transcript": record.transcript,
@@ -1701,7 +1702,11 @@ def collate_asr_batch(batch: list[dict[str, Any] | None]) -> dict[str, Any] | No
     for item in batch:
         feature = item["features"]
         if feature.size(0) < max_feature_length:
-            feature = F.pad(feature, (0, 0, 0, max_feature_length - feature.size(0)))
+            feature = F.pad(
+                feature,
+                (0, 0, 0, max_feature_length - feature.size(0)),
+                value=float(item.get("feature_padding_value", 0.0)),
+            )
         padded_features.append(feature)
         targets.append(item["targets"])
         transcripts.append(item["transcript"])

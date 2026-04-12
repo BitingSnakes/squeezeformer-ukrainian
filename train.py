@@ -32,12 +32,14 @@ from squeezeformer_pytorch.asr import (
 )
 from squeezeformer_pytorch.data import (
     ASRDataset,
-    AudioFeaturizer,
     SpecAugment,
     WaveformAugment,
     create_dataloader,
 )
-from squeezeformer_pytorch.frontend import zipformer_paper_featurizer_config
+from squeezeformer_pytorch.frontend import (
+    build_featurizer_from_config,
+    zipformer_paper_featurizer_config,
+)
 from squeezeformer_pytorch.lm import NGramLanguageModel
 from squeezeformer_pytorch.model import (
     SqueezeformerConfig,
@@ -120,6 +122,11 @@ from squeezeformer_pytorch.training.runtime import (
 )
 from squeezeformer_pytorch.training.runtime import (
     _validate_device_ready as _runtime_validate_device_ready,
+)
+from w2v_bert.asr import (
+    W2VBertConfig,
+    W2VBertCTC,
+    w2v_bert_featurizer_config,
 )
 from zipformer_pytorch.asr import (
     ZipformerConfig,
@@ -481,6 +488,19 @@ def _checkpoint_uses_zipformer(checkpoint: dict[str, object] | None) -> bool:
     )
 
 
+def _checkpoint_uses_w2v_bert(checkpoint: dict[str, object] | None) -> bool:
+    if checkpoint is None:
+        return False
+    training_args = checkpoint.get("training_args")
+    if isinstance(training_args, dict) and bool(training_args.get("w2v_bert")):
+        return True
+    encoder_config = checkpoint.get("encoder_config")
+    return (
+        isinstance(encoder_config, dict)
+        and str(encoder_config.get("architecture", "")) == "w2v_bert"
+    )
+
+
 def _checkpoint_uses_zipformer_transducer(checkpoint: dict[str, object] | None) -> bool:
     if checkpoint is None:
         return False
@@ -510,6 +530,24 @@ def _resolve_zipformer_usage(
         )
     args.zipformer = checkpoint_uses_zipformer or bool(args.zipformer)
     return bool(args.zipformer)
+
+
+def _resolve_w2v_bert_usage(
+    *,
+    args,
+    checkpoint: dict[str, object] | None,
+    checkpoint_path: Path | None,
+) -> bool:
+    checkpoint_uses_w2v_bert = _checkpoint_uses_w2v_bert(checkpoint)
+    if checkpoint is None:
+        return bool(args.w2v_bert)
+    if args.w2v_bert and not checkpoint_uses_w2v_bert:
+        raise RuntimeError(
+            f"Resume checkpoint '{checkpoint_path}' was not created for W2V-BERT, so it cannot "
+            "be resumed with --w2v-bert."
+        )
+    args.w2v_bert = checkpoint_uses_w2v_bert or bool(args.w2v_bert)
+    return bool(args.w2v_bert)
 
 
 def _resolve_zipformer_transducer_usage(
@@ -544,16 +582,32 @@ def _validate_zipformer_runtime_args(args) -> None:
         raise ValueError("--zipformer does not support audio-teacher distillation.")
 
 
+def _validate_w2v_bert_runtime_args(args) -> None:
+    if args.zipformer:
+        raise ValueError("--w2v-bert cannot be combined with --zipformer.")
+    if args.zipformer_transducer:
+        raise ValueError("--w2v-bert does not support the Zipformer transducer objective.")
+    if args.aed_decoder:
+        raise ValueError("--w2v-bert does not support the AED decoder.")
+    if args.liberta_distill:
+        raise ValueError("--w2v-bert does not support LiBERTa distillation.")
+    if args.audio_teacher:
+        raise ValueError("--w2v-bert does not support audio-teacher distillation.")
+
+
 def _resolve_training_featurizer_config(
     args,
     *,
     checkpoint: dict[str, object] | None,
     use_zipformer: bool,
+    use_w2v_bert: bool,
 ) -> dict[str, object]:
     if checkpoint is not None:
         checkpoint_config = checkpoint.get("featurizer_config")
         if isinstance(checkpoint_config, dict) and checkpoint_config:
             return dict(checkpoint_config)
+    if use_w2v_bert:
+        return w2v_bert_featurizer_config(args.w2v_bert_model_name)
     if use_zipformer:
         return zipformer_paper_featurizer_config()
     return {
@@ -1127,9 +1181,10 @@ def main() -> None:
         _initialize_hf_checkpoint_repository(args, output_dir=output_dir, logger=logger)
     resume_path = _resolve_resume_checkpoint_path(args, output_dir=output_dir, logger=logger)
     logger.info(
-        "starting training variant=%s zipformer_requested=%s device=%s distributed=%s world_size=%s output_dir=%s",
+        "starting training variant=%s zipformer_requested=%s w2v_bert_requested=%s device=%s distributed=%s world_size=%s output_dir=%s",
         args.variant,
         args.zipformer,
+        args.w2v_bert,
         requested_device,
         distributed,
         world_size,
@@ -1229,6 +1284,13 @@ def main() -> None:
         checkpoint=checkpoint,
         checkpoint_path=resume_path,
     )
+    use_w2v_bert = _resolve_w2v_bert_usage(
+        args=args,
+        checkpoint=checkpoint,
+        checkpoint_path=resume_path,
+    )
+    if use_zipformer and use_w2v_bert:
+        raise RuntimeError("--zipformer and --w2v-bert are mutually exclusive.")
     use_zipformer_transducer = _resolve_zipformer_transducer_usage(
         args=args,
         checkpoint=checkpoint,
@@ -1236,9 +1298,11 @@ def main() -> None:
     )
     if use_zipformer:
         _validate_zipformer_runtime_args(args)
+    if use_w2v_bert:
+        _validate_w2v_bert_runtime_args(args)
     if use_zipformer_transducer and not use_zipformer:
         raise RuntimeError("--zipformer-transducer requires --zipformer.")
-    if use_zipformer:
+    if use_zipformer or use_w2v_bert:
         (
             aed_decoder_enabled,
             aed_decoder_layers,
@@ -1372,12 +1436,15 @@ def main() -> None:
             shallow_fusion_lm_path,
             _format_elapsed_seconds(time.perf_counter() - stage_start_time),
         )
-    featurizer = AudioFeaturizer(
-        **_resolve_training_featurizer_config(
+    featurizer = build_featurizer_from_config(
+        _resolve_training_featurizer_config(
             args,
             checkpoint=checkpoint,
             use_zipformer=use_zipformer,
-        )
+            use_w2v_bert=use_w2v_bert,
+        ),
+        use_zipformer=use_zipformer,
+        use_w2v_bert=use_w2v_bert,
     )
     specaugment = None
     waveform_augment = None
@@ -1502,6 +1569,16 @@ def main() -> None:
             if checkpoint is not None
             else replace(zipformer_variant(args.variant), input_dim=featurizer.n_mels)
         )
+    elif use_w2v_bert:
+        encoder_config = (
+            W2VBertConfig.from_mapping(checkpoint["encoder_config"])
+            if checkpoint is not None
+            else W2VBertConfig.from_model_source(
+                args.w2v_bert_model_name,
+                sample_rate=featurizer.sample_rate,
+                feature_dim=featurizer.n_mels,
+            )
+        )
     else:
         encoder_config = (
             SqueezeformerConfig.from_mapping(checkpoint["encoder_config"])
@@ -1562,13 +1639,17 @@ def main() -> None:
         else None
     )
     stage_start_time = time.perf_counter()
+    if use_zipformer_transducer:
+        architecture_name = "zipformer-transducer"
+    elif use_zipformer:
+        architecture_name = "zipformer"
+    elif use_w2v_bert:
+        architecture_name = "w2v-bert"
+    else:
+        architecture_name = "squeezeformer"
     logger.info(
         "building model architecture=%s variant=%s dtype=%s compile=%s aed=%s liberta=%s audio_teacher=%s",
-        (
-            "zipformer-transducer"
-            if use_zipformer_transducer
-            else ("zipformer" if use_zipformer else "squeezeformer")
-        ),
+        architecture_name,
         args.variant,
         args.dtype,
         args.compile,
@@ -1602,6 +1683,14 @@ def main() -> None:
                 audio_teacher.hidden_size if audio_teacher is not None else encoder_config.model_dim
             ),
             audio_teacher_target=audio_teacher_target,
+            use_transformer_engine=args.dtype == DTypeChoice.FP8,
+        )
+    elif use_w2v_bert:
+        model = W2VBertCTC(
+            encoder_config=encoder_config,
+            vocab_size=tokenizer.vocab_size,
+            pretrained_model_name_or_path=args.w2v_bert_model_name,
+            load_pretrained=checkpoint is None,
             use_transformer_engine=args.dtype == DTypeChoice.FP8,
         )
     else:
@@ -2621,7 +2710,11 @@ def main() -> None:
             json.dumps(
                 {
                     "best_val_wer": best_val_wer,
-                    "architecture": "zipformer" if use_zipformer else "squeezeformer",
+                    "architecture": (
+                        "zipformer"
+                        if use_zipformer
+                        else ("w2v_bert" if use_w2v_bert else "squeezeformer")
+                    ),
                     "variant": args.variant,
                     "keep_top_k": args.keep_top_k,
                     "decode_strategy": args.decode_strategy,
