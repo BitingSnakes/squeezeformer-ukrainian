@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use arrow::array::{Array, StructArray};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
-use clap::{Parser, ValueEnum};
+use clap::{ArgAction, Parser, ValueEnum};
 use log::{debug, error, info, trace, warn};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rayon::prelude::*;
@@ -40,9 +40,9 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) input: Option<PathBuf>,
 
-    /// Directory containing parquet manifests to process recursively.
-    #[arg(long)]
-    pub(crate) input_folder: Option<PathBuf>,
+    /// Directory containing parquet manifests to process recursively. Repeat to combine folders.
+    #[arg(long = "input-folder", action = ArgAction::Append)]
+    pub(crate) input_folders: Vec<PathBuf>,
 
     /// Python-compatible disk-backed record cache JSONL file, such as train.jsonl.
     #[arg(long)]
@@ -53,7 +53,7 @@ pub(crate) struct Cli {
     pub(crate) cache_dir: PathBuf,
 
     /// Resolve relative audio paths against this directory. Defaults to the input parquet parent
-    /// for --input, or the folder root for --input-folder.
+    /// for --input, or each folder root for --input-folder.
     #[arg(long)]
     pub(crate) source_base: Option<PathBuf>,
 
@@ -126,6 +126,12 @@ struct Counters {
     skipped: usize,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct InputManifest {
+    pub(crate) path: PathBuf,
+    pub(crate) source_base: PathBuf,
+}
+
 pub(crate) fn run_feature_cache_cli(cli: Cli) -> Result<()> {
     if cli.num_shards == 0 {
         bail!("--num-shards must be greater than zero");
@@ -180,16 +186,17 @@ pub(crate) fn run_feature_cache_cli(cli: Cli) -> Result<()> {
         return Ok(());
     }
 
-    let input_paths = resolve_input_paths(&cli)?;
-    let source_base = cli
+    let input_manifests = resolve_input_manifests(&cli)?;
+    let explicit_source_base = cli
         .source_base
         .clone()
-        .unwrap_or_else(|| default_source_base(&cli, &input_paths));
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| "per-input".to_string());
     info!(
         "starting cache warm inputs={} cache_dir={} source_base={} frontend={:?} frontend_hash={} batch_size={} rows_per_part={} num_shards={} fail_fast={} ffmpeg_fallback={}",
-        input_paths.len(),
+        input_manifests.len(),
         cli.cache_dir.display(),
-        source_base.display(),
+        explicit_source_base,
         cli.frontend,
         frontend_hash,
         cli.batch_size,
@@ -198,10 +205,19 @@ pub(crate) fn run_feature_cache_cli(cli: Cli) -> Result<()> {
         cli.fail_fast,
         !cli.no_ffmpeg_fallback
     );
-    debug!("resolved input parquet files: {:?}", input_paths);
+    debug!("resolved input parquet files: {:?}", input_manifests);
 
-    'inputs: for input_path in input_paths {
-        info!("warming input {}", input_path.display());
+    'inputs: for input_manifest in input_manifests {
+        let input_path = input_manifest.path;
+        let source_base = cli
+            .source_base
+            .clone()
+            .unwrap_or(input_manifest.source_base);
+        info!(
+            "warming input {} source_base={}",
+            input_path.display(),
+            source_base.display()
+        );
         let input = File::open(&input_path)
             .with_context(|| format!("failed to open input parquet {}", input_path.display()))?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(input)?;
@@ -483,9 +499,9 @@ fn resolve_record_cache_blob_path(record_cache_path: &Path, blob_path: &str) -> 
     }
 }
 
-pub(crate) fn resolve_input_paths(cli: &Cli) -> Result<Vec<PathBuf>> {
+pub(crate) fn resolve_input_manifests(cli: &Cli) -> Result<Vec<InputManifest>> {
     let input_modes = usize::from(cli.input.is_some())
-        + usize::from(cli.input_folder.is_some())
+        + usize::from(!cli.input_folders.is_empty())
         + usize::from(cli.input_record_cache.is_some());
     if input_modes != 1 {
         bail!("exactly one of --input, --input-folder, or --input-record-cache is required");
@@ -494,27 +510,42 @@ pub(crate) fn resolve_input_paths(cli: &Cli) -> Result<Vec<PathBuf>> {
         if !input.is_file() {
             bail!("--input must point to a parquet file: {}", input.display());
         }
-        return Ok(vec![input.clone()]);
+        let source_base = input
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        return Ok(vec![InputManifest {
+            path: input.clone(),
+            source_base,
+        }]);
     }
-    let Some(input_folder) = &cli.input_folder else {
+    if cli.input_folders.is_empty() {
         bail!("--input-record-cache is handled before parquet input resolution");
-    };
-    if !input_folder.is_dir() {
-        bail!(
-            "--input-folder must point to a directory: {}",
-            input_folder.display()
-        );
     }
-    let mut paths = Vec::new();
-    collect_parquet_paths(input_folder, &mut paths)?;
-    paths.sort();
-    if paths.is_empty() {
-        bail!(
-            "--input-folder contains no parquet files: {}",
-            input_folder.display()
-        );
+    let mut inputs = Vec::new();
+    for input_folder in &cli.input_folders {
+        if !input_folder.is_dir() {
+            bail!(
+                "--input-folder must point to a directory: {}",
+                input_folder.display()
+            );
+        }
+        let mut paths = Vec::new();
+        collect_parquet_paths(input_folder, &mut paths)?;
+        paths.sort();
+        if paths.is_empty() {
+            bail!(
+                "--input-folder contains no parquet files: {}",
+                input_folder.display()
+            );
+        }
+        inputs.extend(paths.into_iter().map(|path| InputManifest {
+            path,
+            source_base: input_folder.clone(),
+        }));
     }
-    Ok(paths)
+    inputs.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(inputs)
 }
 
 fn collect_parquet_paths(directory: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
@@ -533,17 +564,6 @@ fn collect_parquet_paths(directory: &Path, paths: &mut Vec<PathBuf>) -> Result<(
         }
     }
     Ok(())
-}
-
-pub(crate) fn default_source_base(cli: &Cli, input_paths: &[PathBuf]) -> PathBuf {
-    if let Some(input_folder) = &cli.input_folder {
-        return input_folder.clone();
-    }
-    input_paths
-        .first()
-        .and_then(|path| path.parent())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 impl FrontendConfig {

@@ -7,7 +7,7 @@ use crate::cache::{encode_feature_payload, RUST_PAYLOAD_MAGIC};
 use crate::dsp::{
     compute_audio_featurizer_features, compute_w2v_bert_features, resample_to_sample_rate,
 };
-use crate::feature_cache::{default_source_base, resolve_input_paths, Cli};
+use crate::feature_cache::{resolve_input_manifests, Cli};
 use crate::frontend::{AudioFrontendConfig, FeatureMatrix, FrontendConfig, W2vBertFrontendConfig};
 
 #[test]
@@ -94,13 +94,58 @@ fn input_folder_discovers_parquet_files_recursively() {
         "cache".to_string(),
     ]);
 
-    let paths = resolve_input_paths(&cli).unwrap();
+    let inputs = resolve_input_manifests(&cli).unwrap();
+    let paths: Vec<_> = inputs.iter().map(|input| input.path.as_path()).collect();
 
     assert_eq!(paths.len(), 2);
     assert!(paths[0].ends_with("a.parquet"));
     assert!(paths[1].ends_with("b.parquet"));
-    assert_eq!(default_source_base(&cli, &paths), root);
-    fs::remove_dir_all(default_source_base(&cli, &paths)).unwrap();
+    assert!(inputs.iter().all(|input| input.source_base == root));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn repeated_input_folders_keep_per_folder_source_base() {
+    let root = std::env::temp_dir().join(format!(
+        "sfcw_multi_input_folder_test_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let first = root.join("first");
+    let second = root.join("second");
+    let nested = second.join("nested");
+    fs::create_dir_all(&first).unwrap();
+    fs::create_dir_all(&nested).unwrap();
+    File::create(first.join("a.parquet")).unwrap();
+    File::create(nested.join("b.parquet")).unwrap();
+    let cli = Cli::parse_from(vec![
+        "test".to_string(),
+        "--input-folder".to_string(),
+        first.to_string_lossy().into_owned(),
+        "--input-folder".to_string(),
+        second.to_string_lossy().into_owned(),
+        "--cache-dir".to_string(),
+        "cache".to_string(),
+    ]);
+
+    let inputs = resolve_input_manifests(&cli).unwrap();
+    let paths: Vec<_> = inputs.iter().map(|input| input.path.as_path()).collect();
+
+    assert_eq!(paths.len(), 2);
+    assert_eq!(inputs.len(), 2);
+    let first_input = inputs
+        .iter()
+        .find(|input| input.path.ends_with("a.parquet"))
+        .unwrap();
+    let second_input = inputs
+        .iter()
+        .find(|input| input.path.ends_with("b.parquet"))
+        .unwrap();
+    assert_eq!(first_input.source_base, first);
+    assert_eq!(second_input.source_base, second);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

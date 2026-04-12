@@ -20,7 +20,9 @@ cargo run --release --manifest-path rust_feature_cache_warmer/Cargo.toml -- \
 Use `--frontend zipformer` for the paper frontend defaults, or `--frontend w2v-bert`
 for the W2V-BERT/SeamlessM4T-style 160-dimensional stacked fbank frontend.
 Use `--input-folder /path/to/manifests` instead of `--input` to process every
-`.parquet` file under a directory recursively.
+`.parquet` file under a directory recursively. Repeat `--input-folder` to combine
+several manifest roots; relative audio paths are resolved against the folder that
+contributed each parquet file unless `--source-base` is set explicitly.
 
 To warm exactly the records selected by the training loader, build the
 Python-compatible disk-backed record cache first, then feed a split JSONL file
