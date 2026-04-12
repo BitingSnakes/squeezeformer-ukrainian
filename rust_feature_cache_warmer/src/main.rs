@@ -16,6 +16,8 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use audioadapter_buffers::direct::InterleavedSlice;
 use clap::{Parser, ValueEnum};
+use env_logger::Env;
+use log::{debug, error, info, trace, warn};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::arrow::ArrowWriter;
 use rayon::prelude::*;
@@ -166,6 +168,18 @@ enum AudioSource {
     Bytes(Vec<u8>, Option<String>),
 }
 
+impl AudioSource {
+    fn log_label(&self) -> String {
+        match self {
+            Self::Path(path) => format!("path={}", path.display()),
+            Self::Bytes(bytes, Some(path_hint)) => {
+                format!("bytes={} path_hint={path_hint}", bytes.len())
+            }
+            Self::Bytes(bytes, None) => format!("bytes={}", bytes.len()),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct CacheRow {
     key: String,
@@ -180,6 +194,11 @@ struct Counters {
 }
 
 fn main() -> Result<()> {
+    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
+        .format_timestamp_secs()
+        .try_init()
+        .ok();
+
     let cli = Cli::parse();
     if cli.num_shards == 0 {
         bail!("--num-shards must be greater than zero");
@@ -195,14 +214,20 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| default_source_base(&cli, &input_paths));
     let frontend = FrontendConfig::from_cli(&cli);
     let frontend_hash = frontend.frontend_hash();
-    eprintln!(
-        "warming cache inputs={} cache_dir={} source_base={} frontend={:?} frontend_hash={}",
+    info!(
+        "starting cache warm inputs={} cache_dir={} source_base={} frontend={:?} frontend_hash={} batch_size={} rows_per_part={} num_shards={} fail_fast={} ffmpeg_fallback={}",
         input_paths.len(),
         cli.cache_dir.display(),
         source_base.display(),
         cli.frontend,
-        frontend_hash
+        frontend_hash,
+        cli.batch_size,
+        cli.rows_per_part,
+        cli.num_shards,
+        cli.fail_fast,
+        !cli.no_ffmpeg_fallback
     );
+    debug!("resolved input parquet files: {:?}", input_paths);
 
     let mut writer = ShardedCacheWriter::new(&cli.cache_dir, cli.num_shards, cli.rows_per_part)?;
     let mut counters = Counters::default();
@@ -213,23 +238,39 @@ fn main() -> Result<()> {
     let pool = pool_builder
         .build()
         .context("failed to build Rayon feature extraction thread pool")?;
+    info!(
+        "feature extraction thread pool ready threads={}",
+        pool.current_num_threads()
+    );
 
     'inputs: for input_path in input_paths {
-        eprintln!("warming input {}", input_path.display());
+        info!("warming input {}", input_path.display());
         let input = File::open(&input_path)
             .with_context(|| format!("failed to open input parquet {}", input_path.display()))?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(input)?;
         let reader = builder.with_batch_size(cli.batch_size).build()?;
 
-        for batch_result in reader {
+        for (batch_index, batch_result) in reader.enumerate() {
             let batch = batch_result?;
             let rows_to_process = match cli.limit {
                 Some(limit) => limit.saturating_sub(counters.scanned).min(batch.num_rows()),
                 None => batch.num_rows(),
             };
             if rows_to_process == 0 {
+                info!(
+                    "row limit reached limit={} scanned={}",
+                    cli.limit.unwrap_or_default(),
+                    counters.scanned
+                );
                 break 'inputs;
             }
+            debug!(
+                "processing batch input={} batch={} rows={} rows_to_process={}",
+                input_path.display(),
+                batch_index,
+                batch.num_rows(),
+                rows_to_process
+            );
             let starting_scanned = counters.scanned;
             let results: Vec<(usize, Result<Option<CacheRow>>)> = pool.install(|| {
                 (0..rows_to_process)
@@ -258,15 +299,19 @@ fn main() -> Result<()> {
                     }
                     Ok(None) => {
                         counters.skipped += 1;
+                        trace!("skipping row {}: no audio source found", scanned_row);
                     }
-                    Err(error) if cli.fail_fast => return Err(error),
+                    Err(error) if cli.fail_fast => {
+                        error!("failed row {}: {error:#}", scanned_row);
+                        return Err(error);
+                    }
                     Err(error) => {
                         counters.skipped += 1;
-                        eprintln!("skipping row {}: {error:#}", scanned_row);
+                        warn!("skipping row {}: {error:#}", scanned_row);
                     }
                 }
                 if scanned_row % 1000 == 0 {
-                    eprintln!(
+                    info!(
                         "progress scanned={} written={} skipped={}",
                         counters.scanned, counters.written, counters.skipped
                     );
@@ -276,7 +321,7 @@ fn main() -> Result<()> {
     }
 
     writer.finish()?;
-    eprintln!(
+    info!(
         "complete scanned={} written={} skipped={}",
         counters.scanned, counters.written, counters.skipped
     );
@@ -466,6 +511,12 @@ fn process_manifest_row(
     let Some((utterance_id, source)) = row else {
         return Ok(None);
     };
+    trace!(
+        "row {} utterance_id={} source={}",
+        scanned_rows,
+        utterance_id,
+        source.log_label()
+    );
     let (waveform, sample_rate) = decode_audio(source, frontend.sample_rate(), ffmpeg_fallback)?;
     let features = compute_features(waveform, sample_rate, frontend)?;
     if features.rows == 0 || features.cols != frontend.feature_dim() {
@@ -476,6 +527,13 @@ fn process_manifest_row(
             frontend.feature_dim()
         );
     }
+    trace!(
+        "computed features row={} utterance_id={} frames={} dim={}",
+        scanned_rows,
+        utterance_id,
+        features.rows,
+        features.cols
+    );
     let key = cache_key(&utterance_id, frontend_hash);
     let payload = encode_feature_payload(&features)?;
     Ok(Some(CacheRow { key, payload }))
@@ -609,9 +667,26 @@ fn decode_audio(
     fallback_sample_rate: u32,
     ffmpeg_fallback: bool,
 ) -> Result<(Vec<f32>, u32)> {
+    let source_label = source.log_label();
+    debug!(
+        "decoding audio source={} fallback_sample_rate={} ffmpeg_fallback={}",
+        source_label, fallback_sample_rate, ffmpeg_fallback
+    );
     match decode_audio_symphonia(source.clone()) {
-        Ok(decoded) => Ok(decoded),
+        Ok(decoded) => {
+            debug!(
+                "decoded audio with symphonia source={} samples={} sample_rate={}",
+                source_label,
+                decoded.0.len(),
+                decoded.1
+            );
+            Ok(decoded)
+        }
         Err(symphonia_error) if ffmpeg_fallback => {
+            warn!(
+                "symphonia decode failed for {}; falling back to ffmpeg: {symphonia_error:#}",
+                source_label
+            );
             decode_audio_ffmpeg(source, fallback_sample_rate).with_context(|| {
                 format!("symphonia decode failed: {symphonia_error:#}; ffmpeg fallback failed")
             })
@@ -623,6 +698,7 @@ fn decode_audio(
 fn decode_audio_symphonia(source: AudioSource) -> Result<(Vec<f32>, u32)> {
     let (mss, extension) = match source {
         AudioSource::Path(path) => {
+            trace!("opening audio file with symphonia path={}", path.display());
             let extension = path
                 .extension()
                 .and_then(|value| value.to_str())
@@ -668,6 +744,10 @@ fn decode_audio_symphonia(source: AudioSource) -> Result<(Vec<f32>, u32)> {
         bail!("unsupported null audio codec");
     }
     let track_id = track.id;
+    debug!(
+        "symphonia selected track id={} codec={:?} sample_rate={:?}",
+        track_id, track.codec_params.codec, track.codec_params.sample_rate
+    );
     let mut decoder = get_codecs().make(&track.codec_params, &DecoderOptions::default())?;
     let mut mono = Vec::new();
     let mut sample_rate = track.codec_params.sample_rate.unwrap_or(16_000);
@@ -690,7 +770,10 @@ fn decode_audio_symphonia(source: AudioSource) -> Result<(Vec<f32>, u32)> {
         }
         let decoded = match decoder.decode(&packet) {
             Ok(decoded) => decoded,
-            Err(SymphoniaError::DecodeError(_)) => continue,
+            Err(SymphoniaError::DecodeError(message)) => {
+                trace!("symphonia skipped packet decode error: {message}");
+                continue;
+            }
             Err(error) => return Err(error.into()),
         };
         append_mono_samples(decoded, &mut mono, &mut sample_rate);
@@ -703,6 +786,11 @@ fn decode_audio_symphonia(source: AudioSource) -> Result<(Vec<f32>, u32)> {
 }
 
 fn decode_audio_ffmpeg(source: AudioSource, sample_rate: u32) -> Result<(Vec<f32>, u32)> {
+    debug!(
+        "decoding audio with ffmpeg source={} output_sample_rate={}",
+        source.log_label(),
+        sample_rate
+    );
     let sample_rate_arg = sample_rate.to_string();
     let mut command = Command::new("ffmpeg");
     command.args(["-v", "error"]);
@@ -783,6 +871,11 @@ fn decode_ffmpeg_output(output: std::process::Output, sample_rate: u32) -> Resul
     if samples.is_empty() {
         bail!("ffmpeg decoded audio stream is empty");
     }
+    debug!(
+        "decoded audio with ffmpeg samples={} sample_rate={}",
+        samples.len(),
+        sample_rate
+    );
     Ok((samples, sample_rate))
 }
 
@@ -951,6 +1044,12 @@ fn resample_to_sample_rate(input: &[f32], src_rate: u32, dst_rate: u32) -> Resul
     if input.is_empty() || src_rate == 0 || dst_rate == 0 || src_rate == dst_rate {
         return Ok(input.to_vec());
     }
+    debug!(
+        "resampling audio with rubato src_rate={} dst_rate={} input_samples={}",
+        src_rate,
+        dst_rate,
+        input.len()
+    );
 
     let mut resampler = Fft::<f32>::new(
         src_rate as usize,
@@ -974,6 +1073,12 @@ fn resample_to_sample_rate(input: &[f32], src_rate: u32, dst_rate: u32) -> Resul
         .process_all_into_buffer(&input_adapter, &mut output_adapter, input.len(), None)
         .with_context(|| format!("Rubato resampling failed from {src_rate} Hz to {dst_rate} Hz"))?;
     output.truncate(output_frames);
+    debug!(
+        "resampled audio with rubato src_rate={} dst_rate={} output_samples={}",
+        src_rate,
+        dst_rate,
+        output.len()
+    );
     Ok(output)
 }
 
@@ -1345,6 +1450,12 @@ impl ShardedCacheWriter {
         let shard_dir = root.join("feature_shards");
         fs::create_dir_all(&shard_dir)
             .with_context(|| format!("failed to create {}", shard_dir.display()))?;
+        debug!(
+            "initialized sharded cache writer shard_dir={} num_shards={} rows_per_part={}",
+            shard_dir.display(),
+            num_shards,
+            rows_per_part
+        );
         let schema = Arc::new(Schema::new(vec![
             Field::new("key", DataType::Utf8, false),
             Field::new("payload", DataType::Binary, true),
@@ -1372,6 +1483,7 @@ impl ShardedCacheWriter {
 
     fn finish(&mut self) -> Result<()> {
         let shard_indices: Vec<usize> = self.pending.keys().copied().collect();
+        debug!("flushing pending shards count={}", shard_indices.len());
         for shard_index in shard_indices {
             self.flush_shard(shard_index)?;
         }
@@ -1383,6 +1495,7 @@ impl ShardedCacheWriter {
         if rows.is_empty() {
             return Ok(());
         }
+        let row_count = rows.len();
         let output_dir = self.shard_dir.join(format!("features_{shard_index:02}"));
         fs::create_dir_all(&output_dir)
             .with_context(|| format!("failed to create {}", output_dir.display()))?;
@@ -1417,6 +1530,12 @@ impl ShardedCacheWriter {
         let mut writer = ArrowWriter::try_new(file, self.schema.clone(), None)?;
         writer.write(&batch)?;
         writer.close()?;
+        debug!(
+            "flushed cache shard={} rows={} path={}",
+            shard_index,
+            row_count,
+            output_path.display()
+        );
         Ok(())
     }
 }

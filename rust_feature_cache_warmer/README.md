@@ -22,6 +22,17 @@ for the W2V-BERT/SeamlessM4T-style 160-dimensional stacked fbank frontend.
 Use `--input-folder /path/to/manifests` instead of `--input` to process every
 `.parquet` file under a directory recursively.
 
+Logging uses `env_logger` and defaults to `info`. Set
+`RUST_LOG=feature_cache_warmer=debug` to include decode, resample, batch, and
+shard flush details, or `RUST_LOG=feature_cache_warmer=trace` for per-row
+feature extraction logs:
+
+```bash
+RUST_LOG=feature_cache_warmer=debug cargo run --release --manifest-path rust_feature_cache_warmer/Cargo.toml -- \
+  --input /data/cv22/train.parquet \
+  --cache-dir artifacts/feature-cache/train
+```
+
 The output directory is a split cache root, matching the Python warmer:
 
 ```text

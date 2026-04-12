@@ -10,6 +10,8 @@ anyhow = "1.0"
 audioadapter-buffers = "3.0"
 arrow = "56"
 clap = { version = "4.5", features = ["derive"] }
+env_logger = "0.11"
+log = "0.4"
 parquet = { version = "56", features = ["arrow"] }
 rayon = "1.11"
 rubato = "2.0"
