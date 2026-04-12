@@ -7,6 +7,7 @@ import math
 import multiprocessing as mp
 import os
 import re
+import sqlite3
 import sys
 import time
 import wave
@@ -97,6 +98,33 @@ def _log_progress(
 
 def _should_log_progress(completed: int, total: int) -> bool:
     return completed == total or completed % _progress_log_interval(total) == 0
+
+
+def _record_estimated_frames(records, index: int) -> int:
+    if hasattr(records, "estimated_frames_at"):
+        return int(records.estimated_frames_at(index))
+    return int(records[index].estimated_frames)
+
+
+def _record_duration_seconds(records, index: int) -> float:
+    if hasattr(records, "duration_seconds_at"):
+        return float(records.duration_seconds_at(index))
+    record = records[index]
+    if record.num_samples > 0 and record.sample_rate > 0:
+        return max(0.0, record.num_samples / record.sample_rate)
+    return 0.0
+
+
+def _record_transcript_length(records, index: int) -> int:
+    if hasattr(records, "transcript_length_at"):
+        return int(records.transcript_length_at(index))
+    return len(records[index].transcript)
+
+
+def _record_token_length(records, index: int) -> int:
+    if hasattr(records, "token_length_at"):
+        return int(records.token_length_at(index))
+    return _record_transcript_length(records, index)
 
 
 def _sorted_indices_with_progress(
@@ -1195,6 +1223,83 @@ def feature_tensor_is_plausible(
     return 0 < normalized.size(0) <= max_reasonable_feature_frames(record)
 
 
+class ShardedFeatureCache:
+    def __init__(self, root: str | Path, *, num_shards: int = 64) -> None:
+        self.root = Path(root)
+        self.num_shards = int(num_shards)
+        self.shard_dir = self.root / "feature_shards"
+        self.shard_dir.mkdir(parents=True, exist_ok=True)
+        self._connections: dict[int, sqlite3.Connection] = {}
+        self._pid: int | None = None
+
+    def _key(self, utterance_id: str, featurizer: AudioFeaturizer) -> str:
+        cache_config: dict[str, object] = {"featurizer": featurizer.config_dict()}
+        frontend_hash = hashlib.sha256(repr(cache_config).encode("utf-8")).hexdigest()[:12]
+        return hashlib.sha256(f"{utterance_id}:{frontend_hash}".encode("utf-8")).hexdigest()
+
+    def _shard_index(self, key: str) -> int:
+        return int(key[:8], 16) % self.num_shards
+
+    def _connection(self, shard_index: int) -> sqlite3.Connection:
+        current_pid = os.getpid()
+        if self._pid != current_pid:
+            self.close()
+            self._pid = current_pid
+        connection = self._connections.get(shard_index)
+        if connection is None:
+            path = self.shard_dir / f"features_{shard_index:02d}.sqlite3"
+            connection = sqlite3.connect(path, timeout=60.0)
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS features (key TEXT PRIMARY KEY, payload BLOB NOT NULL)"
+            )
+            self._connections[shard_index] = connection
+        return connection
+
+    def close(self) -> None:
+        for connection in self._connections.values():
+            connection.close()
+        self._connections.clear()
+        self._pid = None
+
+    def __getstate__(self) -> dict[str, object]:
+        state = self.__dict__.copy()
+        state["_connections"] = {}
+        state["_pid"] = None
+        return state
+
+    def __setstate__(self, state: dict[str, object]) -> None:
+        self.__dict__.update(state)
+        self._connections = {}
+        self._pid = None
+
+    def load(self, utterance_id: str, featurizer: AudioFeaturizer) -> Tensor | None:
+        key = self._key(utterance_id, featurizer)
+        connection = self._connection(self._shard_index(key))
+        row = connection.execute("SELECT payload FROM features WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            return None
+        return torch.load(io.BytesIO(row[0]), map_location="cpu")
+
+    def store(self, utterance_id: str, featurizer: AudioFeaturizer, features: Tensor) -> None:
+        key = self._key(utterance_id, featurizer)
+        buffer = io.BytesIO()
+        torch.save(features, buffer)
+        connection = self._connection(self._shard_index(key))
+        connection.execute(
+            "INSERT OR REPLACE INTO features (key, payload) VALUES (?, ?)",
+            (key, sqlite3.Binary(buffer.getvalue())),
+        )
+        connection.commit()
+
+    def delete(self, utterance_id: str, featurizer: AudioFeaturizer) -> None:
+        key = self._key(utterance_id, featurizer)
+        connection = self._connection(self._shard_index(key))
+        connection.execute("DELETE FROM features WHERE key = ?", (key,))
+        connection.commit()
+
+
 class ASRDataset(Dataset[dict[str, Any]]):
     def __init__(
         self,
@@ -1212,6 +1317,11 @@ class ASRDataset(Dataset[dict[str, Any]]):
         self.specaugment = specaugment
         self.waveform_augment = waveform_augment
         self.feature_cache_dir = Path(feature_cache_dir) if feature_cache_dir is not None else None
+        self.feature_cache = (
+            ShardedFeatureCache(self.feature_cache_dir)
+            if self.feature_cache_dir is not None
+            else None
+        )
         self.return_waveforms = return_waveforms
         if self.feature_cache_dir is not None:
             self.feature_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1245,8 +1355,14 @@ class ASRDataset(Dataset[dict[str, Any]]):
         waveform: Tensor | None = None
         sample_rate: int | None = None
         use_cache = cache_path is not None and not waveform_augment_enabled
-        if use_cache and cache_path.exists():
+        features: Tensor | None = None
+        if use_cache and self.feature_cache is not None:
+            features = self.feature_cache.load(record.utterance_id, self.featurizer)
+        if features is None and use_cache and cache_path is not None and cache_path.exists():
             features = torch.load(cache_path, map_location="cpu")
+            if self.feature_cache is not None:
+                self.feature_cache.store(record.utterance_id, self.featurizer, features)
+        if features is not None:
             if not feature_tensor_is_plausible(
                 record,
                 features,
@@ -1259,22 +1375,25 @@ class ASRDataset(Dataset[dict[str, Any]]):
                     tuple(features.shape),
                     int(record.estimated_frames),
                 )
-                cache_path.unlink(missing_ok=True)
+                if self.feature_cache is not None:
+                    self.feature_cache.delete(record.utterance_id, self.featurizer)
+                if cache_path is not None:
+                    cache_path.unlink(missing_ok=True)
                 waveform, sample_rate = self._load_waveform(
                     record,
                     waveform_augment_enabled=waveform_augment_enabled,
                 )
                 features = self._compute_features_from_waveform(waveform, sample_rate)
-                if use_cache:
-                    torch.save(features, cache_path)
+                if use_cache and self.feature_cache is not None:
+                    self.feature_cache.store(record.utterance_id, self.featurizer, features)
         else:
             waveform, sample_rate = self._load_waveform(
                 record,
                 waveform_augment_enabled=waveform_augment_enabled,
             )
             features = self._compute_features_from_waveform(waveform, sample_rate)
-            if use_cache:
-                torch.save(features, cache_path)
+            if use_cache and self.feature_cache is not None:
+                self.feature_cache.store(record.utterance_id, self.featurizer, features)
         features = normalize_feature_tensor(features, self.featurizer.n_mels)
         if features is None or not feature_tensor_is_plausible(
             record,
@@ -1342,13 +1461,13 @@ class LengthBucketBatchSampler(BatchSampler):
         self.progress_label = progress_label
 
     def _batch_order_key(self, batch: list[int]) -> tuple[int, int]:
-        max_frames = max(max(1, self.records[index].estimated_frames) for index in batch)
+        max_frames = max(max(1, _record_estimated_frames(self.records, index)) for index in batch)
         return max_frames, len(batch)
 
-    def __iter__(self):
+    def _build_batches(self) -> list[list[int]]:
         indices = _sorted_indices_with_progress(
             self.records,
-            lambda index: self.records[index].estimated_frames,
+            lambda index: _record_estimated_frames(self.records, index),
             progress_logger=self.progress_logger,
             progress_label=self.progress_label,
             phase="length-bucket sampler",
@@ -1359,13 +1478,22 @@ class LengthBucketBatchSampler(BatchSampler):
         ]
         if self.longest_first:
             batches.sort(key=self._batch_order_key, reverse=True)
-        elif self.shuffle:
+        return batches
+
+    def __iter__(self):
+        batches = getattr(self, "_batches", None)
+        if batches is None:
+            batches = self._batches = self._build_batches()
+        if not self.longest_first and self.shuffle:
             order = _epoch_shuffled_order(len(batches), seed=self.seed, epoch=self.epoch)
             batches = [batches[index] for index in order]
         yield from batches
 
     def __len__(self) -> int:
-        return (len(self.records) + self.batch_size - 1) // self.batch_size
+        batches = getattr(self, "_batches", None)
+        if batches is None:
+            batches = self._batches = self._build_batches()
+        return len(batches)
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
@@ -1392,22 +1520,22 @@ class MaxFramesBatchSampler(BatchSampler):
         self.progress_label = progress_label
         self._sorted_indices = _sorted_indices_with_progress(
             self.records,
-            lambda index: self.records[index].estimated_frames,
+            lambda index: _record_estimated_frames(self.records, index),
             progress_logger=self.progress_logger,
             progress_label=self.progress_label,
             phase="max-frames sampler",
         )
-        self._num_batches = self._count_batches()
+        self._batches = self._build_batches()
 
     def _batch_order_key(self, batch: list[int]) -> tuple[int, int]:
-        max_frames = max(max(1, self.records[index].estimated_frames) for index in batch)
+        max_frames = max(max(1, _record_estimated_frames(self.records, index)) for index in batch)
         return len(batch) * max_frames, max_frames
 
     def _iter_batches(self) -> Iterable[list[int]]:
         current_batch: list[int] = []
         current_max = 0
         for index in self._sorted_indices:
-            frames = max(1, self.records[index].estimated_frames)
+            frames = max(1, _record_estimated_frames(self.records, index))
             proposed_size = len(current_batch) + 1
             proposed_max = max(current_max, frames)
             if current_batch and proposed_size * proposed_max > self.max_batch_frames:
@@ -1419,42 +1547,42 @@ class MaxFramesBatchSampler(BatchSampler):
         if current_batch:
             yield current_batch
 
-    def _count_batches(self) -> int:
+    def _build_batches(self) -> list[list[int]]:
         start_time = time.perf_counter()
         total_records = len(self._sorted_indices)
-        count = 0
+        batches: list[list[int]] = []
         seen = 0
         if self.progress_logger is not None:
             self.progress_logger.info(
-                "%s max-frames sampler counting batches records=%s budget=%s",
+                "%s max-frames sampler building batches records=%s budget=%s",
                 self.progress_label,
                 total_records,
                 self.max_batch_frames,
             )
         for batch in self._iter_batches():
-            count += 1
+            batches.append(batch)
             seen += len(batch)
             if self.progress_logger is not None and _should_log_progress(seen, total_records):
                 _log_progress(
                     self.progress_logger,
-                    f"{self.progress_label} max-frames sampler counted batches={count}",
+                    f"{self.progress_label} max-frames sampler built batches={len(batches)}",
                     seen,
                     total_records,
                     start_time,
                 )
-        return count
-
-    def __iter__(self):
-        batches = list(self._iter_batches())
         if self.longest_first:
             batches.sort(key=self._batch_order_key, reverse=True)
-        elif self.shuffle:
+        return batches
+
+    def __iter__(self):
+        batches = self._batches
+        if not self.longest_first and self.shuffle:
             order = _epoch_shuffled_order(len(batches), seed=self.seed, epoch=self.epoch)
             batches = [batches[index] for index in order]
         yield from batches
 
     def __len__(self) -> int:
-        return self._num_batches
+        return len(self._batches)
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
@@ -1482,14 +1610,14 @@ class DurationBatchSampler(BatchSampler):
         self._sorted_indices = _sorted_indices_with_progress(
             self.records,
             lambda index: (
-                self._record_duration_seconds(self.records[index]),
-                self.records[index].estimated_frames,
+                _record_duration_seconds(self.records, index),
+                _record_estimated_frames(self.records, index),
             ),
             progress_logger=self.progress_logger,
             progress_label=self.progress_label,
             phase="duration sampler",
         )
-        self._num_batches = self._count_batches()
+        self._batches = self._build_batches()
 
     def _record_duration_seconds(self, record: AudioRecord) -> float:
         if record.num_samples > 0 and record.sample_rate > 0:
@@ -1497,15 +1625,15 @@ class DurationBatchSampler(BatchSampler):
         return 0.0
 
     def _batch_order_key(self, batch: list[int]) -> tuple[float, int]:
-        total_duration = sum(self._record_duration_seconds(self.records[index]) for index in batch)
-        max_frames = max(max(1, self.records[index].estimated_frames) for index in batch)
+        total_duration = sum(_record_duration_seconds(self.records, index) for index in batch)
+        max_frames = max(max(1, _record_estimated_frames(self.records, index)) for index in batch)
         return total_duration, max_frames
 
     def _iter_batches(self) -> Iterable[list[int]]:
         current_batch: list[int] = []
         current_duration = 0.0
         for index in self._sorted_indices:
-            duration = self._record_duration_seconds(self.records[index])
+            duration = _record_duration_seconds(self.records, index)
             if current_batch and current_duration + duration > self.max_batch_duration_sec:
                 yield current_batch
                 current_batch = []
@@ -1515,42 +1643,42 @@ class DurationBatchSampler(BatchSampler):
         if current_batch:
             yield current_batch
 
-    def _count_batches(self) -> int:
+    def _build_batches(self) -> list[list[int]]:
         start_time = time.perf_counter()
         total_records = len(self._sorted_indices)
-        count = 0
+        batches: list[list[int]] = []
         seen = 0
         if self.progress_logger is not None:
             self.progress_logger.info(
-                "%s duration sampler counting batches records=%s budget_sec=%.2f",
+                "%s duration sampler building batches records=%s budget_sec=%.2f",
                 self.progress_label,
                 total_records,
                 self.max_batch_duration_sec,
             )
         for batch in self._iter_batches():
-            count += 1
+            batches.append(batch)
             seen += len(batch)
             if self.progress_logger is not None and _should_log_progress(seen, total_records):
                 _log_progress(
                     self.progress_logger,
-                    f"{self.progress_label} duration sampler counted batches={count}",
+                    f"{self.progress_label} duration sampler built batches={len(batches)}",
                     seen,
                     total_records,
                     start_time,
                 )
-        return count
-
-    def __iter__(self):
-        batches = list(self._iter_batches())
         if self.longest_first:
             batches.sort(key=self._batch_order_key, reverse=True)
-        elif self.shuffle:
+        return batches
+
+    def __iter__(self):
+        batches = self._batches
+        if not self.longest_first and self.shuffle:
             order = _epoch_shuffled_order(len(batches), seed=self.seed, epoch=self.epoch)
             batches = [batches[index] for index in order]
         yield from batches
 
     def __len__(self) -> int:
-        return self._num_batches
+        return len(self._batches)
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
@@ -1582,25 +1710,25 @@ class AdaptiveBatchSampler(BatchSampler):
         self._sorted_indices = _sorted_indices_with_progress(
             self.records,
             lambda index: (
-                self.records[index].estimated_frames,
-                len(self.records[index].transcript),
+                _record_estimated_frames(self.records, index),
+                _record_token_length(self.records, index),
             ),
             progress_logger=self.progress_logger,
             progress_label=self.progress_label,
             phase="adaptive sampler",
         )
-        self._num_batches = self._count_batches()
+        self._batches = self._build_batches()
 
-    def _record_units(self, record: AudioRecord) -> int:
+    def _record_units(self, index: int) -> int:
         if self.unit == "frames":
-            return max(1, record.estimated_frames)
-        return max(1, len(record.transcript))
+            return max(1, _record_estimated_frames(self.records, index))
+        return max(1, _record_token_length(self.records, index))
 
     def _iter_batches(self) -> Iterable[list[int]]:
         current_batch: list[int] = []
         current_units = 0
         for index in self._sorted_indices:
-            units = self._record_units(self.records[index])
+            units = self._record_units(index)
             if current_batch and current_units + units > self.target_batch_units:
                 yield current_batch
                 current_batch = []
@@ -1611,47 +1739,47 @@ class AdaptiveBatchSampler(BatchSampler):
             yield current_batch
 
     def _batch_order_key(self, batch: list[int]) -> tuple[int, int]:
-        total_units = sum(self._record_units(self.records[index]) for index in batch)
-        max_frames = max(max(1, self.records[index].estimated_frames) for index in batch)
+        total_units = sum(self._record_units(index) for index in batch)
+        max_frames = max(max(1, _record_estimated_frames(self.records, index)) for index in batch)
         return total_units, max_frames
 
-    def _count_batches(self) -> int:
+    def _build_batches(self) -> list[list[int]]:
         start_time = time.perf_counter()
         total_records = len(self._sorted_indices)
-        count = 0
+        batches: list[list[int]] = []
         seen = 0
         if self.progress_logger is not None:
             self.progress_logger.info(
-                "%s adaptive sampler counting batches records=%s unit=%s budget=%s",
+                "%s adaptive sampler building batches records=%s unit=%s budget=%s",
                 self.progress_label,
                 total_records,
                 self.unit,
                 self.target_batch_units,
             )
         for batch in self._iter_batches():
-            count += 1
+            batches.append(batch)
             seen += len(batch)
             if self.progress_logger is not None and _should_log_progress(seen, total_records):
                 _log_progress(
                     self.progress_logger,
-                    f"{self.progress_label} adaptive sampler counted batches={count}",
+                    f"{self.progress_label} adaptive sampler built batches={len(batches)}",
                     seen,
                     total_records,
                     start_time,
                 )
-        return count
-
-    def __iter__(self):
-        batches = list(self._iter_batches())
         if self.longest_first:
             batches.sort(key=self._batch_order_key, reverse=True)
-        elif self.shuffle:
+        return batches
+
+    def __iter__(self):
+        batches = self._batches
+        if not self.longest_first and self.shuffle:
             order = _epoch_shuffled_order(len(batches), seed=self.seed, epoch=self.epoch)
             batches = [batches[index] for index in order]
         yield from batches
 
     def __len__(self) -> int:
-        return self._num_batches
+        return len(self._batches)
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
@@ -1996,6 +2124,12 @@ def create_dataloader(
             "%s metadata ready elapsed=%.1fs",
             progress_label,
             time.perf_counter() - stage_start_time,
+        )
+    if adaptive_batch_unit == "tokens" and hasattr(dataset.records, "populate_token_lengths"):
+        dataset.records.populate_token_lengths(
+            dataset.tokenizer,
+            progress_logger=progress_logger,
+            progress_label=progress_label,
         )
     dataloader_kwargs = {
         "num_workers": num_workers,

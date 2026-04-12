@@ -5,11 +5,13 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
+from itertools import chain
 from pathlib import Path
 
 import torch
@@ -174,6 +176,40 @@ def _truncate_for_log(value: str, *, limit: int = 120) -> str:
     if len(value) <= limit:
         return value
     return f"{value[: max(0, limit - 3)]}..."
+
+
+def _next_with_wait_logging(
+    iterator,
+    *,
+    logger: logging.Logger | None,
+    description: str,
+    log_after_seconds: float = 10.0,
+    log_every_seconds: float = 30.0,
+):
+    if logger is None:
+        return next(iterator)
+
+    done = threading.Event()
+    start_time = time.perf_counter()
+
+    def watchdog() -> None:
+        if done.wait(log_after_seconds):
+            return
+        while not done.is_set():
+            logger.info(
+                "%s still waiting elapsed=%s",
+                description,
+                _format_elapsed_seconds(time.perf_counter() - start_time),
+            )
+            if done.wait(log_every_seconds):
+                return
+
+    thread = threading.Thread(target=watchdog, name="first-batch-watchdog", daemon=True)
+    thread.start()
+    try:
+        return next(iterator)
+    finally:
+        done.set()
 
 
 def _build_trackio_run_name(
@@ -1921,7 +1957,20 @@ def main() -> None:
         accumulated_global_batch_size = 0.0
         for optimizer in optimizers:
             optimizer.zero_grad(set_to_none=True)
-        for batch_index, batch in enumerate(train_loader, start=1):
+        train_iterator = iter(train_loader)
+        try:
+            first_batch = _next_with_wait_logging(
+                train_iterator,
+                logger=logger if is_main_process else None,
+                description=(
+                    f"epoch={epoch} waiting for first training batch "
+                    f"num_workers={args.num_workers} prefetch_factor={args.prefetch_factor}"
+                ),
+            )
+            train_batches_iterable = chain([first_batch], train_iterator)
+        except StopIteration:
+            train_batches_iterable = ()
+        for batch_index, batch in enumerate(train_batches_iterable, start=1):
             if batch is None:
                 logger.warning("skipping empty training batch after dataset filtering")
                 continue

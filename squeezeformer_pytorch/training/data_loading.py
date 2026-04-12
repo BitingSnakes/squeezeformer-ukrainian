@@ -123,6 +123,8 @@ class DiskBackedRecordStore:
         estimated_frames: array.array,
         num_samples: array.array | None = None,
         sample_rates: array.array | None = None,
+        transcript_lengths: array.array | None = None,
+        token_lengths: array.array | None = None,
         *,
         start: int = 0,
         step: int = 1,
@@ -133,6 +135,8 @@ class DiskBackedRecordStore:
         self.estimated_frames = estimated_frames
         self.num_samples = num_samples
         self.sample_rates = sample_rates
+        self.transcript_lengths = transcript_lengths
+        self.token_lengths = token_lengths
         self.start = start
         self.step = step
         self.count = count
@@ -221,10 +225,105 @@ class DiskBackedRecordStore:
             self.estimated_frames,
             self.num_samples,
             self.sample_rates,
+            self.transcript_lengths,
+            self.token_lengths,
             start=self.start + rank,
             step=self.step * world_size,
             count=local_count,
         )
+
+    def estimated_frames_at(self, index: int) -> int:
+        return int(self.estimated_frames[self._global_index(index)])
+
+    def duration_seconds_at(self, index: int) -> float:
+        if self.num_samples is None or self.sample_rates is None:
+            return 0.0
+        global_index = self._global_index(index)
+        num_samples = int(self.num_samples[global_index])
+        sample_rate = int(self.sample_rates[global_index])
+        if num_samples <= 0 or sample_rate <= 0:
+            return 0.0
+        return num_samples / sample_rate
+
+    def transcript_length_at(self, index: int) -> int:
+        global_index = self._global_index(index)
+        if self.transcript_lengths is not None:
+            return int(self.transcript_lengths[global_index])
+        return len(self[index].transcript)
+
+    def token_length_at(self, index: int) -> int:
+        global_index = self._global_index(index)
+        if self.token_lengths is not None:
+            token_length = int(self.token_lengths[global_index])
+            if token_length > 0:
+                return token_length
+        return self.transcript_length_at(index)
+
+    def _ensure_token_lengths(self) -> None:
+        if self.token_lengths is not None:
+            return
+        token_lengths_path = _record_index_path(self.records_path, ".token_lengths.u32")
+        if not token_lengths_path.exists():
+            token_lengths_path.parent.mkdir(parents=True, exist_ok=True)
+            with token_lengths_path.open("wb") as handle:
+                handle.write(b"\x00" * (4 * len(self.offsets)))
+        self.token_lengths = _BinaryIndexView(
+            token_lengths_path,
+            item_size=4,
+            fmt="<I",
+            writable=True,
+        )
+
+    def populate_token_lengths(
+        self,
+        tokenizer,
+        *,
+        progress_logger: Logger | None = None,
+        progress_label: str = "records",
+    ) -> None:
+        self._ensure_token_lengths()
+        if self.token_lengths is None:
+            return
+        total = len(self)
+        missing_indices = [
+            self._global_index(index)
+            for index in range(total)
+            if int(self.token_lengths[self._global_index(index)]) <= 0
+        ]
+        if not missing_indices:
+            if progress_logger is not None:
+                progress_logger.info(
+                    "%s token lengths ready records=%s missing=0", progress_label, total
+                )
+            return
+        start_time = time.perf_counter()
+        if progress_logger is not None:
+            progress_logger.info(
+                "%s computing token length sidecar records=%s missing=%s",
+                progress_label,
+                total,
+                len(missing_indices),
+            )
+        with self.records_path.open("rb") as handle:
+            for completed, global_index in enumerate(missing_indices, start=1):
+                handle.seek(self.offsets[global_index])
+                payload = json.loads(handle.readline().decode("utf-8"))
+                transcript = payload.get("transcript")
+                token_length = len(
+                    tokenizer.encode(transcript if isinstance(transcript, str) else "")
+                )
+                self.token_lengths[global_index] = max(1, int(token_length))
+                if progress_logger is not None and (
+                    completed == len(missing_indices)
+                    or completed % _progress_log_interval(len(missing_indices)) == 0
+                ):
+                    _log_metadata_progress(
+                        progress_logger,
+                        f"{progress_label} computed token lengths",
+                        completed,
+                        len(missing_indices),
+                        start_time,
+                    )
 
     def populate_metadata(
         self,
@@ -513,6 +612,8 @@ def _build_disk_backed_record_store(
     estimated_frames_path = _record_index_path(records_path, ".estimated_frames.u32")
     num_samples_path = _record_index_path(records_path, ".num_samples.u64")
     sample_rates_path = _record_index_path(records_path, ".sample_rates.u32")
+    transcript_lengths_path = _record_index_path(records_path, ".transcript_lengths.u32")
+    token_lengths_path = _record_index_path(records_path, ".token_lengths.u32")
     written = 0
     with (
         records_path.open("wb") as handle,
@@ -520,6 +621,8 @@ def _build_disk_backed_record_store(
         estimated_frames_path.open("wb") as estimated_frames_handle,
         num_samples_path.open("wb") as num_samples_handle,
         sample_rates_path.open("wb") as sample_rates_handle,
+        transcript_lengths_path.open("wb") as transcript_lengths_handle,
+        token_lengths_path.open("wb") as token_lengths_handle,
     ):
         for dataset_source in dataset_sources:
             remaining_samples = None
@@ -619,6 +722,8 @@ def _build_disk_backed_record_store(
                 )
                 num_samples_handle.write(struct.pack("<Q", max(0, int(record.num_samples))))
                 sample_rates_handle.write(struct.pack("<I", max(0, int(record.sample_rate))))
+                transcript_lengths_handle.write(struct.pack("<I", max(0, len(record.transcript))))
+                token_lengths_handle.write(struct.pack("<I", 0))
                 written += 1
     if written == 0:
         raise RuntimeError(
@@ -646,6 +751,17 @@ def _build_disk_backed_record_store(
             fmt="<I",
             writable=True,
         ),
+        _BinaryIndexView(
+            transcript_lengths_path,
+            item_size=4,
+            fmt="<I",
+        ),
+        _BinaryIndexView(
+            token_lengths_path,
+            item_size=4,
+            fmt="<I",
+            writable=True,
+        ),
     )
 
 
@@ -654,6 +770,8 @@ def _open_disk_backed_record_store(records_path: Path) -> DiskBackedRecordStore:
     estimated_frames_path = _record_index_path(records_path, ".estimated_frames.u32")
     num_samples_path = _record_index_path(records_path, ".num_samples.u64")
     sample_rates_path = _record_index_path(records_path, ".sample_rates.u32")
+    transcript_lengths_path = _record_index_path(records_path, ".transcript_lengths.u32")
+    token_lengths_path = _record_index_path(records_path, ".token_lengths.u32")
     return DiskBackedRecordStore(
         records_path,
         _BinaryIndexView(offsets_path, item_size=8, fmt="<Q"),
@@ -681,6 +799,25 @@ def _open_disk_backed_record_store(records_path: Path) -> DiskBackedRecordStore:
                 writable=True,
             )
             if sample_rates_path.exists()
+            else None
+        ),
+        (
+            _BinaryIndexView(
+                transcript_lengths_path,
+                item_size=4,
+                fmt="<I",
+            )
+            if transcript_lengths_path.exists()
+            else None
+        ),
+        (
+            _BinaryIndexView(
+                token_lengths_path,
+                item_size=4,
+                fmt="<I",
+                writable=True,
+            )
+            if token_lengths_path.exists()
             else None
         ),
     )

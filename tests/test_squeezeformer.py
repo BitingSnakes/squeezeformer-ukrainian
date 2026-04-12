@@ -487,6 +487,7 @@ def test_ctc_head_defaults_to_zero_blank_bias() -> None:
     assert torch.isclose(model.classifier.bias[0], torch.tensor(0.0))
     assert torch.count_nonzero(model.classifier.bias[1:]) == 0
 
+
 def test_ctc_length_diagnostics_count_repeated_adjacent_targets() -> None:
     targets = torch.tensor([1, 1, 2, 3, 4, 4], dtype=torch.long)
     target_lengths = torch.tensor([3, 3], dtype=torch.long)
@@ -2001,6 +2002,35 @@ def test_distributed_batch_sampler_repartitions_batches_each_epoch() -> None:
     assert flattened == list(range(len(records)))
 
 
+def test_length_bucket_sampler_reuses_precomputed_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import squeezeformer_pytorch.data as data_module
+
+    records = [
+        AudioRecord(None, None, str(index), str(index), estimated_frames=10 + index)
+        for index in range(20)
+    ]
+    sort_calls = 0
+    original_sort = data_module._sorted_indices_with_progress
+
+    def wrapped_sort(*args, **kwargs):
+        nonlocal sort_calls
+        sort_calls += 1
+        return original_sort(*args, **kwargs)
+
+    monkeypatch.setattr(data_module, "_sorted_indices_with_progress", wrapped_sort)
+    sampler = data_module.LengthBucketBatchSampler(records, batch_size=2, shuffle=True, seed=7)
+
+    sampler.set_epoch(0)
+    epoch0 = list(sampler)
+    sampler.set_epoch(1)
+    epoch1 = list(sampler)
+
+    assert sort_calls == 1
+    assert epoch0 != epoch1
+
+
 def test_distributed_index_sampler_can_leave_validation_uneven() -> None:
     rank0 = DistributedIndexSampler(
         5,
@@ -2188,6 +2218,34 @@ def test_adaptive_batch_sampler_respects_token_budget() -> None:
         assert total_tokens <= 6
 
 
+def test_adaptive_batch_sampler_uses_disk_backed_token_lengths_without_json(
+    tmp_path: Path,
+) -> None:
+    records_path = tmp_path / "missing.jsonl"
+    offsets = array.array("Q", [0, 0, 0])
+    estimated_frames = array.array("I", [20, 25, 40])
+    num_samples = array.array("Q", [16_000, 16_000, 16_000])
+    sample_rates = array.array("I", [16_000, 16_000, 16_000])
+    transcript_lengths = array.array("I", [100, 100, 100])
+    token_lengths = array.array("I", [3, 4, 2])
+    store = DiskBackedRecordStore(
+        records_path,
+        offsets,
+        estimated_frames,
+        num_samples,
+        sample_rates,
+        transcript_lengths,
+        token_lengths,
+    )
+
+    sampler = AdaptiveBatchSampler(store, target_batch_units=6, unit="tokens", shuffle=False)
+    batches = list(sampler)
+
+    assert batches
+    for batch in batches:
+        assert sum(token_lengths[index] for index in batch) <= 6
+
+
 def test_adaptive_batch_sampler_respects_frame_budget_and_keeps_all_indices() -> None:
     records = [
         AudioRecord(None, None, "a", "0", estimated_frames=20),
@@ -2346,6 +2404,8 @@ def test_feature_cache_is_used_when_waveform_augment_is_effectively_disabled(
 
     assert load_calls == 1
     assert torch.equal(first_item["features"], second_item["features"])
+    assert list((tmp_path / "feature_shards").glob("features_*.sqlite3"))
+    assert not list(tmp_path.glob("*.pt"))
 
 
 def test_invalid_cached_features_are_recomputed(
