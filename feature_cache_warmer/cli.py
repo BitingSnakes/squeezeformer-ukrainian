@@ -549,6 +549,7 @@ def main(argv: list[str] | None = None) -> None:
     val_sources = _resolve_validation_dataset_sources(args)
     lowercase_transcripts = args.tokenizer != "sentencepiece"
     output_dir = Path(args.output_dir)
+    args.require_readable_audio = True
     logger.info(
         "loading records train_sources=%s validation_sources=%s record_cache=%s",
         train_sources,

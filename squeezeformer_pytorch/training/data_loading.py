@@ -5,6 +5,7 @@ import array
 import base64
 import hashlib
 import json
+import logging
 import mmap
 import os
 import struct
@@ -31,6 +32,7 @@ from squeezeformer_pytorch.data import (
 )
 
 _METADATA_PROBE_CHUNK_SIZE = 512
+logger = logging.getLogger(__name__)
 
 
 def _progress_log_interval(total: int) -> int:
@@ -580,6 +582,10 @@ def _record_index_path(records_path: Path, suffix: str) -> Path:
     return records_path.with_suffix(records_path.suffix + suffix)
 
 
+def _is_remote_audio_source(audio_path: str) -> bool:
+    return urlparse(audio_path).scheme in {"http", "https"}
+
+
 def _build_disk_backed_record_store(
     dataset_sources: list[str | Path],
     *,
@@ -605,6 +611,7 @@ def _build_disk_backed_record_store(
     max_duration_per_word: float = float("inf"),
     hf_token: str | None = None,
     cache_dir: str | None = None,
+    require_readable_audio: bool = False,
 ) -> DiskBackedRecordStore:
     records_path.parent.mkdir(parents=True, exist_ok=True)
     audio_blob_dir = records_path.parent / f"{records_path.stem}_audio_blobs"
@@ -615,6 +622,7 @@ def _build_disk_backed_record_store(
     transcript_lengths_path = _record_index_path(records_path, ".transcript_lengths.u32")
     token_lengths_path = _record_index_path(records_path, ".token_lengths.u32")
     written = 0
+    skipped_unreadable_audio = 0
     with (
         records_path.open("wb") as handle,
         offsets_path.open("wb") as offsets_handle,
@@ -692,6 +700,16 @@ def _build_disk_backed_record_store(
                         )
                     except Exception:
                         audio_bytes = None
+                if require_readable_audio and audio_bytes is None:
+                    if record.audio_path is None:
+                        skipped_unreadable_audio += 1
+                        continue
+                    if (
+                        not _is_remote_audio_source(record.audio_path)
+                        and not Path(record.audio_path).exists()
+                    ):
+                        skipped_unreadable_audio += 1
+                        continue
                 preserve_audio_bytes = audio_bytes is not None and not (
                     record.audio_path is not None and Path(record.audio_path).exists()
                 )
@@ -725,6 +743,12 @@ def _build_disk_backed_record_store(
                 transcript_lengths_handle.write(struct.pack("<I", max(0, len(record.transcript))))
                 token_lengths_handle.write(struct.pack("<I", 0))
                 written += 1
+    if skipped_unreadable_audio:
+        logger.warning(
+            "record cache skipped unreadable audio records path=%s skipped=%s",
+            records_path,
+            skipped_unreadable_audio,
+        )
     if written == 0:
         raise RuntimeError(
             f"Split '{split}' is empty after applying the current split fractions across "
@@ -1079,6 +1103,8 @@ def _load_train_val_records(
             common_record_store_kwargs["min_audio_duration_sec"] = args.min_audio_duration_sec
         if hasattr(args, "max_audio_duration_sec"):
             common_record_store_kwargs["max_audio_duration_sec"] = args.max_audio_duration_sec
+        if getattr(args, "require_readable_audio", False):
+            common_record_store_kwargs["require_readable_audio"] = True
         record_store_dir = (
             Path(args.record_cache_dir)
             if args.record_cache_dir is not None
