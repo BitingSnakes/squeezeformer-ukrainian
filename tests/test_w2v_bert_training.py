@@ -4,6 +4,7 @@ import torch
 from transformers import Wav2Vec2BertConfig as HFWav2Vec2BertConfig
 
 import squeezeformer_pytorch.model as squeezeformer_model
+import w2v_bert.asr as w2v_bert_asr
 from w2v_bert.asr import W2VBertConfig, W2VBertCTC, W2VBertFeatureExtractor
 
 
@@ -117,3 +118,32 @@ def test_w2v_bert_feature_extractor_matches_asr_dataset_contract() -> None:
     assert featurizer.n_mels == 8
     assert featurizer.padding_value == 1.0
     assert featurizer.config_dict()["type"] == "w2v_bert"
+
+
+def test_w2v_bert_feature_extractor_config_does_not_override_hf_defaults(monkeypatch) -> None:
+    class _FakeFeatureExtractor:
+        sampling_rate = 48_000
+        feature_size = 6
+        stride = 3
+        padding_value = 7.0
+
+        def __call__(self, samples, *, sampling_rate, return_tensors, padding):
+            return {"input_features": torch.zeros(1, 2, 18)}
+
+    class _FakeAutoFeatureExtractor:
+        @staticmethod
+        def from_pretrained(model_source, **kwargs):
+            assert model_source == "custom/w2v-bert"
+            assert kwargs == {"trust_remote_code": True}
+            return _FakeFeatureExtractor()
+
+    monkeypatch.setattr(w2v_bert_asr, "AutoFeatureExtractor", _FakeAutoFeatureExtractor)
+
+    featurizer = W2VBertFeatureExtractor.from_config(
+        {"type": "w2v_bert", "model_source": "custom/w2v-bert"}
+    )
+
+    assert featurizer.sample_rate == 48_000
+    assert featurizer.n_mels == 18
+    assert featurizer.hop_length == 480
+    assert featurizer.padding_value == 7.0

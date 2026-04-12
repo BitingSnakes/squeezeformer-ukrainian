@@ -7,9 +7,9 @@ from typing import Any, Mapping
 import torch
 import torchaudio
 from torch import Tensor, nn
-from torch.nn import functional as F
 
 import squeezeformer_pytorch.model as _squeezeformer_model
+from squeezeformer_pytorch.asr import SqueezeformerCTC
 from squeezeformer_pytorch.model import apply_linear_with_fp8_padding, make_linear
 
 try:
@@ -96,30 +96,6 @@ def _attention_mask_from_lengths(lengths: Tensor, max_length: int) -> Tensor:
         torch.arange(max_length, device=lengths.device).unsqueeze(0)
         < lengths.to(dtype=torch.long).unsqueeze(1)
     ).to(dtype=torch.long)
-
-
-def _ctc_log_softmax(logits: Tensor) -> Tensor:
-    return F.log_softmax(logits, dim=-1, dtype=torch.float32)
-
-
-def _ctc_loss(
-    log_probs: Tensor,
-    output_lengths: Tensor,
-    targets: Tensor,
-    target_lengths: Tensor,
-    *,
-    blank_id: int,
-) -> Tensor:
-    per_sample_losses = F.ctc_loss(
-        log_probs.transpose(0, 1),
-        targets,
-        output_lengths,
-        target_lengths,
-        blank=blank_id,
-        reduction="none",
-        zero_infinity=True,
-    )
-    return (per_sample_losses / target_lengths.clamp_min(1)).mean()
 
 
 @dataclass(frozen=True)
@@ -227,11 +203,14 @@ class W2VBertFeatureExtractor(nn.Module):
 
     @classmethod
     def from_config(cls, config: Mapping[str, object]) -> "W2VBertFeatureExtractor":
+        sample_rate = config.get("sample_rate")
+        feature_dim = config.get("feature_dim")
+        padding_value = config.get("padding_value")
         return cls(
             model_source=str(config.get("model_source", DEFAULT_W2V_BERT_MODEL)),
-            sample_rate=int(config.get("sample_rate", 16_000)),
-            feature_dim=int(config.get("feature_dim", 160)),
-            padding_value=float(config.get("padding_value", 1.0)),
+            sample_rate=int(sample_rate) if sample_rate is not None else None,
+            feature_dim=int(feature_dim) if feature_dim is not None else None,
+            padding_value=float(padding_value) if padding_value is not None else None,
         )
 
     def forward(self, waveform: Tensor, sample_rate: int) -> Tensor:
@@ -283,7 +262,7 @@ class W2VBertFeatureExtractor(nn.Module):
         }
 
 
-class W2VBertCTC(nn.Module):
+class W2VBertCTC(SqueezeformerCTC):
     def __init__(
         self,
         encoder_config: W2VBertConfig,
@@ -293,7 +272,7 @@ class W2VBertCTC(nn.Module):
         load_pretrained: bool = False,
         use_transformer_engine: bool = False,
     ) -> None:
-        super().__init__()
+        nn.Module.__init__(self)
         _require_transformers()
         self.encoder_config = encoder_config
         self.aed_decoder = None
@@ -370,15 +349,15 @@ class W2VBertCTC(nn.Module):
             raise RuntimeError("AED decoder is not supported by the W2V-BERT training path.")
 
         encoded, output_lengths = self._encode(features, feature_lengths)
-        logits = apply_linear_with_fp8_padding(self.classifier, encoded)
         if not return_training_outputs:
+            logits = apply_linear_with_fp8_padding(self.classifier, encoded)
             return logits, output_lengths
 
-        log_probs = _ctc_log_softmax(logits)
         main_ctc_loss = None
         if targets is not None and target_lengths is not None and blank_id is not None:
-            main_ctc_loss = _ctc_loss(
-                log_probs,
+            main_ctc_loss = self._chunked_ctc_loss_from_classifier(
+                self.classifier,
+                encoded,
                 output_lengths,
                 targets,
                 target_lengths,
@@ -390,13 +369,17 @@ class W2VBertCTC(nn.Module):
             "main_ctc_loss": main_ctc_loss,
         }
         if return_main_log_probs:
-            output["main_logits"] = logits
-            output["main_log_probs"] = log_probs
+            main_logits, main_log_probs = self._chunked_logits_and_log_probs_from_classifier(
+                self.classifier,
+                encoded,
+            )
+            output["main_logits"] = main_logits
+            output["main_log_probs"] = main_log_probs
         return output
 
     def log_probs(self, features: Tensor, feature_lengths: Tensor) -> tuple[Tensor, Tensor]:
         logits, output_lengths = self(features, feature_lengths)
-        return _ctc_log_softmax(logits), output_lengths
+        return self._ctc_log_softmax(logits), output_lengths
 
     def to_config_dict(self) -> dict[str, object]:
         return {
