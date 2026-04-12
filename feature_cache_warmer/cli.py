@@ -56,6 +56,7 @@ class FeatureCacheWarmDataset(Dataset[dict[str, Any]]):
         skipped_audio_sources: set[str] | None = None,
         indices: list[int] | None = None,
         ffprobe_timeout_seconds: float = 0.0,
+        ffmpeg_timeout_seconds: float = 0.0,
     ) -> None:
         self.records = records
         self.indices = indices
@@ -78,6 +79,7 @@ class FeatureCacheWarmDataset(Dataset[dict[str, Any]]):
         self.record_timeout_seconds = max(0.0, float(record_timeout_seconds))
         self.skipped_audio_sources = skipped_audio_sources or set()
         self.ffprobe_timeout_seconds = max(0.0, float(ffprobe_timeout_seconds))
+        self.ffmpeg_timeout_seconds = max(0.0, float(ffmpeg_timeout_seconds))
 
     def __len__(self) -> int:
         return len(self.indices) if self.indices is not None else len(self.records)
@@ -157,6 +159,22 @@ class FeatureCacheWarmDataset(Dataset[dict[str, Any]]):
                         "audio_path": record.audio_path,
                         "audio_source": _record_audio_source(record),
                         "error": ffprobe_error,
+                        "frames": 0,
+                        "elapsed": time.perf_counter() - started_at,
+                    }
+
+                ffmpeg_error = _ffmpeg_decode_audio_source(
+                    record,
+                    self.ffmpeg_timeout_seconds,
+                )
+                if ffmpeg_error is not None:
+                    return {
+                        "status": "failed",
+                        "index": record_index,
+                        "utterance_id": record.utterance_id,
+                        "audio_path": record.audio_path,
+                        "audio_source": _record_audio_source(record),
+                        "error": ffmpeg_error,
                         "frames": 0,
                         "elapsed": time.perf_counter() - started_at,
                     }
@@ -338,6 +356,64 @@ def _ffprobe_audio_source(record: AudioRecord, timeout_seconds: float) -> str | 
     return None
 
 
+def _ffmpeg_decode_audio_source(record: AudioRecord, timeout_seconds: float) -> str | None:
+    if timeout_seconds <= 0:
+        return None
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+    ]
+    try:
+        if record.audio_bytes is not None:
+            result = subprocess.run(
+                [
+                    *command,
+                    "-i",
+                    "pipe:0",
+                    "-map",
+                    "0:a:0",
+                    "-f",
+                    "null",
+                    "-",
+                ],
+                input=record.audio_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        elif record.audio_path is not None:
+            result = subprocess.run(
+                [
+                    *command,
+                    "-i",
+                    str(record.audio_path),
+                    "-map",
+                    "0:a:0",
+                    "-f",
+                    "null",
+                    "-",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        else:
+            return "ffmpeg skipped record without audio path or embedded bytes"
+    except subprocess.TimeoutExpired:
+        return f"ffmpeg decode validation timed out after {timeout_seconds:g}s"
+    except FileNotFoundError:
+        return "ffmpeg executable was not found"
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        return f"ffmpeg decode validation failed with exit code {result.returncode}: {stderr}"
+    return None
+
+
 @contextmanager
 def _record_timeout(seconds: float):
     if seconds <= 0 or not hasattr(signal, "SIGALRM"):
@@ -465,6 +541,16 @@ def _add_warmer_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--cache-warm-ffmpeg-timeout",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional ffmpeg decode-validation timeout in seconds before Python decode. "
+            "This feeds the sample to ffmpeg and decodes to null; rejected or timed-out "
+            "records are logged as failed and skipped. Set 0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--cache-warm-skip-list",
         default=None,
         help=(
@@ -566,6 +652,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         raise ValueError(
             "--cache-warm-ffprobe-timeout must be >= 0, "
             f"got {training_args.cache_warm_ffprobe_timeout}."
+        )
+    if training_args.cache_warm_ffmpeg_timeout < 0:
+        raise ValueError(
+            "--cache-warm-ffmpeg-timeout must be >= 0, "
+            f"got {training_args.cache_warm_ffmpeg_timeout}."
         )
     return training_args
 
@@ -707,6 +798,7 @@ def _warm_split(
             skipped_audio_sources=skipped_audio_sources,
             indices=pending_indices,
             ffprobe_timeout_seconds=args.cache_warm_ffprobe_timeout,
+            ffmpeg_timeout_seconds=args.cache_warm_ffmpeg_timeout,
         )
         loader = DataLoader(
             dataset,
@@ -722,7 +814,8 @@ def _warm_split(
     logger.info(
         "%s feature cache warm started records=%s hours=%.2f cache_dir=%s format=%s "
         "workers=%s batch_size=%s prefetch_factor=%s in_order=%s timeout=%s "
-        "record_timeout=%s ffprobe_timeout=%s overwrite=%s validate_existing=%s",
+        "record_timeout=%s ffprobe_timeout=%s ffmpeg_timeout=%s overwrite=%s "
+        "validate_existing=%s",
         split,
         len(records),
         _record_store_duration_hours(records, hop_length=featurizer.hop_length),
@@ -735,6 +828,7 @@ def _warm_split(
         args.cache_warm_timeout if workers > 0 else "none",
         args.cache_warm_record_timeout,
         args.cache_warm_ffprobe_timeout,
+        args.cache_warm_ffmpeg_timeout,
         args.cache_warm_overwrite,
         args.cache_warm_validate_existing,
     )

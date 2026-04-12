@@ -7,6 +7,7 @@ import torch
 
 from feature_cache_warmer.cli import (
     FeatureCacheWarmDataset,
+    _ffmpeg_decode_audio_source,
     _ffprobe_audio_source,
     _load_skip_list,
     _resolve_cache_warm_splits,
@@ -29,6 +30,8 @@ def test_parse_feature_cache_warmer_accepts_training_and_warmer_args(tmp_path: P
             "7",
             "--cache-warm-ffprobe-timeout",
             "0.2",
+            "--cache-warm-ffmpeg-timeout",
+            "0.3",
             "--cache-warm-skip-list",
             str(tmp_path / "skip.txt"),
             "--cache-warm-failed-list",
@@ -49,6 +52,7 @@ def test_parse_feature_cache_warmer_accepts_training_and_warmer_args(tmp_path: P
     assert args.cache_warm_timeout == 60
     assert args.cache_warm_record_timeout == 7
     assert args.cache_warm_ffprobe_timeout == 0.2
+    assert args.cache_warm_ffmpeg_timeout == 0.3
     assert args.cache_warm_skip_list == str(tmp_path / "skip.txt")
     assert args.cache_warm_failed_list == str(tmp_path / "failed.tsv")
     assert args.cache_warm_audio_source == "bytes"
@@ -265,6 +269,52 @@ def test_ffprobe_audio_source_accepts_audio_stream(monkeypatch) -> None:
     monkeypatch.setattr("feature_cache_warmer.cli.subprocess.run", fake_run)
 
     error = _ffprobe_audio_source(
+        AudioRecord("dummy.wav", b"ok", "це тест", "utt0", estimated_frames=2),
+        0.2,
+    )
+
+    assert error is None
+
+
+def test_feature_cache_warmer_ffmpeg_rejects_bad_audio_before_decode(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def fake_load_audio(
+        audio_path: str | None, audio_bytes: bytes | None
+    ) -> tuple[torch.Tensor, int]:
+        raise AssertionError("ffmpeg failure should avoid audio load")
+
+    def fake_run(*args, **kwargs):
+        return type(
+            "Completed",
+            (),
+            {"returncode": 1, "stdout": b"", "stderr": b"invalid data"},
+        )()
+
+    monkeypatch.setattr("feature_cache_warmer.cli.load_audio", fake_load_audio)
+    monkeypatch.setattr("feature_cache_warmer.cli.subprocess.run", fake_run)
+    dataset = FeatureCacheWarmDataset(
+        [AudioRecord("dummy.wav", b"bad", "це тест", "utt0", estimated_frames=2)],
+        featurizer=AudioFeaturizer(),
+        feature_cache_dir=tmp_path,
+        feature_cache_format="file",
+        ffmpeg_timeout_seconds=0.2,
+    )
+
+    item = dataset[0]
+
+    assert item["status"] == "failed"
+    assert "ffmpeg decode validation failed" in item["error"]
+    assert not list(tmp_path.glob("*.pt"))
+
+
+def test_ffmpeg_decode_audio_source_accepts_decodable_audio(monkeypatch) -> None:
+    def fake_run(*args, **kwargs):
+        return type("Completed", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+
+    monkeypatch.setattr("feature_cache_warmer.cli.subprocess.run", fake_run)
+
+    error = _ffmpeg_decode_audio_source(
         AudioRecord("dummy.wav", b"ok", "це тест", "utt0", estimated_frames=2),
         0.2,
     )
