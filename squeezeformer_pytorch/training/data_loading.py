@@ -582,6 +582,15 @@ def _record_index_path(records_path: Path, suffix: str) -> Path:
     return records_path.with_suffix(records_path.suffix + suffix)
 
 
+def _disk_backed_record_store_exists(records_path: Path) -> bool:
+    required_paths = (
+        records_path,
+        _record_index_path(records_path, ".offsets.u64"),
+        _record_index_path(records_path, ".estimated_frames.u32"),
+    )
+    return all(path.is_file() and path.stat().st_size > 0 for path in required_paths)
+
+
 def _is_remote_audio_source(audio_path: str) -> bool:
     return urlparse(audio_path).scheme in {"http", "https"}
 
@@ -1128,24 +1137,35 @@ def _load_train_val_records(
             train_records = _open_disk_backed_record_store(train_records_path)
             val_records = _open_disk_backed_record_store(val_records_path)
         else:
-            train_records = _build_disk_backed_record_store(
-                train_dataset_sources,
-                split="train",
-                val_fraction=train_val_fraction,
-                test_fraction=train_test_fraction,
-                max_samples=args.max_train_samples,
-                records_path=train_records_path,
-                **common_record_store_kwargs,
-            )
-            val_records = _build_disk_backed_record_store(
-                validation_dataset_sources or train_dataset_sources,
-                split=validation_split,
-                val_fraction=validation_val_fraction,
-                test_fraction=validation_test_fraction,
-                max_samples=args.max_val_samples,
-                records_path=val_records_path,
-                **common_record_store_kwargs,
-            )
+            if _disk_backed_record_store_exists(
+                train_records_path
+            ) and _disk_backed_record_store_exists(val_records_path):
+                logger.info(
+                    "using existing disk-backed record cache train_path=%s validation_path=%s",
+                    train_records_path,
+                    val_records_path,
+                )
+                train_records = _open_disk_backed_record_store(train_records_path)
+                val_records = _open_disk_backed_record_store(val_records_path)
+            else:
+                train_records = _build_disk_backed_record_store(
+                    train_dataset_sources,
+                    split="train",
+                    val_fraction=train_val_fraction,
+                    test_fraction=train_test_fraction,
+                    max_samples=args.max_train_samples,
+                    records_path=train_records_path,
+                    **common_record_store_kwargs,
+                )
+                val_records = _build_disk_backed_record_store(
+                    validation_dataset_sources or train_dataset_sources,
+                    split=validation_split,
+                    val_fraction=validation_val_fraction,
+                    test_fraction=validation_test_fraction,
+                    max_samples=args.max_val_samples,
+                    records_path=val_records_path,
+                    **common_record_store_kwargs,
+                )
             if distributed and dist.is_initialized():
                 _distributed_barrier()
         if args.prevalidate_audio:
