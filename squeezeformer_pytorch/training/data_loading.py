@@ -8,7 +8,9 @@ import json
 import mmap
 import os
 import struct
+import time
 from concurrent.futures import ThreadPoolExecutor
+from logging import Logger
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -27,6 +29,33 @@ from squeezeformer_pytorch.data import (
     probe_audio_metadata,
     read_binary_source,
 )
+
+
+def _progress_log_interval(total: int) -> int:
+    if total <= 0:
+        return 1
+    return max(1_000, min(50_000, total // 20 or 1))
+
+
+def _log_metadata_progress(
+    progress_logger: Logger,
+    message: str,
+    completed: int,
+    total: int,
+    start_time: float,
+) -> None:
+    elapsed = max(0.0, time.perf_counter() - start_time)
+    rate = completed / elapsed if elapsed > 0 else 0.0
+    percent = (completed / total * 100.0) if total > 0 else 0.0
+    progress_logger.info(
+        "%s progress=%s/%s %.1f%% rate=%.1f/s elapsed=%.1fs",
+        message,
+        completed,
+        total,
+        percent,
+        rate,
+        elapsed,
+    )
 
 
 def _resolve_dataset_roots(args: argparse.Namespace) -> list[Path]:
@@ -196,17 +225,37 @@ class DiskBackedRecordStore:
         num_workers: int = 4,
         featurizer: AudioFeaturizer | None = None,
         force_audio_metadata_probe: bool = False,
+        progress_logger: Logger | None = None,
+        progress_label: str = "records",
     ) -> None:
+        total = len(self)
+        start_time = time.perf_counter()
         if (
             not force_audio_metadata_probe
             and self.num_samples is not None
             and self.sample_rates is not None
         ):
-            for index in range(len(self)):
+            if progress_logger is not None:
+                progress_logger.info(
+                    "%s estimating frames from cached audio metadata records=%s",
+                    progress_label,
+                    total,
+                )
+            for completed, index in enumerate(range(total), start=1):
                 global_index = self._global_index(index)
                 num_samples = int(self.num_samples[global_index])
                 sample_rate = int(self.sample_rates[global_index])
                 if num_samples <= 0 or sample_rate <= 0:
+                    if progress_logger is not None and (
+                        completed == total or completed % _progress_log_interval(total) == 0
+                    ):
+                        _log_metadata_progress(
+                            progress_logger,
+                            f"{progress_label} estimated frames from cached metadata",
+                            completed,
+                            total,
+                            start_time,
+                        )
                     continue
                 frames = estimate_feature_frames_from_metadata(
                     num_samples,
@@ -215,6 +264,16 @@ class DiskBackedRecordStore:
                     featurizer=featurizer,
                 )
                 self.estimated_frames[global_index] = max(0, int(frames))
+                if progress_logger is not None and (
+                    completed == total or completed % _progress_log_interval(total) == 0
+                ):
+                    _log_metadata_progress(
+                        progress_logger,
+                        f"{progress_label} estimated frames from cached metadata",
+                        completed,
+                        total,
+                        start_time,
+                    )
         if force_audio_metadata_probe:
             global_indices = [self._global_index(index) for index in range(len(self))]
         else:
@@ -230,6 +289,13 @@ class DiskBackedRecordStore:
                 )
             ]
         if not global_indices:
+            if progress_logger is not None:
+                progress_logger.info(
+                    "%s audio metadata complete records=%s probe_needed=0 elapsed=%.1fs",
+                    progress_label,
+                    total,
+                    time.perf_counter() - start_time,
+                )
             return
 
         def populate(global_index: int) -> tuple[int, int, int, int]:
@@ -249,17 +315,57 @@ class DiskBackedRecordStore:
             )
             return global_index, frames, num_samples, sample_rate
 
-        if num_workers <= 1:
-            populated = [populate(global_index) for global_index in global_indices]
-        else:
-            with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                populated = list(executor.map(populate, global_indices))
-        for global_index, frames, num_samples, sample_rate in populated:
+        probe_total = len(global_indices)
+        if progress_logger is not None:
+            progress_logger.info(
+                "%s probing missing audio metadata records=%s metadata_workers=%s force_probe=%s",
+                progress_label,
+                probe_total,
+                num_workers,
+                force_audio_metadata_probe,
+            )
+
+        def store_populated(global_index: int, frames: int, num_samples: int, sample_rate: int):
             self.estimated_frames[global_index] = max(0, int(frames))
             if self.num_samples is not None:
                 self.num_samples[global_index] = max(0, int(num_samples))
             if self.sample_rates is not None:
                 self.sample_rates[global_index] = max(0, int(sample_rate))
+
+        probe_start_time = time.perf_counter()
+        if num_workers <= 1:
+            iterator = (populate(global_index) for global_index in global_indices)
+            for completed, (global_index, frames, num_samples, sample_rate) in enumerate(
+                iterator, start=1
+            ):
+                store_populated(global_index, frames, num_samples, sample_rate)
+                if progress_logger is not None and (
+                    completed == probe_total or completed % _progress_log_interval(probe_total) == 0
+                ):
+                    _log_metadata_progress(
+                        progress_logger,
+                        f"{progress_label} probed audio metadata",
+                        completed,
+                        probe_total,
+                        probe_start_time,
+                    )
+        else:
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                for completed, (global_index, frames, num_samples, sample_rate) in enumerate(
+                    executor.map(populate, global_indices), start=1
+                ):
+                    store_populated(global_index, frames, num_samples, sample_rate)
+                    if progress_logger is not None and (
+                        completed == probe_total
+                        or completed % _progress_log_interval(probe_total) == 0
+                    ):
+                        _log_metadata_progress(
+                            progress_logger,
+                            f"{progress_label} probed audio metadata",
+                            completed,
+                            probe_total,
+                            probe_start_time,
+                        )
 
 
 class _BinaryIndexView:
@@ -946,9 +1052,7 @@ def _record_store_duration_hours(
     if not hasattr(records, "estimated_frames") and all(
         int(record.num_samples) > 0 and int(record.sample_rate) > 0 for record in records
     ):
-        total_seconds = sum(
-            int(record.num_samples) / int(record.sample_rate) for record in records
-        )
+        total_seconds = sum(int(record.num_samples) / int(record.sample_rate) for record in records)
         return total_seconds / 3600.0
     total_frames = 0
     if hasattr(records, "estimated_frames"):

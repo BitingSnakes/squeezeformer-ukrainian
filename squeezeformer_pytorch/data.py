@@ -8,6 +8,7 @@ import multiprocessing as mp
 import os
 import re
 import sys
+import time
 import wave
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -63,6 +64,78 @@ def _dataloader_multiprocessing_context(
         # Avoid forking a process that already owns distributed/CUDA runtime state.
         return mp.get_context("spawn")
     return mp.get_context("fork")
+
+
+def _progress_log_interval(total: int) -> int:
+    if total <= 0:
+        return 1
+    return max(1_000, min(50_000, total // 20 or 1))
+
+
+def _log_progress(
+    progress_logger: logging.Logger | None,
+    message: str,
+    completed: int,
+    total: int,
+    start_time: float,
+) -> None:
+    if progress_logger is None:
+        return
+    elapsed = max(0.0, time.perf_counter() - start_time)
+    rate = completed / elapsed if elapsed > 0 else 0.0
+    percent = (completed / total * 100.0) if total > 0 else 0.0
+    progress_logger.info(
+        "%s progress=%s/%s %.1f%% rate=%.1f/s elapsed=%.1fs",
+        message,
+        completed,
+        total,
+        percent,
+        rate,
+        elapsed,
+    )
+
+
+def _should_log_progress(completed: int, total: int) -> bool:
+    return completed == total or completed % _progress_log_interval(total) == 0
+
+
+def _sorted_indices_with_progress(
+    records: list[AudioRecord],
+    key_fn: Callable[[int], object],
+    *,
+    progress_logger: logging.Logger | None,
+    progress_label: str,
+    phase: str,
+) -> list[int]:
+    total = len(records)
+    start_time = time.perf_counter()
+    if progress_logger is not None:
+        progress_logger.info("%s %s computing sort keys records=%s", progress_label, phase, total)
+    keyed_indices: list[tuple[object, int]] = []
+    for completed, index in enumerate(range(total), start=1):
+        keyed_indices.append((key_fn(index), index))
+        if progress_logger is not None and _should_log_progress(completed, total):
+            _log_progress(
+                progress_logger,
+                f"{progress_label} {phase} computed sort keys",
+                completed,
+                total,
+                start_time,
+            )
+    sort_start_time = time.perf_counter()
+    if progress_logger is not None:
+        progress_logger.info("%s %s sorting keyed records total=%s", progress_label, phase, total)
+    keyed_indices.sort(key=lambda item: item[0])
+    if progress_logger is not None:
+        progress_logger.info(
+            "%s %s sorted records total=%s key_elapsed=%.1fs sort_elapsed=%.1fs",
+            progress_label,
+            phase,
+            total,
+            sort_start_time - start_time,
+            time.perf_counter() - sort_start_time,
+        )
+    return [index for _, index in keyed_indices]
 
 
 @dataclass
@@ -1256,6 +1329,8 @@ class LengthBucketBatchSampler(BatchSampler):
         shuffle: bool,
         longest_first: bool = False,
         seed: int = 0,
+        progress_logger: logging.Logger | None = None,
+        progress_label: str = "dataloader",
     ) -> None:
         self.records = records
         self.batch_size = batch_size
@@ -1263,14 +1338,20 @@ class LengthBucketBatchSampler(BatchSampler):
         self.longest_first = longest_first
         self.seed = int(seed)
         self.epoch = 0
+        self.progress_logger = progress_logger
+        self.progress_label = progress_label
 
     def _batch_order_key(self, batch: list[int]) -> tuple[int, int]:
         max_frames = max(max(1, self.records[index].estimated_frames) for index in batch)
         return max_frames, len(batch)
 
     def __iter__(self):
-        indices = sorted(
-            range(len(self.records)), key=lambda index: self.records[index].estimated_frames
+        indices = _sorted_indices_with_progress(
+            self.records,
+            lambda index: self.records[index].estimated_frames,
+            progress_logger=self.progress_logger,
+            progress_label=self.progress_label,
+            phase="length-bucket sampler",
         )
         batches = [
             indices[start : start + self.batch_size]
@@ -1298,6 +1379,8 @@ class MaxFramesBatchSampler(BatchSampler):
         shuffle: bool,
         longest_first: bool = False,
         seed: int = 0,
+        progress_logger: logging.Logger | None = None,
+        progress_label: str = "dataloader",
     ) -> None:
         self.records = records
         self.max_batch_frames = max_batch_frames
@@ -1305,8 +1388,14 @@ class MaxFramesBatchSampler(BatchSampler):
         self.longest_first = longest_first
         self.seed = int(seed)
         self.epoch = 0
-        self._sorted_indices = sorted(
-            range(len(self.records)), key=lambda index: self.records[index].estimated_frames
+        self.progress_logger = progress_logger
+        self.progress_label = progress_label
+        self._sorted_indices = _sorted_indices_with_progress(
+            self.records,
+            lambda index: self.records[index].estimated_frames,
+            progress_logger=self.progress_logger,
+            progress_label=self.progress_label,
+            phase="max-frames sampler",
         )
         self._num_batches = self._count_batches()
 
@@ -1331,7 +1420,29 @@ class MaxFramesBatchSampler(BatchSampler):
             yield current_batch
 
     def _count_batches(self) -> int:
-        return sum(1 for _ in self._iter_batches())
+        start_time = time.perf_counter()
+        total_records = len(self._sorted_indices)
+        count = 0
+        seen = 0
+        if self.progress_logger is not None:
+            self.progress_logger.info(
+                "%s max-frames sampler counting batches records=%s budget=%s",
+                self.progress_label,
+                total_records,
+                self.max_batch_frames,
+            )
+        for batch in self._iter_batches():
+            count += 1
+            seen += len(batch)
+            if self.progress_logger is not None and _should_log_progress(seen, total_records):
+                _log_progress(
+                    self.progress_logger,
+                    f"{self.progress_label} max-frames sampler counted batches={count}",
+                    seen,
+                    total_records,
+                    start_time,
+                )
+        return count
 
     def __iter__(self):
         batches = list(self._iter_batches())
@@ -1357,6 +1468,8 @@ class DurationBatchSampler(BatchSampler):
         shuffle: bool,
         longest_first: bool = False,
         seed: int = 0,
+        progress_logger: logging.Logger | None = None,
+        progress_label: str = "dataloader",
     ) -> None:
         self.records = records
         self.max_batch_duration_sec = max_batch_duration_sec
@@ -1364,12 +1477,17 @@ class DurationBatchSampler(BatchSampler):
         self.longest_first = longest_first
         self.seed = int(seed)
         self.epoch = 0
-        self._sorted_indices = sorted(
-            range(len(self.records)),
-            key=lambda index: (
+        self.progress_logger = progress_logger
+        self.progress_label = progress_label
+        self._sorted_indices = _sorted_indices_with_progress(
+            self.records,
+            lambda index: (
                 self._record_duration_seconds(self.records[index]),
                 self.records[index].estimated_frames,
             ),
+            progress_logger=self.progress_logger,
+            progress_label=self.progress_label,
+            phase="duration sampler",
         )
         self._num_batches = self._count_batches()
 
@@ -1398,7 +1516,29 @@ class DurationBatchSampler(BatchSampler):
             yield current_batch
 
     def _count_batches(self) -> int:
-        return sum(1 for _ in self._iter_batches())
+        start_time = time.perf_counter()
+        total_records = len(self._sorted_indices)
+        count = 0
+        seen = 0
+        if self.progress_logger is not None:
+            self.progress_logger.info(
+                "%s duration sampler counting batches records=%s budget_sec=%.2f",
+                self.progress_label,
+                total_records,
+                self.max_batch_duration_sec,
+            )
+        for batch in self._iter_batches():
+            count += 1
+            seen += len(batch)
+            if self.progress_logger is not None and _should_log_progress(seen, total_records):
+                _log_progress(
+                    self.progress_logger,
+                    f"{self.progress_label} duration sampler counted batches={count}",
+                    seen,
+                    total_records,
+                    start_time,
+                )
+        return count
 
     def __iter__(self):
         batches = list(self._iter_batches())
@@ -1425,6 +1565,8 @@ class AdaptiveBatchSampler(BatchSampler):
         shuffle: bool,
         longest_first: bool = False,
         seed: int = 0,
+        progress_logger: logging.Logger | None = None,
+        progress_label: str = "dataloader",
     ) -> None:
         if unit not in {"frames", "tokens"}:
             raise ValueError("unit must be one of {'frames', 'tokens'}")
@@ -1435,12 +1577,17 @@ class AdaptiveBatchSampler(BatchSampler):
         self.longest_first = longest_first
         self.seed = int(seed)
         self.epoch = 0
-        self._sorted_indices = sorted(
-            range(len(self.records)),
-            key=lambda index: (
+        self.progress_logger = progress_logger
+        self.progress_label = progress_label
+        self._sorted_indices = _sorted_indices_with_progress(
+            self.records,
+            lambda index: (
                 self.records[index].estimated_frames,
                 len(self.records[index].transcript),
             ),
+            progress_logger=self.progress_logger,
+            progress_label=self.progress_label,
+            phase="adaptive sampler",
         )
         self._num_batches = self._count_batches()
 
@@ -1469,7 +1616,30 @@ class AdaptiveBatchSampler(BatchSampler):
         return total_units, max_frames
 
     def _count_batches(self) -> int:
-        return sum(1 for _ in self._iter_batches())
+        start_time = time.perf_counter()
+        total_records = len(self._sorted_indices)
+        count = 0
+        seen = 0
+        if self.progress_logger is not None:
+            self.progress_logger.info(
+                "%s adaptive sampler counting batches records=%s unit=%s budget=%s",
+                self.progress_label,
+                total_records,
+                self.unit,
+                self.target_batch_units,
+            )
+        for batch in self._iter_batches():
+            count += 1
+            seen += len(batch)
+            if self.progress_logger is not None and _should_log_progress(seen, total_records):
+                _log_progress(
+                    self.progress_logger,
+                    f"{self.progress_label} adaptive sampler counted batches={count}",
+                    seen,
+                    total_records,
+                    start_time,
+                )
+        return count
 
     def __iter__(self):
         batches = list(self._iter_batches())
@@ -1660,6 +1830,8 @@ def materialize_record_metadata(
     num_workers: int = 4,
     featurizer: AudioFeaturizer | None = None,
     force_audio_metadata_probe: bool = False,
+    progress_logger: logging.Logger | None = None,
+    progress_label: str = "records",
 ) -> list[AudioRecord]:
     def populate(record: AudioRecord) -> AudioRecord:
         estimate_record_frames(
@@ -1670,11 +1842,38 @@ def materialize_record_metadata(
         )
         return record
 
+    total = len(records)
+    start_time = time.perf_counter()
+    if progress_logger is not None:
+        progress_logger.info(
+            "%s materializing audio metadata records=%s metadata_workers=%s force_probe=%s",
+            progress_label,
+            total,
+            num_workers,
+            force_audio_metadata_probe,
+        )
     if num_workers <= 1:
-        return [populate(record) for record in records]
+        for completed, record in enumerate(records, start=1):
+            populate(record)
+            if progress_logger is not None and _should_log_progress(completed, total):
+                _log_progress(
+                    progress_logger,
+                    f"{progress_label} materialized audio metadata",
+                    completed,
+                    total,
+                    start_time,
+                )
+        return records
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        for _ in executor.map(populate, records):
-            pass
+        for completed, _ in enumerate(executor.map(populate, records), start=1):
+            if progress_logger is not None and _should_log_progress(completed, total):
+                _log_progress(
+                    progress_logger,
+                    f"{progress_label} materialized audio metadata",
+                    completed,
+                    total,
+                    start_time,
+                )
     return records
 
 
@@ -1760,13 +1959,27 @@ def create_dataloader(
     world_size: int = 1,
     seed: int = 0,
     pad_distributed_batches: bool = False,
+    progress_logger: logging.Logger | None = None,
+    progress_label: str = "dataloader",
 ) -> DataLoader[dict[str, Any]]:
+    stage_start_time = time.perf_counter()
+    if progress_logger is not None:
+        progress_logger.info(
+            "%s create_dataloader started samples=%s batch_size=%s shuffle=%s num_workers=%s",
+            progress_label,
+            len(dataset),
+            batch_size,
+            shuffle,
+            num_workers,
+        )
     if hasattr(dataset.records, "populate_metadata"):
         dataset.records.populate_metadata(
             hop_length=dataset.featurizer.hop_length,
             num_workers=metadata_workers,
             featurizer=dataset.featurizer,
             force_audio_metadata_probe=force_audio_metadata_probe,
+            progress_logger=progress_logger,
+            progress_label=progress_label,
         )
     else:
         materialize_record_metadata(
@@ -1775,6 +1988,14 @@ def create_dataloader(
             num_workers=metadata_workers,
             featurizer=dataset.featurizer,
             force_audio_metadata_probe=force_audio_metadata_probe,
+            progress_logger=progress_logger,
+            progress_label=progress_label,
+        )
+    if progress_logger is not None:
+        progress_logger.info(
+            "%s metadata ready elapsed=%.1fs",
+            progress_label,
+            time.perf_counter() - stage_start_time,
         )
     dataloader_kwargs = {
         "num_workers": num_workers,
@@ -1798,6 +2019,8 @@ def create_dataloader(
             shuffle=shuffle,
             longest_first=longest_batches_first,
             seed=seed,
+            progress_logger=progress_logger,
+            progress_label=progress_label,
         )
         if distributed and world_size > 1:
             batch_sampler = DistributedBatchSampler(
@@ -1814,6 +2037,8 @@ def create_dataloader(
             shuffle=shuffle,
             longest_first=longest_batches_first,
             seed=seed,
+            progress_logger=progress_logger,
+            progress_label=progress_label,
         )
         if distributed and world_size > 1:
             batch_sampler = DistributedBatchSampler(
@@ -1830,6 +2055,8 @@ def create_dataloader(
             shuffle=shuffle,
             longest_first=longest_batches_first,
             seed=seed,
+            progress_logger=progress_logger,
+            progress_label=progress_label,
         )
         if distributed and world_size > 1:
             batch_sampler = DistributedBatchSampler(
@@ -1846,6 +2073,8 @@ def create_dataloader(
             shuffle=shuffle,
             longest_first=longest_batches_first,
             seed=seed,
+            progress_logger=progress_logger,
+            progress_label=progress_label,
         )
         if distributed and world_size > 1:
             batch_sampler = DistributedBatchSampler(

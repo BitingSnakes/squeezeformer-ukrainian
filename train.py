@@ -510,8 +510,7 @@ def _checkpoint_uses_zipformer_transducer(checkpoint: dict[str, object] | None) 
         return bool(training_args.get("zipformer_transducer"))
     model_state_dict = checkpoint.get("model_state_dict")
     return isinstance(model_state_dict, dict) and any(
-        key.startswith("decoder.") or key.startswith("joiner.")
-        for key in model_state_dict
+        key.startswith("decoder.") or key.startswith("joiner.") for key in model_state_dict
     )
 
 
@@ -988,9 +987,7 @@ def _save_audio_preview_samples(
         saved += 1
 
     manifest_path.write_text(
-        "".join(
-            json.dumps(entry, ensure_ascii=False) + "\n" for entry in manifest_entries
-        ),
+        "".join(json.dumps(entry, ensure_ascii=False) + "\n" for entry in manifest_entries),
         encoding="utf-8",
     )
     logger.info(
@@ -1554,6 +1551,8 @@ def main() -> None:
         world_size=world_size,
         seed=args.seed,
         pad_distributed_batches=distributed,
+        progress_logger=logger if is_main_process else None,
+        progress_label="train dataloader",
     )
     val_loader = create_dataloader(
         val_dataset,
@@ -1577,6 +1576,8 @@ def main() -> None:
         world_size=world_size,
         seed=args.seed,
         pad_distributed_batches=False,
+        progress_logger=logger if is_main_process else None,
+        progress_label="validation dataloader",
     )
     train_batches = len(train_loader)
     val_batches = len(val_loader)
