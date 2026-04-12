@@ -11,7 +11,6 @@ from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
-from itertools import chain
 from pathlib import Path
 
 import torch
@@ -186,11 +185,12 @@ def _next_with_wait_logging(
     log_after_seconds: float = 10.0,
     log_every_seconds: float = 30.0,
 ):
+    start_time = time.perf_counter()
     if logger is None:
-        return next(iterator)
+        item = next(iterator)
+        return item, time.perf_counter() - start_time
 
     done = threading.Event()
-    start_time = time.perf_counter()
 
     def watchdog() -> None:
         if done.wait(log_after_seconds):
@@ -207,7 +207,8 @@ def _next_with_wait_logging(
     thread = threading.Thread(target=watchdog, name="first-batch-watchdog", daemon=True)
     thread.start()
     try:
-        return next(iterator)
+        item = next(iterator)
+        return item, time.perf_counter() - start_time
     finally:
         done.set()
 
@@ -1958,19 +1959,25 @@ def main() -> None:
         for optimizer in optimizers:
             optimizer.zero_grad(set_to_none=True)
         train_iterator = iter(train_loader)
-        try:
-            first_batch = _next_with_wait_logging(
-                train_iterator,
-                logger=logger if is_main_process else None,
-                description=(
-                    f"epoch={epoch} waiting for first training batch "
-                    f"num_workers={args.num_workers} prefetch_factor={args.prefetch_factor}"
-                ),
-            )
-            train_batches_iterable = chain([first_batch], train_iterator)
-        except StopIteration:
-            train_batches_iterable = ()
-        for batch_index, batch in enumerate(train_batches_iterable, start=1):
+        batch_index = 0
+        while True:
+            next_batch_index = batch_index + 1
+            try:
+                batch, data_wait_seconds = _next_with_wait_logging(
+                    train_iterator,
+                    logger=logger if is_main_process else None,
+                    description=(
+                        f"epoch={epoch} waiting for training batch "
+                        f"{next_batch_index}/{train_batches} num_workers={args.num_workers} "
+                        f"prefetch_factor={args.prefetch_factor}"
+                    ),
+                    log_after_seconds=10.0 if next_batch_index == 1 else 5.0,
+                    log_every_seconds=30.0,
+                )
+            except StopIteration:
+                break
+            batch_index = next_batch_index
+            batch_step_start_time = time.perf_counter()
             if batch is None:
                 logger.warning("skipping empty training batch after dataset filtering")
                 continue
@@ -1990,10 +1997,10 @@ def main() -> None:
                     and global_step < args.memory_tune_steps
                 ):
                     torch.cuda.reset_peak_memory_stats(device)
-            features = batch["features"].to(device)
-            feature_lengths = batch["feature_lengths"].to(device)
-            targets = batch["targets"].to(device)
-            target_lengths = batch["target_lengths"].to(device)
+            features = batch["features"].to(device, non_blocking=True)
+            feature_lengths = batch["feature_lengths"].to(device, non_blocking=True)
+            targets = batch["targets"].to(device, non_blocking=True)
+            target_lengths = batch["target_lengths"].to(device, non_blocking=True)
             local_batch_size = float(features.size(0))
             global_batch_size = _distributed_sum_float(
                 local_batch_size,
@@ -2006,9 +2013,10 @@ def main() -> None:
             tune_target_tokens += int(target_lengths.sum().item())
             if is_main_process and batch_index == 1:
                 logger.info(
-                    "epoch=%s first_train_batch_ready elapsed=%s batch_size=%s max_feature_frames=%s target_tokens=%s",
+                    "epoch=%s first_train_batch_ready elapsed=%s data_wait=%s batch_size=%s max_feature_frames=%s target_tokens=%s",
                     epoch,
                     _format_elapsed_seconds(time.perf_counter() - epoch_start_time),
+                    _format_elapsed_seconds(data_wait_seconds),
                     int(features.size(0)),
                     int(feature_lengths.max().item()),
                     int(target_lengths.sum().item()),
@@ -2024,9 +2032,9 @@ def main() -> None:
                     token_offset=model.aed_decoder.token_offset,
                     pad_id=model.aed_decoder.pad_id,
                 )
-                decoder_inputs = decoder_inputs.to(device)
-                decoder_targets = decoder_targets.to(device)
-                decoder_target_lengths = decoder_target_lengths.to(device)
+                decoder_inputs = decoder_inputs.to(device, non_blocking=True)
+                decoder_targets = decoder_targets.to(device, non_blocking=True)
+                decoder_target_lengths = decoder_target_lengths.to(device, non_blocking=True)
             else:
                 decoder_inputs = None
                 decoder_targets = None
@@ -2170,6 +2178,29 @@ def main() -> None:
                         padded_frames=tune_padded_frames,
                         target_tokens=tune_target_tokens,
                         device=device,
+                    )
+                batch_step_seconds = time.perf_counter() - batch_step_start_time
+                if is_main_process and (
+                    (args.memory_tune_steps > 0 and global_step <= args.memory_tune_steps)
+                    or data_wait_seconds >= 5.0
+                    or batch_step_seconds >= 5.0
+                ):
+                    logger.info(
+                        (
+                            "batch_timing epoch=%s batch=%s/%s global_step=%s "
+                            "data_wait=%s step_compute=%s batch_size=%s "
+                            "effective_frames=%s max_feature_frames=%s target_tokens=%s"
+                        ),
+                        epoch,
+                        batch_index,
+                        train_batches,
+                        global_step,
+                        _format_elapsed_seconds(data_wait_seconds),
+                        _format_elapsed_seconds(batch_step_seconds),
+                        int(features.size(0)),
+                        int(feature_lengths.sum().item()),
+                        int(feature_lengths.max().item()),
+                        int(target_lengths.sum().item()),
                     )
 
                 if should_log_step:
