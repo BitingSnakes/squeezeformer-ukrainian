@@ -508,7 +508,8 @@ def _add_warmer_args(parser: argparse.ArgumentParser) -> None:
         default=0.0,
         help=(
             "DataLoader timeout in seconds while waiting for worker output. "
-            "The default 0 disables timeout and only logs waits."
+            "When --cache-warm-skip-on-timeout is enabled, 0 uses an automatic timeout; "
+            "otherwise 0 disables timeout and only logs waits."
         ),
     )
     parser.add_argument(
@@ -677,6 +678,27 @@ def _resolve_cache_warm_splits(raw_value: str) -> set[str]:
     return values
 
 
+def _resolve_cache_warm_dataloader_timeout(args: argparse.Namespace, workers: int) -> float:
+    if workers <= 0:
+        return 0.0
+    if args.cache_warm_timeout > 0:
+        return float(args.cache_warm_timeout)
+    if not args.cache_warm_skip_on_timeout:
+        return 0.0
+
+    validation_timeout = 0.0
+    if args.cache_warm_ffprobe_timeout > 0:
+        validation_timeout += float(args.cache_warm_ffprobe_timeout)
+    if args.cache_warm_ffmpeg_timeout > 0:
+        validation_timeout += float(args.cache_warm_ffmpeg_timeout)
+    if validation_timeout > 0:
+        return max(5.0, validation_timeout + 2.0)
+
+    if args.cache_warm_record_timeout > 0:
+        return float(args.cache_warm_record_timeout)
+    return max(30.0, float(args.cache_warm_wait_log_after))
+
+
 def _log_progress(
     *,
     split: str,
@@ -762,6 +784,7 @@ def _warm_split(
     skipped_audio_sources: set[str],
 ) -> dict[str, int]:
     workers = args.num_workers if args.cache_warm_workers is None else args.cache_warm_workers
+    dataloader_timeout = _resolve_cache_warm_dataloader_timeout(args, workers)
     main_feature_cache = (
         ShardedParquetFeatureCache(cache_dir)
         if workers > 0 and str(args.feature_cache_format) == "parquet"
@@ -772,8 +795,8 @@ def _warm_split(
         dataloader_kwargs["prefetch_factor"] = args.prefetch_factor
         dataloader_kwargs["persistent_workers"] = False
         dataloader_kwargs["in_order"] = args.dataloader_in_order
-        if args.cache_warm_timeout > 0:
-            dataloader_kwargs["timeout"] = args.cache_warm_timeout
+        if dataloader_timeout > 0:
+            dataloader_kwargs["timeout"] = dataloader_timeout
         if args.dataloader_mp_context != "auto":
             dataloader_kwargs["multiprocessing_context"] = args.dataloader_mp_context
 
@@ -813,7 +836,8 @@ def _warm_split(
     rebuild_loader()
     logger.info(
         "%s feature cache warm started records=%s hours=%.2f cache_dir=%s format=%s "
-        "workers=%s batch_size=%s prefetch_factor=%s in_order=%s timeout=%s "
+        "workers=%s batch_size=%s prefetch_factor=%s in_order=%s dataloader_timeout=%s "
+        "requested_timeout=%s "
         "record_timeout=%s ffprobe_timeout=%s ffmpeg_timeout=%s overwrite=%s "
         "validate_existing=%s",
         split,
@@ -825,6 +849,7 @@ def _warm_split(
         args.cache_warm_batch_size,
         args.prefetch_factor if workers > 0 else "none",
         args.dataloader_in_order if workers > 0 else "none",
+        dataloader_timeout if workers > 0 else "none",
         args.cache_warm_timeout if workers > 0 else "none",
         args.cache_warm_record_timeout,
         args.cache_warm_ffprobe_timeout,
@@ -849,6 +874,7 @@ def _warm_split(
             f"{split} feature cache warm waiting for item {processed + 1}/{len(records)} "
             f"workers={workers} prefetch_factor={args.prefetch_factor if workers > 0 else 'none'} "
             f"in_order={args.dataloader_in_order if workers > 0 else 'none'} "
+            f"dataloader_timeout={dataloader_timeout if workers > 0 else 'none'} "
             f"next={_record_wait_label(records, next_index)}"
         )
         try:
@@ -861,7 +887,7 @@ def _warm_split(
         except RuntimeError as error:
             if (
                 not args.cache_warm_skip_on_timeout
-                or args.cache_warm_timeout <= 0
+                or dataloader_timeout <= 0
                 or "DataLoader timed out" not in str(error)
             ):
                 raise
@@ -869,7 +895,7 @@ def _warm_split(
             skipped_record = records[skipped_index]
             counts["skipped"] = counts.get("skipped", 0) + 1
             processed += 1
-            reason = f"DataLoader timed out after {args.cache_warm_timeout:g}s"
+            reason = f"DataLoader timed out after {dataloader_timeout:g}s"
             logger.warning(
                 "%s feature cache warm skipped after dataloader timeout index=%s "
                 "utterance_id=%s source=%s in_order=%s reason=%s",

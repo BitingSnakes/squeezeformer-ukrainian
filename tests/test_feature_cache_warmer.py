@@ -10,6 +10,7 @@ from feature_cache_warmer.cli import (
     _ffmpeg_decode_audio_source,
     _ffprobe_audio_source,
     _load_skip_list,
+    _resolve_cache_warm_dataloader_timeout,
     _resolve_cache_warm_splits,
     parse_args,
 )
@@ -75,6 +76,41 @@ def test_parse_feature_cache_warmer_rejects_subsecond_timeouts() -> None:
             assert "at least 1 second" in str(error)
         else:
             raise AssertionError(f"Expected {flag} to reject subsecond timeout.")
+
+
+def test_resolve_cache_warm_dataloader_timeout_uses_explicit_timeout() -> None:
+    args = parse_args(["--cache-warm-timeout", "12", "--device", "cpu"])
+
+    assert _resolve_cache_warm_dataloader_timeout(args, workers=4) == 12
+
+
+def test_resolve_cache_warm_dataloader_timeout_auto_uses_validation_timeout() -> None:
+    args = parse_args(
+        [
+            "--cache-warm-timeout",
+            "0",
+            "--cache-warm-ffmpeg-timeout",
+            "1",
+            "--device",
+            "cpu",
+        ]
+    )
+
+    assert _resolve_cache_warm_dataloader_timeout(args, workers=4) == 5
+
+
+def test_resolve_cache_warm_dataloader_timeout_can_be_disabled() -> None:
+    args = parse_args(
+        [
+            "--cache-warm-timeout",
+            "0",
+            "--no-cache-warm-skip-on-timeout",
+            "--device",
+            "cpu",
+        ]
+    )
+
+    assert _resolve_cache_warm_dataloader_timeout(args, workers=4) == 0
 
 
 def test_resolve_cache_warm_splits_expands_both() -> None:
