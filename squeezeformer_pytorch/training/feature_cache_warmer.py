@@ -199,9 +199,11 @@ def _resolve_featurizer_config(args: argparse.Namespace) -> dict[str, object]:
 def _add_warmer_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--cache-warm-split",
-        choices=["train", "validation", "both"],
         default="train",
-        help="Dataset split to warm.",
+        help=(
+            "Dataset split(s) to warm. Accepts 'train', 'validation', 'both', or a "
+            "comma-separated list such as 'train,validation'."
+        ),
     )
     parser.add_argument(
         "--cache-warm-workers",
@@ -266,6 +268,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             f"--cache-warm-log-interval must be > 0, got {training_args.cache_warm_log_interval}."
         )
     return training_args
+
+
+def _resolve_cache_warm_splits(raw_value: str) -> set[str]:
+    values = {value.strip().lower() for value in str(raw_value).split(",") if value.strip()}
+    if not values:
+        raise ValueError("--cache-warm-split must include at least one split.")
+    if "both" in values:
+        values.remove("both")
+        values.update({"train", "validation"})
+    invalid = values - {"train", "validation"}
+    if invalid:
+        raise ValueError(
+            "--cache-warm-split must contain only 'train', 'validation', or 'both'; "
+            f"got {', '.join(sorted(invalid))}."
+        )
+    return values
 
 
 def _log_progress(
@@ -405,6 +423,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     if args.feature_cache_dir is None:
         raise SystemExit("--feature-cache-dir is required for offline cache warming.")
+    cache_warm_splits = _resolve_cache_warm_splits(args.cache_warm_split)
 
     train_sources = _resolve_dataset_sources(args)
     val_sources = _resolve_validation_dataset_sources(args)
@@ -423,9 +442,9 @@ def main(argv: list[str] | None = None) -> None:
         lowercase_transcripts=lowercase_transcripts,
         output_dir=output_dir,
     )
-    if args.cache_warm_split in {"train", "both"}:
+    if "train" in cache_warm_splits:
         _ensure_opus_decode_support(train_records, split="train")
-    if args.cache_warm_split in {"validation", "both"}:
+    if "validation" in cache_warm_splits:
         _ensure_opus_decode_support(val_records, split="validation")
 
     featurizer = build_featurizer_from_config(
@@ -435,7 +454,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     cache_root = Path(args.feature_cache_dir)
     total_counts: dict[str, int] = {"written": 0, "hit": 0, "invalid": 0, "failed": 0}
-    if args.cache_warm_split in {"train", "both"}:
+    if "train" in cache_warm_splits:
         counts = _warm_split(
             "train",
             train_records,
@@ -445,7 +464,7 @@ def main(argv: list[str] | None = None) -> None:
         )
         for key, value in counts.items():
             total_counts[key] = total_counts.get(key, 0) + value
-    if args.cache_warm_split in {"validation", "both"}:
+    if "validation" in cache_warm_splits:
         counts = _warm_split(
             "validation",
             val_records,

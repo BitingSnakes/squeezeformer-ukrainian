@@ -6,7 +6,11 @@ import torch
 
 from squeezeformer_pytorch.data import AudioFeaturizer, AudioRecord, ShardedParquetFeatureCache
 from squeezeformer_pytorch.runtime_types import FeatureCacheFormat
-from squeezeformer_pytorch.training.feature_cache_warmer import FeatureCacheWarmDataset, parse_args
+from squeezeformer_pytorch.training.feature_cache_warmer import (
+    FeatureCacheWarmDataset,
+    _resolve_cache_warm_splits,
+    parse_args,
+)
 
 
 def test_parse_feature_cache_warmer_accepts_training_and_warmer_args(tmp_path: Path) -> None:
@@ -29,6 +33,27 @@ def test_parse_feature_cache_warmer_accepts_training_and_warmer_args(tmp_path: P
     assert args.cache_warm_workers == 4
     assert args.feature_cache_dir == str(tmp_path / "cache")
     assert args.feature_cache_format == FeatureCacheFormat.PARQUET
+
+
+def test_parse_feature_cache_warmer_accepts_comma_separated_splits() -> None:
+    args = parse_args(["--cache-warm-split", "train,validation", "--device", "cpu"])
+
+    assert args.cache_warm_split == "train,validation"
+    assert _resolve_cache_warm_splits(args.cache_warm_split) == {"train", "validation"}
+
+
+def test_resolve_cache_warm_splits_expands_both() -> None:
+    assert _resolve_cache_warm_splits("both") == {"train", "validation"}
+    assert _resolve_cache_warm_splits("train,both") == {"train", "validation"}
+
+
+def test_resolve_cache_warm_splits_rejects_unknown_split() -> None:
+    try:
+        _resolve_cache_warm_splits("train,test")
+    except ValueError as error:
+        assert "test" in str(error)
+    else:
+        raise AssertionError("Expected invalid cache warm split to be rejected.")
 
 
 def test_feature_cache_warmer_writes_file_cache(tmp_path: Path, monkeypatch) -> None:
