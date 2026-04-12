@@ -30,6 +30,8 @@ from squeezeformer_pytorch.data import (
     read_binary_source,
 )
 
+_METADATA_PROBE_CHUNK_SIZE = 512
+
 
 def _progress_log_interval(total: int) -> int:
     if total <= 0:
@@ -56,6 +58,11 @@ def _log_metadata_progress(
         rate,
         elapsed,
     )
+
+
+def _chunks(values: list[int], size: int):
+    for start in range(0, len(values), size):
+        yield values[start : start + size]
 
 
 def _resolve_dataset_roots(args: argparse.Namespace) -> list[Path]:
@@ -298,15 +305,15 @@ class DiskBackedRecordStore:
                 )
             return
 
-        def populate(global_index: int) -> tuple[int, int, int, int]:
-            handle = self.records_path.open("rb")
-            try:
-                handle.seek(self.offsets[global_index])
-                payload = json.loads(handle.readline().decode("utf-8"))
-            finally:
-                handle.close()
+        def populate_from_payload(
+            global_index: int, payload: dict[str, object]
+        ) -> tuple[int, int, int, int]:
+            audio_path = payload.get("audio_path")
             audio_bytes = _load_cached_audio_bytes(payload, records_path=self.records_path)
-            num_samples, sample_rate = probe_audio_metadata(payload["audio_path"], audio_bytes)
+            num_samples, sample_rate = probe_audio_metadata(
+                audio_path if isinstance(audio_path, str) else None,
+                audio_bytes,
+            )
             frames = estimate_feature_frames_from_metadata(
                 num_samples,
                 sample_rate,
@@ -314,6 +321,24 @@ class DiskBackedRecordStore:
                 featurizer=featurizer,
             )
             return global_index, frames, num_samples, sample_rate
+
+        def populate(global_index: int) -> tuple[int, int, int, int]:
+            handle = self.records_path.open("rb")
+            try:
+                handle.seek(self.offsets[global_index])
+                payload = json.loads(handle.readline().decode("utf-8"))
+            finally:
+                handle.close()
+            return populate_from_payload(global_index, payload)
+
+        def populate_chunk(global_indices: list[int]) -> list[tuple[int, int, int, int]]:
+            populated = []
+            with self.records_path.open("rb") as handle:
+                for global_index in global_indices:
+                    handle.seek(self.offsets[global_index])
+                    payload = json.loads(handle.readline().decode("utf-8"))
+                    populated.append(populate_from_payload(global_index, payload))
+            return populated
 
         probe_total = len(global_indices)
         if progress_logger is not None:
@@ -350,14 +375,17 @@ class DiskBackedRecordStore:
                         probe_start_time,
                     )
         else:
+            chunk_size = _METADATA_PROBE_CHUNK_SIZE
+            chunks = list(_chunks(global_indices, chunk_size))
             with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                for completed, (global_index, frames, num_samples, sample_rate) in enumerate(
-                    executor.map(populate, global_indices), start=1
-                ):
-                    store_populated(global_index, frames, num_samples, sample_rate)
+                completed = 0
+                for populated_chunk in executor.map(populate_chunk, chunks):
+                    for global_index, frames, num_samples, sample_rate in populated_chunk:
+                        store_populated(global_index, frames, num_samples, sample_rate)
+                    completed += len(populated_chunk)
                     if progress_logger is not None and (
                         completed == probe_total
-                        or completed % _progress_log_interval(probe_total) == 0
+                        or completed % _progress_log_interval(probe_total) < chunk_size
                     ):
                         _log_metadata_progress(
                             progress_logger,
