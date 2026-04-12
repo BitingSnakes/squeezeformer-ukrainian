@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -54,6 +55,7 @@ class FeatureCacheWarmDataset(Dataset[dict[str, Any]]):
         record_timeout_seconds: float = 0.0,
         skipped_audio_sources: set[str] | None = None,
         indices: list[int] | None = None,
+        ffprobe_timeout_seconds: float = 0.0,
     ) -> None:
         self.records = records
         self.indices = indices
@@ -75,6 +77,7 @@ class FeatureCacheWarmDataset(Dataset[dict[str, Any]]):
         self.write_cache = write_cache
         self.record_timeout_seconds = max(0.0, float(record_timeout_seconds))
         self.skipped_audio_sources = skipped_audio_sources or set()
+        self.ffprobe_timeout_seconds = max(0.0, float(ffprobe_timeout_seconds))
 
     def __len__(self) -> int:
         return len(self.indices) if self.indices is not None else len(self.records)
@@ -129,6 +132,7 @@ class FeatureCacheWarmDataset(Dataset[dict[str, Any]]):
                     "index": record_index,
                     "utterance_id": record.utterance_id,
                     "audio_path": record.audio_path,
+                    "audio_source": _record_audio_source(record),
                     "frames": int(record.estimated_frames),
                     "elapsed": time.perf_counter() - started_at,
                 }
@@ -138,11 +142,29 @@ class FeatureCacheWarmDataset(Dataset[dict[str, Any]]):
                         "status": "hit",
                         "index": record_index,
                         "utterance_id": record.utterance_id,
+                        "audio_path": record.audio_path,
+                        "audio_source": _record_audio_source(record),
                         "frames": int(record.estimated_frames),
                         "elapsed": time.perf_counter() - started_at,
                     }
 
-                waveform, sample_rate = load_audio(record.audio_path, record.audio_bytes)
+                ffprobe_error = _ffprobe_audio_source(record, self.ffprobe_timeout_seconds)
+                if ffprobe_error is not None:
+                    return {
+                        "status": "failed",
+                        "index": record_index,
+                        "utterance_id": record.utterance_id,
+                        "audio_path": record.audio_path,
+                        "audio_source": _record_audio_source(record),
+                        "error": ffprobe_error,
+                        "frames": 0,
+                        "elapsed": time.perf_counter() - started_at,
+                    }
+
+                waveform, sample_rate = load_audio(
+                    None if record.audio_bytes is not None else record.audio_path,
+                    record.audio_bytes,
+                )
                 features = self.featurizer(waveform, sample_rate)
                 if not feature_tensor_is_plausible(
                     record,
@@ -153,6 +175,8 @@ class FeatureCacheWarmDataset(Dataset[dict[str, Any]]):
                         "status": "invalid",
                         "index": record_index,
                         "utterance_id": record.utterance_id,
+                        "audio_path": record.audio_path,
+                        "audio_source": _record_audio_source(record),
                         "frames": int(getattr(features, "shape", [0])[0]),
                         "elapsed": time.perf_counter() - started_at,
                     }
@@ -164,6 +188,8 @@ class FeatureCacheWarmDataset(Dataset[dict[str, Any]]):
                         "status": "written",
                         "index": record_index,
                         "utterance_id": record.utterance_id,
+                        "audio_path": record.audio_path,
+                        "audio_source": _record_audio_source(record),
                         "features": features,
                         "frames": int(features.size(0)),
                         "elapsed": time.perf_counter() - started_at,
@@ -179,6 +205,8 @@ class FeatureCacheWarmDataset(Dataset[dict[str, Any]]):
                     "status": "written",
                     "index": record_index,
                     "utterance_id": record.utterance_id,
+                    "audio_path": record.audio_path,
+                    "audio_source": _record_audio_source(record),
                     "frames": int(features.size(0)),
                     "elapsed": time.perf_counter() - started_at,
                 }
@@ -188,6 +216,7 @@ class FeatureCacheWarmDataset(Dataset[dict[str, Any]]):
                 "index": record_index,
                 "utterance_id": record.utterance_id,
                 "audio_path": record.audio_path,
+                "audio_source": _record_audio_source(record),
                 "error": str(error),
                 "frames": 0,
                 "elapsed": time.perf_counter() - started_at,
@@ -205,6 +234,14 @@ def _record_skip_keys(record: AudioRecord) -> set[str]:
         keys.add(audio_path)
         keys.add(Path(audio_path).name)
     return keys
+
+
+def _record_audio_source(record: AudioRecord) -> str:
+    if record.audio_bytes is not None:
+        return f"bytes:{len(record.audio_bytes)}"
+    if record.audio_path:
+        return f"path:{record.audio_path}"
+    return "none"
 
 
 def _record_matches_skip_list(record: AudioRecord, skipped_audio_sources: set[str]) -> bool:
@@ -233,11 +270,13 @@ def _append_failed_record(path: str | Path | None, item: dict[str, Any]) -> None
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     audio_path = str(item.get("audio_path") or "")
+    audio_source = str(item.get("audio_source") or "")
     utterance_id = str(item.get("utterance_id") or "")
     error = str(item.get("error") or "")
     with output_path.open("a", encoding="utf-8") as handle:
         handle.write(
-            f"{audio_path}\t{utterance_id}\t{error.replace(chr(9), ' ').replace(chr(10), ' ')}\n"
+            f"{audio_path}\t{audio_source}\t{utterance_id}\t"
+            f"{error.replace(chr(9), ' ').replace(chr(10), ' ')}\n"
         )
 
 
@@ -246,10 +285,57 @@ def _append_skipped_record(path: str | Path | None, record: AudioRecord, error: 
         path,
         {
             "audio_path": record.audio_path,
+            "audio_source": _record_audio_source(record),
             "utterance_id": record.utterance_id,
             "error": error,
         },
     )
+
+
+def _ffprobe_audio_source(record: AudioRecord, timeout_seconds: float) -> str | None:
+    if timeout_seconds <= 0:
+        return None
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=codec_type",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+    ]
+    try:
+        if record.audio_bytes is not None:
+            result = subprocess.run(
+                [*command, "pipe:0"],
+                input=record.audio_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        elif record.audio_path is not None:
+            result = subprocess.run(
+                [*command, str(record.audio_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        else:
+            return "ffprobe skipped record without audio path or embedded bytes"
+    except subprocess.TimeoutExpired:
+        return f"ffprobe timed out after {timeout_seconds:g}s"
+    except FileNotFoundError:
+        return "ffprobe executable was not found"
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        return f"ffprobe failed with exit code {result.returncode}: {stderr}"
+    if b"audio" not in result.stdout:
+        return "ffprobe did not find an audio stream"
+    return None
 
 
 @contextmanager
@@ -369,6 +455,16 @@ def _add_warmer_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--cache-warm-ffprobe-timeout",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional fast ffprobe validation timeout in seconds before Python decode. "
+            "Records rejected or timed out by ffprobe are logged as failed and skipped. "
+            "Set 0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--cache-warm-skip-list",
         default=None,
         help=(
@@ -451,10 +547,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         raise ValueError(
             f"--cache-warm-timeout must be >= 0, got {training_args.cache_warm_timeout}."
         )
+    if 0 < training_args.cache_warm_timeout < 1:
+        raise ValueError(
+            "--cache-warm-timeout must be either 0 to disable DataLoader timeout or at least "
+            f"1 second, got {training_args.cache_warm_timeout}."
+        )
     if training_args.cache_warm_record_timeout < 0:
         raise ValueError(
             "--cache-warm-record-timeout must be >= 0, "
             f"got {training_args.cache_warm_record_timeout}."
+        )
+    if 0 < training_args.cache_warm_record_timeout < 1:
+        raise ValueError(
+            "--cache-warm-record-timeout must be either 0 to disable per-record timeout or at "
+            f"least 1 second, got {training_args.cache_warm_record_timeout}."
+        )
+    if training_args.cache_warm_ffprobe_timeout < 0:
+        raise ValueError(
+            "--cache-warm-ffprobe-timeout must be >= 0, "
+            f"got {training_args.cache_warm_ffprobe_timeout}."
         )
     return training_args
 
@@ -512,8 +623,7 @@ def _record_wait_label(records, index: int) -> str:
         record = records[index]
     except Exception:
         return f"index={index}"
-    audio_path = str(record.audio_path) if record.audio_path is not None else "<bytes>"
-    return f"index={index} utterance_id={record.utterance_id} audio={audio_path}"
+    return f"index={index} utterance_id={record.utterance_id} source={_record_audio_source(record)}"
 
 
 def _next_with_wait_logging(
@@ -596,6 +706,7 @@ def _warm_split(
             record_timeout_seconds=args.cache_warm_record_timeout,
             skipped_audio_sources=skipped_audio_sources,
             indices=pending_indices,
+            ffprobe_timeout_seconds=args.cache_warm_ffprobe_timeout,
         )
         loader = DataLoader(
             dataset,
@@ -611,7 +722,7 @@ def _warm_split(
     logger.info(
         "%s feature cache warm started records=%s hours=%.2f cache_dir=%s format=%s "
         "workers=%s batch_size=%s prefetch_factor=%s in_order=%s timeout=%s "
-        "record_timeout=%s overwrite=%s validate_existing=%s",
+        "record_timeout=%s ffprobe_timeout=%s overwrite=%s validate_existing=%s",
         split,
         len(records),
         _record_store_duration_hours(records, hop_length=featurizer.hop_length),
@@ -623,6 +734,7 @@ def _warm_split(
         args.dataloader_in_order if workers > 0 else "none",
         args.cache_warm_timeout if workers > 0 else "none",
         args.cache_warm_record_timeout,
+        args.cache_warm_ffprobe_timeout,
         args.cache_warm_overwrite,
         args.cache_warm_validate_existing,
     )
@@ -666,11 +778,11 @@ def _warm_split(
             reason = f"DataLoader timed out after {args.cache_warm_timeout:g}s"
             logger.warning(
                 "%s feature cache warm skipped after dataloader timeout index=%s "
-                "utterance_id=%s audio=%s in_order=%s reason=%s",
+                "utterance_id=%s source=%s in_order=%s reason=%s",
                 split,
                 skipped_index,
                 skipped_record.utterance_id,
-                skipped_record.audio_path,
+                _record_audio_source(skipped_record),
                 args.dataloader_in_order if workers > 0 else "none",
                 reason,
             )
@@ -714,16 +826,17 @@ def _warm_split(
                 )
             if status == "skipped":
                 logger.info(
-                    "%s feature cache warm skipped utterance_id=%s audio=%s",
+                    "%s feature cache warm skipped utterance_id=%s source=%s",
                     split,
                     item.get("utterance_id"),
-                    item.get("audio_path"),
+                    item.get("audio_source") or item.get("audio_path"),
                 )
             if status == "failed":
                 logger.warning(
-                    "%s feature cache warm failed utterance_id=%s error=%s",
+                    "%s feature cache warm failed utterance_id=%s source=%s error=%s",
                     split,
                     item.get("utterance_id"),
+                    item.get("audio_source") or item.get("audio_path"),
                     item.get("error"),
                 )
                 _append_failed_record(args.cache_warm_failed_list, item)
