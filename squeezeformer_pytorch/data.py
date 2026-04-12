@@ -1224,12 +1224,20 @@ def feature_tensor_is_plausible(
 
 
 class ShardedFeatureCache:
-    def __init__(self, root: str | Path, *, num_shards: int = 64) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        num_shards: int = 64,
+        commit_every: int = 64,
+    ) -> None:
         self.root = Path(root)
         self.num_shards = int(num_shards)
+        self.commit_every = max(1, int(commit_every))
         self.shard_dir = self.root / "feature_shards"
         self.shard_dir.mkdir(parents=True, exist_ok=True)
         self._connections: dict[int, sqlite3.Connection] = {}
+        self._pending_writes: dict[int, int] = {}
         self._pid: int | None = None
 
     def _key(self, utterance_id: str, featurizer: AudioFeaturizer) -> str:
@@ -1259,19 +1267,23 @@ class ShardedFeatureCache:
 
     def close(self) -> None:
         for connection in self._connections.values():
+            connection.commit()
             connection.close()
         self._connections.clear()
+        self._pending_writes.clear()
         self._pid = None
 
     def __getstate__(self) -> dict[str, object]:
         state = self.__dict__.copy()
         state["_connections"] = {}
+        state["_pending_writes"] = {}
         state["_pid"] = None
         return state
 
     def __setstate__(self, state: dict[str, object]) -> None:
         self.__dict__.update(state)
         self._connections = {}
+        self._pending_writes = {}
         self._pid = None
 
     def load(self, utterance_id: str, featurizer: AudioFeaturizer) -> Tensor | None:
@@ -1286,18 +1298,37 @@ class ShardedFeatureCache:
         key = self._key(utterance_id, featurizer)
         buffer = io.BytesIO()
         torch.save(features, buffer)
-        connection = self._connection(self._shard_index(key))
+        shard_index = self._shard_index(key)
+        connection = self._connection(shard_index)
         connection.execute(
             "INSERT OR REPLACE INTO features (key, payload) VALUES (?, ?)",
             (key, sqlite3.Binary(buffer.getvalue())),
         )
-        connection.commit()
+        pending_writes = self._pending_writes.get(shard_index, 0) + 1
+        self._pending_writes[shard_index] = pending_writes
+        if pending_writes >= self.commit_every:
+            connection.commit()
+            self._pending_writes[shard_index] = 0
+
+    def flush(self) -> None:
+        for shard_index, connection in self._connections.items():
+            if self._pending_writes.get(shard_index, 0) > 0:
+                connection.commit()
+                self._pending_writes[shard_index] = 0
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def delete(self, utterance_id: str, featurizer: AudioFeaturizer) -> None:
         key = self._key(utterance_id, featurizer)
-        connection = self._connection(self._shard_index(key))
+        shard_index = self._shard_index(key)
+        connection = self._connection(shard_index)
         connection.execute("DELETE FROM features WHERE key = ?", (key,))
         connection.commit()
+        self._pending_writes[shard_index] = 0
 
 
 class ASRDataset(Dataset[dict[str, Any]]):
