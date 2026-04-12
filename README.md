@@ -568,7 +568,9 @@ HF_TOKEN=... uv run python train.py \
 
 This path fine-tunes `facebook/w2v-bert-2.0` with the same CTC data, logging,
 checkpointing, evaluation, and export pipeline. FP8 W2V-BERT training requires CUDA and
-the `fp8` optional dependency; add `--dtype fp8`.
+the `fp8` optional dependency; add `--dtype fp8`. To use a local Hugging Face snapshot,
+add `--w2v-bert-model-path /path/to/w2v-bert-2.0`; this overrides
+`--w2v-bert-model-name` for both the model and feature extractor.
 
 Local resumable smoke test:
 

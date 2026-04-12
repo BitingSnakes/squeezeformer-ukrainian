@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+from argparse import Namespace
+
 import torch
 from transformers import Wav2Vec2BertConfig as HFWav2Vec2BertConfig
 
 import squeezeformer_pytorch.model as squeezeformer_model
 import w2v_bert.asr as w2v_bert_asr
-from w2v_bert.asr import W2VBertConfig, W2VBertCTC, W2VBertFeatureExtractor
+from train import _resolve_w2v_bert_model_source
+from w2v_bert.asr import (
+    DEFAULT_W2V_BERT_MODEL,
+    W2VBertConfig,
+    W2VBertCTC,
+    W2VBertFeatureExtractor,
+)
 
 
 def _tiny_hf_config() -> HFWav2Vec2BertConfig:
@@ -147,3 +155,29 @@ def test_w2v_bert_feature_extractor_config_does_not_override_hf_defaults(monkeyp
     assert featurizer.n_mels == 18
     assert featurizer.hop_length == 480
     assert featurizer.padding_value == 7.0
+
+
+def test_resolve_w2v_bert_model_source_prefers_local_path(tmp_path) -> None:
+    model_dir = tmp_path / "local-w2v-bert"
+    model_dir.mkdir()
+    args = Namespace(
+        w2v_bert_model_name="ignored/model-id",
+        w2v_bert_model_path=str(model_dir),
+    )
+
+    assert _resolve_w2v_bert_model_source(args) == str(model_dir.resolve())
+
+
+def test_resolve_w2v_bert_model_source_reuses_checkpoint_source_by_default() -> None:
+    args = Namespace(
+        w2v_bert_model_name=DEFAULT_W2V_BERT_MODEL,
+        w2v_bert_model_path=None,
+    )
+    checkpoint = {
+        "training_args": {
+            "w2v_bert_model_source": "/models/w2v-bert-2.0",
+            "w2v_bert_model_name": "older/model-id",
+        }
+    }
+
+    assert _resolve_w2v_bert_model_source(args, checkpoint) == "/models/w2v-bert-2.0"
