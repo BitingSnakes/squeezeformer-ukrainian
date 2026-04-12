@@ -71,6 +71,18 @@ def test_w2v_bert_ctc_returns_training_outputs_and_backward_runs() -> None:
     assert any(parameter.grad is not None for parameter in model.parameters())
 
 
+def test_w2v_bert_activation_checkpointing_enables_hf_gradient_checkpointing() -> None:
+    model = W2VBertCTC(
+        encoder_config=_tiny_w2v_bert_config(),
+        vocab_size=6,
+        load_pretrained=False,
+        activation_checkpointing=True,
+    )
+
+    assert model.activation_checkpointing is True
+    assert model.encoder.is_gradient_checkpointing is True
+
+
 def test_w2v_bert_uses_transformer_engine_linears_when_fp8_enabled(monkeypatch) -> None:
     class _FakeLinear(torch.nn.Linear):
         seen_input_shapes: list[tuple[int, ...]] = []

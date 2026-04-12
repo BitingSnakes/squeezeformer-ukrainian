@@ -1781,6 +1781,7 @@ def main() -> None:
             pretrained_model_name_or_path=w2v_bert_model_source,
             load_pretrained=checkpoint is None,
             use_transformer_engine=args.dtype == DTypeChoice.FP8,
+            activation_checkpointing=args.activation_checkpointing,
         )
     else:
         model = SqueezeformerCTC(

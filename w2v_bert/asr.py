@@ -292,6 +292,7 @@ class W2VBertCTC(SqueezeformerCTC):
         pretrained_model_name_or_path: str | None = None,
         load_pretrained: bool = False,
         use_transformer_engine: bool = False,
+        activation_checkpointing: bool = False,
     ) -> None:
         nn.Module.__init__(self)
         _require_transformers()
@@ -307,6 +308,9 @@ class W2VBertCTC(SqueezeformerCTC):
             )
         else:
             self.encoder = Wav2Vec2BertModel(hf_config)
+        self.activation_checkpointing = bool(activation_checkpointing)
+        if self.activation_checkpointing:
+            self.encoder.gradient_checkpointing_enable()
         if use_transformer_engine:
             _convert_linear_modules_to_transformer_engine(self.encoder)
         self.classifier = make_linear(
