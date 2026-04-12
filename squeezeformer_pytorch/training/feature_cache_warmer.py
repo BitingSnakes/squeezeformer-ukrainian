@@ -415,6 +415,11 @@ def _warm_split(
     return counts
 
 
+def _accumulate_counts(total_counts: dict[str, int], counts: dict[str, int]) -> None:
+    for key, value in counts.items():
+        total_counts[key] = total_counts.get(key, 0) + value
+
+
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -424,6 +429,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.feature_cache_dir is None:
         raise SystemExit("--feature-cache-dir is required for offline cache warming.")
     cache_warm_splits = _resolve_cache_warm_splits(args.cache_warm_split)
+    ordered_splits = [split for split in ("train", "validation") if split in cache_warm_splits]
 
     train_sources = _resolve_dataset_sources(args)
     val_sources = _resolve_validation_dataset_sources(args)
@@ -454,26 +460,48 @@ def main(argv: list[str] | None = None) -> None:
     )
     cache_root = Path(args.feature_cache_dir)
     total_counts: dict[str, int] = {"written": 0, "hit": 0, "invalid": 0, "failed": 0}
-    if "train" in cache_warm_splits:
+    logger.info(
+        "feature cache warm plan splits=%s total_splits=%s cache_root=%s format=%s",
+        ",".join(ordered_splits),
+        len(ordered_splits),
+        cache_root,
+        args.feature_cache_format,
+    )
+    for split_index, split in enumerate(ordered_splits, start=1):
+        split_records = train_records if split == "train" else val_records
+        logger.info(
+            "feature cache warm split %s/%s starting split=%s records=%s",
+            split_index,
+            len(ordered_splits),
+            split,
+            len(split_records),
+        )
         counts = _warm_split(
-            "train",
-            train_records,
+            split,
+            split_records,
             args=args,
             featurizer=featurizer,
-            cache_dir=cache_root / "train",
+            cache_dir=cache_root / split,
         )
-        for key, value in counts.items():
-            total_counts[key] = total_counts.get(key, 0) + value
-    if "validation" in cache_warm_splits:
-        counts = _warm_split(
-            "validation",
-            val_records,
-            args=args,
-            featurizer=featurizer,
-            cache_dir=cache_root / "validation",
+        _accumulate_counts(total_counts, counts)
+        logger.info(
+            "feature cache warm split %s/%s complete split=%s written=%s hit=%s invalid=%s failed=%s",
+            split_index,
+            len(ordered_splits),
+            split,
+            counts.get("written", 0),
+            counts.get("hit", 0),
+            counts.get("invalid", 0),
+            counts.get("failed", 0),
         )
-        for key, value in counts.items():
-            total_counts[key] = total_counts.get(key, 0) + value
+    logger.info(
+        "feature cache warm all requested splits complete splits=%s written=%s hit=%s invalid=%s failed=%s",
+        ",".join(ordered_splits),
+        total_counts.get("written", 0),
+        total_counts.get("hit", 0),
+        total_counts.get("invalid", 0),
+        total_counts.get("failed", 0),
+    )
     if args.cache_warm_fail_on_error and total_counts.get("failed", 0) > 0:
         raise SystemExit(f"Feature cache warming failed for {total_counts['failed']} record(s).")
 
