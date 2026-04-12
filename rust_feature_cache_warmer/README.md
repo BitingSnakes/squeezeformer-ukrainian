@@ -22,6 +22,38 @@ for the W2V-BERT/SeamlessM4T-style 160-dimensional stacked fbank frontend.
 Use `--input-folder /path/to/manifests` instead of `--input` to process every
 `.parquet` file under a directory recursively.
 
+To warm exactly the records selected by the training loader, build the
+Python-compatible disk-backed record cache first, then feed a split JSONL file
+to the feature warmer:
+
+```bash
+cargo run --release --manifest-path rust_feature_cache_warmer/Cargo.toml -- record-cache \
+  --record-cache-dir /content/cache-cv-zipformer \
+  --dataset-source /content/cv22-opus/ \
+  --validation-dataset-source /content/cv10-uk-testset-clean-punctuated/data/ \
+  --require-readable-audio
+
+cargo run --release --manifest-path rust_feature_cache_warmer/Cargo.toml -- \
+  --input-record-cache /content/cache-cv-zipformer/train.jsonl \
+  --cache-dir /content/feature-cache-parquet-cv-zipformer/train \
+  --frontend zipformer \
+  --threads 26
+
+cargo run --release --manifest-path rust_feature_cache_warmer/Cargo.toml -- \
+  --input-record-cache /content/cache-cv-zipformer/validation.jsonl \
+  --cache-dir /content/feature-cache-parquet-cv-zipformer/validation \
+  --frontend zipformer \
+  --threads 26
+```
+
+The `record-cache` subcommand mirrors the Python `--record-cache-dir` layout:
+`train.jsonl`, `validation.jsonl`, `.offsets.u64`, `.estimated_frames.u32`,
+`.num_samples.u64`, `.sample_rates.u32`, `.transcript_lengths.u32`,
+`.token_lengths.u32`, plus `<split>_audio_blobs/*.bin` when embedded audio bytes
+need to be preserved. It currently targets local TSV/Parquet files or
+directories; use the Python loader for Hugging Face repo ids or remote manifest
+URLs.
+
 Logging uses `env_logger` and defaults to `info`. Set
 `RUST_LOG=feature_cache_warmer=debug` to include decode, resample, batch, and
 shard flush details, or `RUST_LOG=feature_cache_warmer=trace` for per-row

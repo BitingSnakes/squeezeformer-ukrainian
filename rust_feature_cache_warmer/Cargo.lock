@@ -689,6 +689,7 @@ dependencies = [
  "arrow",
  "audioadapter-buffers",
  "clap",
+ "csv",
  "env_logger",
  "log",
  "numpy",
@@ -697,6 +698,7 @@ dependencies = [
  "rayon",
  "rubato",
  "rustfft",
+ "serde_json",
  "sha2",
  "symphonia",
 ]
