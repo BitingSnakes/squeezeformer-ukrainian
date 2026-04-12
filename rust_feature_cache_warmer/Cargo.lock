@@ -326,6 +326,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "asr-features"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arrow",
+ "audioadapter-buffers",
+ "clap",
+ "csv",
+ "env_logger",
+ "log",
+ "numpy",
+ "parquet",
+ "pyo3",
+ "rayon",
+ "rubato",
+ "rustfft",
+ "serde_json",
+ "sha2",
+ "symphonia",
+]
+
+[[package]]
 name = "atoi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -680,28 +702,6 @@ name = "extended"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
-
-[[package]]
-name = "feature-cache-warmer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arrow",
- "audioadapter-buffers",
- "clap",
- "csv",
- "env_logger",
- "log",
- "numpy",
- "parquet",
- "pyo3",
- "rayon",
- "rubato",
- "rustfft",
- "serde_json",
- "sha2",
- "symphonia",
-]
 
 [[package]]
 name = "find-msvc-tools"

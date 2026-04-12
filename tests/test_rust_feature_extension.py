@@ -36,10 +36,10 @@ def test_build_featurizer_from_config_uses_rust_wrappers() -> None:
 
 
 def test_rust_feature_extension_extracts_numpy_features() -> None:
-    pytest.importorskip("feature_cache_warmer_rust")
+    pytest.importorskip("asr_features")
     import numpy as np
 
-    from feature_cache_warmer.rust_features import (
+    from asr_features import (
         extract_squeezeformer,
         extract_w2v_bert,
         extract_zipformer,
@@ -60,7 +60,7 @@ def test_rust_feature_extension_extracts_numpy_features() -> None:
 
 
 def test_rust_featurizer_modules_extract_torch_features() -> None:
-    pytest.importorskip("feature_cache_warmer_rust")
+    pytest.importorskip("asr_features")
     import torch
 
     from squeezeformer_pytorch.frontend import build_featurizer_from_config

@@ -179,7 +179,7 @@ fn extract_w2v_bert<'py>(
 }
 
 #[pymodule]
-fn feature_cache_warmer_rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn asr_features(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(extract_squeezeformer, m)?)?;
     m.add_function(wrap_pyfunction!(extract_zipformer, m)?)?;
     m.add_function(wrap_pyfunction!(extract_w2v_bert, m)?)?;

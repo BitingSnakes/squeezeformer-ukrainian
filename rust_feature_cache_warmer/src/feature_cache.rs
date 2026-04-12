@@ -33,7 +33,7 @@ pub(crate) enum FrontendKind {
     author,
     version,
     about,
-    after_help = "Subcommands:\n  record-cache        Build Python-compatible train/validation record cache files\n\nRun `feature-cache-warmer record-cache --help` for record-cache options."
+    after_help = "Subcommands:\n  record-cache        Build Python-compatible train/validation record cache files\n\nRun `asr-features record-cache --help` for record-cache options."
 )]
 pub(crate) struct Cli {
     /// Input parquet manifest. Mutually exclusive with --input-folder.

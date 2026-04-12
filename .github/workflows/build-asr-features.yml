@@ -1,4 +1,4 @@
-name: Build Rust Feature Cache Warmer
+name: Build ASR Features
 
 on:
   workflow_dispatch:
@@ -38,20 +38,20 @@ jobs:
             --release \
             --locked \
             --manifest-path rust_feature_cache_warmer/Cargo.toml \
-            --bin feature-cache-warmer
+            --bin asr-features
 
       - name: Package binary
         run: |
           mkdir -p dist
           tar -C rust_feature_cache_warmer/target/release \
-            -czf dist/feature-cache-warmer-x86_64-unknown-linux-gnu.tar.gz \
-            feature-cache-warmer
+            -czf dist/asr-features-x86_64-unknown-linux-gnu.tar.gz \
+            asr-features
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
-          name: feature-cache-warmer-x86_64-unknown-linux-gnu
-          path: dist/feature-cache-warmer-x86_64-unknown-linux-gnu.tar.gz
+          name: asr-features-x86_64-unknown-linux-gnu
+          path: dist/asr-features-x86_64-unknown-linux-gnu.tar.gz
           if-no-files-found: error
 
   wheel:
@@ -87,7 +87,7 @@ jobs:
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
         with:
-          name: feature-cache-warmer-rust-python310-plus-wheel
+          name: asr-features-python310-plus-wheel
           path: dist/wheels/*.whl
           if-no-files-found: error
 
@@ -107,13 +107,13 @@ jobs:
       - name: Download binary artifact
         uses: actions/download-artifact@v4
         with:
-          name: feature-cache-warmer-x86_64-unknown-linux-gnu
+          name: asr-features-x86_64-unknown-linux-gnu
           path: release-assets
 
       - name: Download wheel artifact
         uses: actions/download-artifact@v4
         with:
-          name: feature-cache-warmer-rust-python310-plus-wheel
+          name: asr-features-python310-plus-wheel
           path: release-assets
 
       - name: Resolve release tag

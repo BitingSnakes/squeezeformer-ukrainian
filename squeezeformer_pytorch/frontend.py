@@ -160,7 +160,7 @@ class RustAudioFeaturizer(torch.nn.Module):
             raise ValueError(f"n_mels must be > 0, got {self.n_mels}.")
 
     def forward(self, waveform: Tensor, sample_rate: int) -> Tensor:
-        from feature_cache_warmer.rust_features import extract_squeezeformer, extract_zipformer
+        from asr_features import extract_squeezeformer, extract_zipformer
 
         extractor = extract_zipformer if self.frontend_type == "zipformer" else extract_squeezeformer
         features = extractor(
@@ -251,7 +251,7 @@ class RustW2VBertFeatureExtractor(torch.nn.Module):
         )
 
     def forward(self, waveform: Tensor, sample_rate: int) -> Tensor:
-        from feature_cache_warmer.rust_features import extract_w2v_bert
+        from asr_features import extract_w2v_bert
 
         features = extract_w2v_bert(
             _waveform_to_numpy(waveform),

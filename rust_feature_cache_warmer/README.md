@@ -1,4 +1,4 @@
-# Rust feature cache warmer
+# ASR features
 
 This crate reads dataset parquet manifest files, decodes audio with Symphonia, computes
 log-mel features with RustFFT, resamples non-16 kHz audio with Rubato, and writes
@@ -57,12 +57,12 @@ directories; use the Python loader for Hugging Face repo ids or remote manifest
 URLs.
 
 Logging uses `env_logger` and defaults to `info`. Set
-`RUST_LOG=feature_cache_warmer=debug` to include decode, resample, batch, and
-shard flush details, or `RUST_LOG=feature_cache_warmer=trace` for per-row
+`RUST_LOG=asr_features=debug` to include decode, resample, batch, and
+shard flush details, or `RUST_LOG=asr_features=trace` for per-row
 feature extraction logs:
 
 ```bash
-RUST_LOG=feature_cache_warmer=debug cargo run --release --manifest-path rust_feature_cache_warmer/Cargo.toml -- \
+RUST_LOG=asr_features=debug cargo run --release --manifest-path rust_feature_cache_warmer/Cargo.toml -- \
   --input /data/cv22/train.parquet \
   --cache-dir artifacts/feature-cache/train
 ```
@@ -107,12 +107,11 @@ cd rust_feature_cache_warmer
 maturin develop --features python --release
 ```
 
-The extension module is `feature_cache_warmer_rust`; the repository also provides
-`feature_cache_warmer.rust_features` as a small import wrapper:
+The extension module is `asr_features`:
 
 ```python
 import numpy as np
-from feature_cache_warmer.rust_features import extract_w2v_bert
+from asr_features import extract_w2v_bert
 
 waveform = np.zeros(16_000, dtype=np.float32)
 features = extract_w2v_bert(waveform, 16_000)

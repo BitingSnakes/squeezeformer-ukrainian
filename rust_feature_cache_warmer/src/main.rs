@@ -1,3 +1,3 @@
 fn main() -> anyhow::Result<()> {
-    feature_cache_warmer::run_cli()
+    asr_features::run_cli()
 }

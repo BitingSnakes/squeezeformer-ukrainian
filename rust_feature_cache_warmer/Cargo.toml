@@ -1,12 +1,12 @@
 [package]
-name = "feature-cache-warmer"
+name = "asr-features"
 version = "0.1.0"
 edition = "2021"
-description = "Rust parquet-to-feature-cache warmer"
+description = "ASR feature extraction and cache warming utilities"
 license = "MIT"
 
 [lib]
-name = "feature_cache_warmer"
+name = "asr_features"
 crate-type = ["rlib", "cdylib"]
 
 [features]

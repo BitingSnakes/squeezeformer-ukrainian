@@ -84,7 +84,7 @@ uv sync --extra train --extra quantize --group dev
 ```
 
 Training, evaluation, inference, and `extract_features.py` use the Rust feature
-frontend through the local PyO3 package `feature-cache-warmer-rust`. `uv sync`
+frontend through the local PyO3 package `asr-features`. `uv sync`
 builds it from [rust_feature_cache_warmer](rust_feature_cache_warmer), so the
 environment needs a Rust toolchain. To rebuild only the extension in an active
 environment:

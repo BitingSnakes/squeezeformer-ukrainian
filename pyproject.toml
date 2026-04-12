@@ -5,7 +5,7 @@ description = "PyTorch implementation of the Squeezeformer encoder"
 requires-python = ">=3.12"
 dependencies = [
     "audioflux>=0.1.9",
-    "feature-cache-warmer-rust>=0.1.0",
+    "asr-features>=0.1.0",
     "gradio>=5.38.0",
     "huggingface-hub>=0.34.0",
     "kernels>=0.12.3",
@@ -49,7 +49,7 @@ url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [tool.uv.sources]
-feature-cache-warmer-rust = { path = "rust_feature_cache_warmer" }
+asr-features = { path = "rust_feature_cache_warmer" }
 torch = [
     { index = "pytorch-cu126", group = "cu126" },
     { index = "pytorch-cu128", group = "cu12" },
