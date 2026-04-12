@@ -5,6 +5,14 @@ edition = "2021"
 description = "Rust parquet-to-feature-cache warmer"
 license = "MIT"
 
+[lib]
+name = "feature_cache_warmer"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+python = ["dep:numpy", "dep:pyo3"]
+
 [dependencies]
 anyhow = "1.0"
 audioadapter-buffers = "3.0"
@@ -12,7 +20,9 @@ arrow = "56"
 clap = { version = "4.5", features = ["derive"] }
 env_logger = "0.11"
 log = "0.4"
+numpy = { version = "0.28", optional = true }
 parquet = { version = "56", features = ["arrow"] }
+pyo3 = { version = "0.28", optional = true, features = ["abi3-py312", "extension-module"] }
 rayon = "1.11"
 rubato = "2.0"
 rustfft = "6.4"

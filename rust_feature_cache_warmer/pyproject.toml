@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "feature-cache-warmer-rust"
+version = "0.1.0"
+description = "PyO3 bindings for the Rust feature cache warmer frontends"
+requires-python = ">=3.12"
+dependencies = ["numpy>=1.26"]
+
+[tool.maturin]
+features = ["python"]
+module-name = "feature_cache_warmer_rust"

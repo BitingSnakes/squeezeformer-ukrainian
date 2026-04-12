@@ -63,6 +63,28 @@ The cache key is generated with the same Python `repr({"featurizer": ...})`
 hash inputs used by `ShardedParquetFeatureCache`, so a matching Python
 featurizer will find the Rust-written shard without a manifest sidecar.
 
+## Python extension
+
+The feature extraction code is also exposed as an optional PyO3 extension. Build
+and install it into the active Python environment with:
+
+```bash
+cd rust_feature_cache_warmer
+maturin develop --features python --release
+```
+
+The extension module is `feature_cache_warmer_rust`; the repository also provides
+`feature_cache_warmer.rust_features` as a small import wrapper:
+
+```python
+import numpy as np
+from feature_cache_warmer.rust_features import extract_w2v_bert
+
+waveform = np.zeros(16_000, dtype=np.float32)
+features = extract_w2v_bert(waveform, 16_000)
+assert features.shape[1] == 160
+```
+
 ## Parallelism
 
 Feature extraction runs in a Rayon thread pool. Set `--threads N` to control the
