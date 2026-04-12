@@ -8,6 +8,7 @@ from squeezeformer_pytorch.data import AudioRecord
 from squeezeformer_pytorch.training.data_loading import (
     _build_disk_backed_record_store,
     _disk_backed_record_store_exists,
+    _build_split_audit,
     _load_train_val_records,
     _record_index_path,
     _shard_records_for_rank,
@@ -231,3 +232,29 @@ def test_record_cache_reuse_rejects_mismatched_index_lengths(tmp_path: Path) -> 
     estimated_frames_path.write_bytes(estimated_frames_path.read_bytes()[:4])
 
     assert not _disk_backed_record_store_exists(records_path)
+
+
+def test_split_audit_does_not_load_disk_backed_audio_blobs(tmp_path: Path) -> None:
+    records_path = tmp_path / "records.jsonl"
+    records_path.parent.mkdir(parents=True, exist_ok=True)
+    records_path.write_text(
+        '{"audio_path":null,"audio_blob_path":"missing.bin","transcript":"sample",'
+        '"utterance_id":"utt0","speaker_id":"speaker-a","has_speaker_id":true}\n',
+        encoding="utf-8",
+    )
+    _record_index_path(records_path, ".offsets.u64").write_bytes((0).to_bytes(8, "little"))
+    _record_index_path(records_path, ".estimated_frames.u32").write_bytes(
+        (100).to_bytes(4, "little")
+    )
+    _record_index_path(records_path, ".num_samples.u64").write_bytes(
+        (16_000).to_bytes(8, "little")
+    )
+    _record_index_path(records_path, ".sample_rates.u32").write_bytes(
+        (16_000).to_bytes(4, "little")
+    )
+    store = data_loading._open_disk_backed_record_store(records_path)
+
+    audit = _build_split_audit({"train": store}, hop_length=160)
+
+    assert audit["counts"]["train"]["speakers"] == 1
+    assert audit["counts"]["train"]["records_with_speaker_id"] == 1

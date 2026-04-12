@@ -1288,11 +1288,26 @@ def main() -> None:
         distributed=distributed,
         is_main_process=is_main_process,
     )
+    if is_main_process:
+        logger.info(
+            "dataset records available train_samples=%s val_samples=%s elapsed=%s",
+            len(train_records),
+            len(val_records),
+            _format_elapsed_seconds(time.perf_counter() - stage_start_time),
+        )
+        logger.info("checking dataset audio decode support")
     _ensure_opus_decode_support(train_records, split="train")
     _ensure_opus_decode_support(val_records, split="validation")
+    if is_main_process:
+        logger.info(
+            "dataset audio decode support ready elapsed=%s",
+            _format_elapsed_seconds(time.perf_counter() - stage_start_time),
+        )
+        logger.info("building dataset split audit")
     split_audit = _build_split_audit(
         {"train": train_records, "validation": val_records},
         hop_length=args.hop_length,
+        progress_logger=logger if is_main_process else None,
     )
     if is_main_process:
         (output_dir / "split_audit.json").write_text(

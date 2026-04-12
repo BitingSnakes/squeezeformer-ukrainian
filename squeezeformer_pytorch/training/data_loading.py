@@ -1326,22 +1326,92 @@ def _frames_to_minutes(
     return total_seconds / 60.0
 
 
+def _collect_split_audit_metadata(
+    records: list[AudioRecord] | DiskBackedRecordStore,
+    *,
+    split_name: str,
+    progress_logger: Logger | None = None,
+) -> tuple[set[str], int]:
+    total = len(records)
+    start_time = time.perf_counter()
+    if progress_logger is not None:
+        progress_logger.info("split audit started split=%s records=%s", split_name, total)
+
+    speaker_ids: set[str] = set()
+    records_with_speaker_id = 0
+    interval = _progress_log_interval(total)
+    if isinstance(records, DiskBackedRecordStore):
+        with records.records_path.open("rb") as handle:
+            for local_index in range(total):
+                global_index = records.start + (local_index * records.step)
+                handle.seek(records.offsets[global_index])
+                payload = json.loads(handle.readline().decode("utf-8"))
+                speaker_id = payload.get("speaker_id")
+                has_speaker_id = bool(payload.get("has_speaker_id"))
+                if has_speaker_id:
+                    records_with_speaker_id += 1
+                    if isinstance(speaker_id, str) and speaker_id:
+                        speaker_ids.add(speaker_id)
+                completed = local_index + 1
+                if progress_logger is not None and (
+                    completed == total or completed % interval == 0
+                ):
+                    _log_metadata_progress(
+                        progress_logger,
+                        f"split audit scanned {split_name} records",
+                        completed,
+                        total,
+                        start_time,
+                    )
+    else:
+        for completed, record in enumerate(records, start=1):
+            if record.has_speaker_id:
+                records_with_speaker_id += 1
+                if record.speaker_id:
+                    speaker_ids.add(record.speaker_id)
+            if progress_logger is not None and (completed == total or completed % interval == 0):
+                _log_metadata_progress(
+                    progress_logger,
+                    f"split audit scanned {split_name} records",
+                    completed,
+                    total,
+                    start_time,
+                )
+
+    if progress_logger is not None:
+        progress_logger.info(
+            "split audit completed split=%s records=%s speakers=%s records_with_speaker_id=%s elapsed=%.1fs",
+            split_name,
+            total,
+            len(speaker_ids),
+            records_with_speaker_id,
+            time.perf_counter() - start_time,
+        )
+    return speaker_ids, records_with_speaker_id
+
+
 def _build_split_audit(
     split_records: dict[str, list[AudioRecord] | DiskBackedRecordStore],
     *,
     hop_length: int,
+    progress_logger: Logger | None = None,
 ) -> dict[str, object]:
-    speaker_sets = {
-        split_name: {
-            record.speaker_id for record in records if record.has_speaker_id and record.speaker_id
-        }
+    audit_metadata = {
+        split_name: _collect_split_audit_metadata(
+            records,
+            split_name=split_name,
+            progress_logger=progress_logger,
+        )
         for split_name, records in split_records.items()
+    }
+    speaker_sets = {
+        split_name: metadata[0] for split_name, metadata in audit_metadata.items()
     }
     counts = {
         split_name: {
             "samples": len(records),
             "speakers": len(speaker_sets[split_name]),
-            "records_with_speaker_id": sum(int(record.has_speaker_id) for record in records),
+            "records_with_speaker_id": audit_metadata[split_name][1],
             "hours": _record_store_duration_hours(records, hop_length=hop_length),
         }
         for split_name, records in split_records.items()
