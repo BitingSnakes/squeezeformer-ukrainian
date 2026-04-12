@@ -293,6 +293,12 @@ def _validate_startup_args(
             args.w2v_bert_model_name,
             expected="dir",
         )
+    if args.w2v_bert_model_path is not None:
+        _validate_existing_local_path_argument(
+            "--w2v-bert-model-path",
+            args.w2v_bert_model_path,
+            expected="dir",
+        )
     if args.liberta_model_path is not None:
         _validate_existing_local_path_argument(
             "--liberta-model-path",
@@ -489,7 +495,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--w2v-bert-model-name",
         default="facebook/w2v-bert-2.0",
-        help="Hugging Face model ID or local directory to use for --w2v-bert.",
+        help="Hugging Face model ID to use for --w2v-bert.",
+    )
+    parser.add_argument(
+        "--w2v-bert-model-path",
+        default=None,
+        help=(
+            "Local directory containing a W2V-BERT model/feature extractor to load with "
+            "transformers.from_pretrained(). Overrides --w2v-bert-model-name when set."
+        ),
     )
     parser.add_argument("--variant", default="sm", choices=["xs", "s", "sm", "m", "ml", "l"])
     parser.add_argument("--zipformer-transducer-context-size", type=int, default=2)

@@ -155,6 +155,24 @@ def test_parse_args_accepts_w2v_bert_fp8() -> None:
     assert args.dtype == DTypeChoice.FP8
 
 
+def test_parse_args_accepts_w2v_bert_model_path(tmp_path) -> None:
+    model_dir = tmp_path / "w2v-bert"
+    model_dir.mkdir()
+
+    args = parse_args(
+        [
+            "--device",
+            "cpu",
+            "--w2v-bert",
+            "--w2v-bert-model-path",
+            str(model_dir),
+        ]
+    )
+
+    assert args.w2v_bert is True
+    assert args.w2v_bert_model_path == str(model_dir)
+
+
 def test_parse_args_rejects_w2v_bert_with_zipformer() -> None:
     with pytest.raises(ValueError) as error:
         parse_args(

@@ -124,6 +124,7 @@ from squeezeformer_pytorch.training.runtime import (
     _validate_device_ready as _runtime_validate_device_ready,
 )
 from w2v_bert.asr import (
+    DEFAULT_W2V_BERT_MODEL,
     W2VBertConfig,
     W2VBertCTC,
     w2v_bert_featurizer_config,
@@ -595,6 +596,28 @@ def _validate_w2v_bert_runtime_args(args) -> None:
         raise ValueError("--w2v-bert does not support audio-teacher distillation.")
 
 
+def _resolve_w2v_bert_model_source(
+    args,
+    checkpoint: dict[str, object] | None = None,
+) -> str:
+    model_path = getattr(args, "w2v_bert_model_path", None)
+    if model_path is not None:
+        return str(Path(model_path).expanduser().resolve())
+    if checkpoint is not None and str(args.w2v_bert_model_name) == DEFAULT_W2V_BERT_MODEL:
+        checkpoint_args = checkpoint.get("training_args", {})
+        if isinstance(checkpoint_args, dict):
+            checkpoint_source = checkpoint_args.get("w2v_bert_model_source")
+            if checkpoint_source is not None:
+                return str(checkpoint_source)
+            checkpoint_model_path = checkpoint_args.get("w2v_bert_model_path")
+            if checkpoint_model_path is not None:
+                return str(Path(str(checkpoint_model_path)).expanduser().resolve())
+            checkpoint_model_name = checkpoint_args.get("w2v_bert_model_name")
+            if checkpoint_model_name is not None:
+                return str(checkpoint_model_name)
+    return str(args.w2v_bert_model_name)
+
+
 def _resolve_training_featurizer_config(
     args,
     *,
@@ -607,7 +630,7 @@ def _resolve_training_featurizer_config(
         if isinstance(checkpoint_config, dict) and checkpoint_config:
             return dict(checkpoint_config)
     if use_w2v_bert:
-        return w2v_bert_featurizer_config(args.w2v_bert_model_name)
+        return w2v_bert_featurizer_config(_resolve_w2v_bert_model_source(args, checkpoint))
     if use_zipformer:
         return zipformer_paper_featurizer_config()
     return {
@@ -1300,6 +1323,7 @@ def main() -> None:
         _validate_zipformer_runtime_args(args)
     if use_w2v_bert:
         _validate_w2v_bert_runtime_args(args)
+    w2v_bert_model_source = _resolve_w2v_bert_model_source(args, checkpoint)
     if use_zipformer_transducer and not use_zipformer:
         raise RuntimeError("--zipformer-transducer requires --zipformer.")
     if use_zipformer or use_w2v_bert:
@@ -1574,7 +1598,7 @@ def main() -> None:
             W2VBertConfig.from_mapping(checkpoint["encoder_config"])
             if checkpoint is not None
             else W2VBertConfig.from_model_source(
-                args.w2v_bert_model_name,
+                w2v_bert_model_source,
                 sample_rate=featurizer.sample_rate,
                 feature_dim=featurizer.n_mels,
             )
@@ -1609,6 +1633,8 @@ def main() -> None:
     args.audio_teacher_layer = audio_teacher_layer
     args.audio_teacher_sample_rate = audio_teacher_sample_rate
     args.audio_teacher_max_seconds = audio_teacher_max_seconds
+    if use_w2v_bert:
+        args.w2v_bert_model_source = w2v_bert_model_source
     fp8_recipe = _build_fp8_recipe(args)
     if args.dtype == DTypeChoice.FP8:
         _validate_fp8_runtime(device, encoder_config)
@@ -1689,7 +1715,7 @@ def main() -> None:
         model = W2VBertCTC(
             encoder_config=encoder_config,
             vocab_size=tokenizer.vocab_size,
-            pretrained_model_name_or_path=args.w2v_bert_model_name,
+            pretrained_model_name_or_path=w2v_bert_model_source,
             load_pretrained=checkpoint is None,
             use_transformer_engine=args.dtype == DTypeChoice.FP8,
         )
