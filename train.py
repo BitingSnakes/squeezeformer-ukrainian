@@ -1542,6 +1542,7 @@ def main() -> None:
         specaugment=specaugment,
         waveform_augment=waveform_augment,
         feature_cache_dir=train_feature_cache_dir,
+        feature_cache_format=args.feature_cache_format,
         return_waveforms=audio_teacher_enabled,
     )
     val_dataset = ASRDataset(
@@ -1549,11 +1550,12 @@ def main() -> None:
         tokenizer=tokenizer,
         featurizer=featurizer,
         feature_cache_dir=val_feature_cache_dir,
+        feature_cache_format=args.feature_cache_format,
         return_waveforms=audio_teacher_enabled,
     )
     stage_start_time = time.perf_counter()
     logger.info(
-        "building dataloaders train_samples=%s val_samples=%s distributed=%s world_size=%s train_hours=%.2f val_hours=%.2f num_workers=%s metadata_workers=%s force_audio_metadata_probe=%s persistent_workers=%s prefetch_factor=%s train_in_order=%s",
+        "building dataloaders train_samples=%s val_samples=%s distributed=%s world_size=%s train_hours=%.2f val_hours=%.2f num_workers=%s metadata_workers=%s force_audio_metadata_probe=%s persistent_workers=%s prefetch_factor=%s train_in_order=%s feature_cache_format=%s",
         len(train_records),
         len(val_records),
         distributed,
@@ -1566,6 +1568,7 @@ def main() -> None:
         args.persistent_workers,
         args.prefetch_factor,
         args.dataloader_in_order,
+        args.feature_cache_format,
     )
     train_loader = create_dataloader(
         train_dataset,

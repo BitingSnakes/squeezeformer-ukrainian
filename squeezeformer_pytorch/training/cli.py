@@ -11,6 +11,7 @@ from squeezeformer_pytorch.runtime_types import (
     AdaptiveBatchUnit,
     DecodeStrategy,
     DTypeChoice,
+    FeatureCacheFormat,
     OptimizerChoice,
     ValidationModelSource,
 )
@@ -582,6 +583,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--feature-cache-dir", default=None)
+    parser.add_argument(
+        "--feature-cache-format",
+        type=FeatureCacheFormat,
+        choices=list(FeatureCacheFormat),
+        default=FeatureCacheFormat.FILE,
+        help=(
+            "Feature cache backend used when --feature-cache-dir is set. "
+            "'file' writes one .pt file per utterance; 'parquet' writes sharded Parquet files."
+        ),
+    )
     parser.add_argument(
         "--save-audio-preview-samples",
         type=int,

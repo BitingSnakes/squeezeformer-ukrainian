@@ -7,7 +7,6 @@ import math
 import multiprocessing as mp
 import os
 import re
-import sqlite3
 import sys
 import time
 import wave
@@ -1223,7 +1222,7 @@ def feature_tensor_is_plausible(
     return 0 < normalized.size(0) <= max_reasonable_feature_frames(record)
 
 
-class ShardedFeatureCache:
+class ShardedParquetFeatureCache:
     def __init__(
         self,
         root: str | Path,
@@ -1236,8 +1235,8 @@ class ShardedFeatureCache:
         self.commit_every = max(1, int(commit_every))
         self.shard_dir = self.root / "feature_shards"
         self.shard_dir.mkdir(parents=True, exist_ok=True)
-        self._connections: dict[int, sqlite3.Connection] = {}
-        self._pending_writes: dict[int, int] = {}
+        self._pending_rows: dict[int, list[dict[str, object]]] = {}
+        self._part_counters: dict[int, int] = {}
         self._pid: int | None = None
 
     def _key(self, utterance_id: str, featurizer: AudioFeaturizer) -> str:
@@ -1248,73 +1247,125 @@ class ShardedFeatureCache:
     def _shard_index(self, key: str) -> int:
         return int(key[:8], 16) % self.num_shards
 
-    def _connection(self, shard_index: int) -> sqlite3.Connection:
+    def _ensure_process_state(self) -> None:
         current_pid = os.getpid()
         if self._pid != current_pid:
             self.close()
             self._pid = current_pid
-        connection = self._connections.get(shard_index)
-        if connection is None:
-            path = self.shard_dir / f"features_{shard_index:02d}.sqlite3"
-            connection = sqlite3.connect(path, timeout=60.0)
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA synchronous=NORMAL")
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS features (key TEXT PRIMARY KEY, payload BLOB NOT NULL)"
-            )
-            self._connections[shard_index] = connection
-        return connection
+
+    def _shard_path(self, shard_index: int) -> Path:
+        path = self.shard_dir / f"features_{shard_index:02d}"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _part_path(self, shard_index: int) -> Path:
+        counter = self._part_counters.get(shard_index, 0) + 1
+        self._part_counters[shard_index] = counter
+        return (
+            self._shard_path(shard_index)
+            / f"part_{os.getpid()}_{time.time_ns()}_{counter:06d}.parquet"
+        )
 
     def close(self) -> None:
-        for connection in self._connections.values():
-            connection.commit()
-            connection.close()
-        self._connections.clear()
-        self._pending_writes.clear()
+        self.flush()
         self._pid = None
 
     def __getstate__(self) -> dict[str, object]:
         state = self.__dict__.copy()
-        state["_connections"] = {}
-        state["_pending_writes"] = {}
+        state["_pending_rows"] = {}
+        state["_part_counters"] = {}
         state["_pid"] = None
         return state
 
     def __setstate__(self, state: dict[str, object]) -> None:
         self.__dict__.update(state)
-        self._connections = {}
-        self._pending_writes = {}
+        self._pending_rows = {}
+        self._part_counters = {}
         self._pid = None
+
+    def _append_row(
+        self,
+        shard_index: int,
+        *,
+        key: str,
+        payload: bytes | None,
+        deleted: bool,
+    ) -> None:
+        self._ensure_process_state()
+        rows = self._pending_rows.setdefault(shard_index, [])
+        rows.append({"key": key, "payload": payload, "deleted": deleted})
+        if len(rows) >= self.commit_every:
+            self._flush_shard(shard_index)
+
+    def _flush_shard(self, shard_index: int) -> None:
+        rows = self._pending_rows.get(shard_index, [])
+        if not rows:
+            return
+        frame = pl.DataFrame(
+            {
+                "key": [str(row["key"]) for row in rows],
+                "payload": [row["payload"] for row in rows],
+                "deleted": [bool(row["deleted"]) for row in rows],
+            },
+            schema={
+                "key": pl.String,
+                "payload": pl.Binary,
+                "deleted": pl.Boolean,
+            },
+        )
+        frame.write_parquet(self._part_path(shard_index))
+        self._pending_rows[shard_index] = []
 
     def load(self, utterance_id: str, featurizer: AudioFeaturizer) -> Tensor | None:
         key = self._key(utterance_id, featurizer)
-        connection = self._connection(self._shard_index(key))
-        row = connection.execute("SELECT payload FROM features WHERE key = ?", (key,)).fetchone()
-        if row is None:
-            return None
-        return torch.load(io.BytesIO(row[0]), map_location="cpu")
+        shard_index = self._shard_index(key)
+        self._ensure_process_state()
+        for row in reversed(self._pending_rows.get(shard_index, [])):
+            if row["key"] != key:
+                continue
+            if row["deleted"]:
+                return None
+            payload = row["payload"]
+            if not isinstance(payload, bytes):
+                return None
+            return torch.load(io.BytesIO(payload), map_location="cpu")
+        part_paths = sorted(
+            self._shard_path(shard_index).glob("part_*.parquet"),
+            key=lambda path: (path.stat().st_mtime_ns, path.name),
+            reverse=True,
+        )
+        for path in part_paths:
+            matches = (
+                pl.read_parquet(path, columns=["key", "payload", "deleted"])
+                .filter(pl.col("key") == key)
+                .tail(1)
+            )
+            if matches.is_empty():
+                continue
+            row = matches.row(0, named=True)
+            if row["deleted"]:
+                return None
+            payload = row["payload"]
+            if payload is None:
+                return None
+            return torch.load(io.BytesIO(payload), map_location="cpu")
+        return None
 
     def store(self, utterance_id: str, featurizer: AudioFeaturizer, features: Tensor) -> None:
         key = self._key(utterance_id, featurizer)
         buffer = io.BytesIO()
         torch.save(features, buffer)
         shard_index = self._shard_index(key)
-        connection = self._connection(shard_index)
-        connection.execute(
-            "INSERT OR REPLACE INTO features (key, payload) VALUES (?, ?)",
-            (key, sqlite3.Binary(buffer.getvalue())),
+        self._append_row(
+            shard_index,
+            key=key,
+            payload=buffer.getvalue(),
+            deleted=False,
         )
-        pending_writes = self._pending_writes.get(shard_index, 0) + 1
-        self._pending_writes[shard_index] = pending_writes
-        if pending_writes >= self.commit_every:
-            connection.commit()
-            self._pending_writes[shard_index] = 0
 
     def flush(self) -> None:
-        for shard_index, connection in self._connections.items():
-            if self._pending_writes.get(shard_index, 0) > 0:
-                connection.commit()
-                self._pending_writes[shard_index] = 0
+        for shard_index in list(self._pending_rows):
+            self._flush_shard(shard_index)
 
     def __del__(self) -> None:
         try:
@@ -1325,10 +1376,8 @@ class ShardedFeatureCache:
     def delete(self, utterance_id: str, featurizer: AudioFeaturizer) -> None:
         key = self._key(utterance_id, featurizer)
         shard_index = self._shard_index(key)
-        connection = self._connection(shard_index)
-        connection.execute("DELETE FROM features WHERE key = ?", (key,))
-        connection.commit()
-        self._pending_writes[shard_index] = 0
+        self._append_row(shard_index, key=key, payload=None, deleted=True)
+        self._flush_shard(shard_index)
 
 
 class ASRDataset(Dataset[dict[str, Any]]):
@@ -1340,6 +1389,7 @@ class ASRDataset(Dataset[dict[str, Any]]):
         specaugment: SpecAugment | None = None,
         waveform_augment: WaveformAugment | None = None,
         feature_cache_dir: str | Path | None = None,
+        feature_cache_format: str = "file",
         return_waveforms: bool = False,
     ) -> None:
         self.records = records
@@ -1348,14 +1398,30 @@ class ASRDataset(Dataset[dict[str, Any]]):
         self.specaugment = specaugment
         self.waveform_augment = waveform_augment
         self.feature_cache_dir = Path(feature_cache_dir) if feature_cache_dir is not None else None
+        self.feature_cache_format = str(feature_cache_format)
+        if self.feature_cache_format not in {"file", "parquet"}:
+            raise ValueError(
+                "feature_cache_format must be either 'file' or 'parquet', "
+                f"got {feature_cache_format!r}"
+            )
         self.feature_cache = (
-            ShardedFeatureCache(self.feature_cache_dir)
-            if self.feature_cache_dir is not None
+            ShardedParquetFeatureCache(self.feature_cache_dir)
+            if self.feature_cache_dir is not None and self.feature_cache_format == "parquet"
             else None
         )
         self.return_waveforms = return_waveforms
         if self.feature_cache_dir is not None:
             self.feature_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def close(self) -> None:
+        if self.feature_cache is not None:
+            self.feature_cache.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _feature_cache_path(self, record: AudioRecord) -> Path | None:
         return feature_cache_path(self.feature_cache_dir, record.utterance_id, self.featurizer)
@@ -1387,11 +1453,13 @@ class ASRDataset(Dataset[dict[str, Any]]):
         sample_rate: int | None = None
         use_cache = cache_path is not None and not waveform_augment_enabled
         features: Tensor | None = None
-        if use_cache and self.feature_cache is not None:
+        use_sharded_cache = use_cache and self.feature_cache is not None
+        use_file_cache = use_cache and self.feature_cache_format == "file"
+        if use_sharded_cache:
             features = self.feature_cache.load(record.utterance_id, self.featurizer)
         if features is None and use_cache and cache_path is not None and cache_path.exists():
             features = torch.load(cache_path, map_location="cpu")
-            if self.feature_cache is not None:
+            if use_sharded_cache:
                 self.feature_cache.store(record.utterance_id, self.featurizer, features)
         if features is not None:
             if not feature_tensor_is_plausible(
@@ -1415,16 +1483,20 @@ class ASRDataset(Dataset[dict[str, Any]]):
                     waveform_augment_enabled=waveform_augment_enabled,
                 )
                 features = self._compute_features_from_waveform(waveform, sample_rate)
-                if use_cache and self.feature_cache is not None:
+                if use_sharded_cache:
                     self.feature_cache.store(record.utterance_id, self.featurizer, features)
+                elif use_file_cache and cache_path is not None:
+                    torch.save(features, cache_path)
         else:
             waveform, sample_rate = self._load_waveform(
                 record,
                 waveform_augment_enabled=waveform_augment_enabled,
             )
             features = self._compute_features_from_waveform(waveform, sample_rate)
-            if use_cache and self.feature_cache is not None:
+            if use_sharded_cache:
                 self.feature_cache.store(record.utterance_id, self.featurizer, features)
+            elif use_file_cache and cache_path is not None:
+                torch.save(features, cache_path)
         features = normalize_feature_tensor(features, self.featurizer.n_mels)
         if features is None or not feature_tensor_is_plausible(
             record,

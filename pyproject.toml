@@ -17,6 +17,11 @@ dependencies = [
 
 [project.scripts]
 squeezeformer-torchrun = "squeezeformer_pytorch.training.torchrun_launcher:main"
+squeezeformer-warm-feature-cache = "squeezeformer_pytorch.training.feature_cache_warmer:main"
+
+[tool.setuptools.packages.find]
+include = ["squeezeformer_pytorch*", "w2v_bert*", "zipformer_pytorch*"]
+namespaces = true
 
 [tool.uv]
 conflicts = [

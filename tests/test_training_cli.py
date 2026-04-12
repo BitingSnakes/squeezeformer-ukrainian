@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from squeezeformer_pytorch.runtime_types import DTypeChoice, OptimizerChoice, ValidationModelSource
+from squeezeformer_pytorch.runtime_types import (
+    DTypeChoice,
+    FeatureCacheFormat,
+    OptimizerChoice,
+    ValidationModelSource,
+)
 from squeezeformer_pytorch.training.cli import parse_args
 from squeezeformer_pytorch.training.runtime import (
     _variant_defaults,
@@ -210,6 +215,18 @@ def test_parse_args_accepts_audio_preview_sample_count() -> None:
     )
 
     assert args.save_audio_preview_samples == 3
+
+
+def test_parse_args_defaults_to_file_feature_cache_format() -> None:
+    args = parse_args(["--device", "cpu"])
+
+    assert args.feature_cache_format == FeatureCacheFormat.FILE
+
+
+def test_parse_args_accepts_parquet_feature_cache_format() -> None:
+    args = parse_args(["--device", "cpu", "--feature-cache-format", "parquet"])
+
+    assert args.feature_cache_format == FeatureCacheFormat.PARQUET
 
 
 def test_parse_args_keeps_hf_checkpoint_upload_disabled_by_default() -> None:

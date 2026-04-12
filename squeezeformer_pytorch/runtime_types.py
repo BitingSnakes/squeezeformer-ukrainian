@@ -29,3 +29,8 @@ class ValidationModelSource(StrEnum):
 class AdaptiveBatchUnit(StrEnum):
     FRAMES = "frames"
     TOKENS = "tokens"
+
+
+class FeatureCacheFormat(StrEnum):
+    FILE = "file"
+    PARQUET = "parquet"

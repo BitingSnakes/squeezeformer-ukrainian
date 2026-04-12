@@ -2404,7 +2404,44 @@ def test_feature_cache_is_used_when_waveform_augment_is_effectively_disabled(
 
     assert load_calls == 1
     assert torch.equal(first_item["features"], second_item["features"])
-    assert list((tmp_path / "feature_shards").glob("features_*.sqlite3"))
+    assert list(tmp_path.glob("*.pt"))
+    assert not (tmp_path / "feature_shards").exists()
+
+
+def test_parquet_feature_cache_is_selectable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class DummyTokenizer:
+        def encode(self, text: str) -> list[int]:
+            return [len(text)]
+
+    load_calls = 0
+
+    def fake_load_audio(
+        audio_path: str | None, audio_bytes: bytes | None
+    ) -> tuple[torch.Tensor, int]:
+        nonlocal load_calls
+        load_calls += 1
+        return torch.ones(1, 320), 16_000
+
+    monkeypatch.setattr("squeezeformer_pytorch.data.load_audio", fake_load_audio)
+
+    dataset = ASRDataset(
+        records=[AudioRecord("dummy.wav", None, "це тест", "utt0", estimated_frames=2)],
+        tokenizer=DummyTokenizer(),
+        featurizer=AudioFeaturizer(),
+        feature_cache_dir=tmp_path,
+        feature_cache_format="parquet",
+    )
+
+    first_item = dataset[0]
+    second_item = dataset[0]
+
+    assert load_calls == 1
+    assert torch.equal(first_item["features"], second_item["features"])
+    assert dataset.feature_cache is not None
+    dataset.feature_cache.flush()
+    assert list((tmp_path / "feature_shards").glob("features_*/part_*.parquet"))
     assert not list(tmp_path.glob("*.pt"))
 
 
