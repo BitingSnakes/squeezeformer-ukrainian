@@ -298,6 +298,8 @@ class W2VBertCTC(SqueezeformerCTC):
         _require_transformers()
         self.encoder_config = encoder_config
         self.aed_decoder = None
+        self.liberta_projection = None
+        self.audio_teacher_projection = None
         self.use_transformer_engine = use_transformer_engine
         hf_config = encoder_config.to_hf_config()
         if load_pretrained:

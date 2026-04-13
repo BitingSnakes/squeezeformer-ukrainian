@@ -780,19 +780,19 @@ class SqueezeformerCTC(nn.Module):
             if not key.startswith("intermediate_classifier.")
             and not key.startswith("intermediate_classifiers.")
         }
-        if self.aed_decoder is None:
+        if getattr(self, "aed_decoder", None) is None:
             remapped_state_dict = {
                 key: value
                 for key, value in remapped_state_dict.items()
                 if not key.startswith("aed_decoder.")
             }
-        if self.liberta_projection is None:
+        if getattr(self, "liberta_projection", None) is None:
             remapped_state_dict = {
                 key: value
                 for key, value in remapped_state_dict.items()
                 if not key.startswith("liberta_projection.")
             }
-        if self.audio_teacher_projection is None:
+        if getattr(self, "audio_teacher_projection", None) is None:
             remapped_state_dict = {
                 key: value
                 for key, value in remapped_state_dict.items()

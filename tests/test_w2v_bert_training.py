@@ -83,6 +83,31 @@ def test_w2v_bert_activation_checkpointing_enables_hf_gradient_checkpointing() -
     assert model.encoder.is_gradient_checkpointing is True
 
 
+def test_w2v_bert_load_state_dict_ignores_unsupported_training_heads() -> None:
+    model = W2VBertCTC(
+        encoder_config=_tiny_w2v_bert_config(),
+        vocab_size=6,
+        load_pretrained=False,
+    )
+    state_dict = dict(model.state_dict())
+    state_dict.update(
+        {
+            "aed_decoder.output_projection.weight": torch.zeros(1, 1),
+            "liberta_projection.weight": torch.zeros(1, 1),
+            "liberta_projection.bias": torch.zeros(1),
+            "audio_teacher_projection.weight": torch.zeros(1, 1),
+            "audio_teacher_projection.bias": torch.zeros(1),
+            "intermediate_classifier.weight": torch.zeros(1, 1),
+            "intermediate_classifiers.0.weight": torch.zeros(1, 1),
+        }
+    )
+
+    result = model.load_state_dict(state_dict)
+
+    assert result.missing_keys == []
+    assert result.unexpected_keys == []
+
+
 def test_w2v_bert_uses_transformer_engine_linears_when_fp8_enabled(monkeypatch) -> None:
     class _FakeLinear(torch.nn.Linear):
         seen_input_shapes: list[tuple[int, ...]] = []
