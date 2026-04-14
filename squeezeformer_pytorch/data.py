@@ -2144,10 +2144,14 @@ class YomikomiDataLoader:
         self._yomikomi = yomikomi
 
     def __iter__(self):
-        def load_batch(indices: list[int]):
+        def load_batch(item: dict[str, Any]):
+            indices = item["indices"]
             return self.collate_fn([self.dataset[int(index)] for index in indices])
 
-        stream = self._yomikomi.stream(_ThreadSafeIterator(self.batch_sampler)).map(load_batch)
+        stream = self._yomikomi.stream(
+            _ThreadSafeIterator(self.batch_sampler),
+            field="indices",
+        ).map(load_batch)
         if self.num_workers > 0:
             kwargs: dict[str, Any] = {"num_threads": self.num_workers}
             if self.prefetch_buffer_size is not None:

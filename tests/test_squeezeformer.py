@@ -2785,8 +2785,9 @@ def test_create_dataloader_can_use_yomikomi_backend(
         hop_length = 160
 
     class FakeYomikomiStream:
-        def __init__(self, iterable) -> None:
+        def __init__(self, iterable, *, field=None) -> None:
             self.iterable = iterable
+            self.field = field
             self.mapper = None
             self.prefetch_kwargs = None
 
@@ -2800,12 +2801,14 @@ def test_create_dataloader_can_use_yomikomi_backend(
 
         def __iter__(self):
             for item in self.iterable:
+                if self.field is not None:
+                    item = {self.field: item}
                 yield self.mapper(item) if self.mapper is not None else item
 
     captured: dict[str, object] = {}
 
-    def fake_stream(iterable):
-        stream = FakeYomikomiStream(iterable)
+    def fake_stream(iterable, *, field=None):
+        stream = FakeYomikomiStream(iterable, field=field)
         captured["stream"] = stream
         return stream
 
@@ -2851,6 +2854,7 @@ def test_create_dataloader_can_use_yomikomi_backend(
     assert len(loader) == 1
     batch = next(iter(loader))
     assert batch["features"].shape == (2, 2, 80)
+    assert captured["stream"].field == "indices"
     assert captured["stream"].prefetch_kwargs == {"num_threads": 3, "buffer_size": 7}
 
 
