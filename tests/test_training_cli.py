@@ -172,6 +172,25 @@ def test_parse_args_accepts_yomikomi_dataloader_backend() -> None:
     assert args.yomikomi_prefetch_buffer_size == 16
 
 
+def test_parse_args_accepts_rust_parquet_dataloader_backend() -> None:
+    args = parse_args(
+        [
+            "--device",
+            "cpu",
+            "--dataloader-backend",
+            "rust-parquet",
+            "--num-workers",
+            "12",
+            "--rust-prefetch-batches",
+            "32",
+        ]
+    )
+
+    assert args.dataloader_backend == "rust-parquet"
+    assert args.num_workers == 12
+    assert args.rust_prefetch_batches == 32
+
+
 def test_parse_args_accepts_zipformer_fp8() -> None:
     args = parse_args(
         [

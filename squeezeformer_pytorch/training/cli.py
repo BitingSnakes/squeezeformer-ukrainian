@@ -158,6 +158,7 @@ def _validate_startup_args(
         positive_int_arguments["--yomikomi-prefetch-buffer-size"] = (
             args.yomikomi_prefetch_buffer_size
         )
+    positive_int_arguments["--rust-prefetch-batches"] = args.rust_prefetch_batches
     if args.num_time_masks is not None:
         positive_int_arguments["--num-time-masks"] = args.num_time_masks
     if args.max_train_samples is not None:
@@ -532,11 +533,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument(
         "--dataloader-backend",
-        choices=["torch", "yomikomi"],
+        choices=["torch", "yomikomi", "rust-parquet"],
         default="torch",
         help=(
             "Data loading backend. 'torch' uses PyTorch DataLoader workers; 'yomikomi' "
-            "uses Yomikomi stream prefetch threads and keeps this training code's samplers."
+            "uses Yomikomi stream prefetch threads; 'rust-parquet' reads parquet feature "
+            "cache payloads through the Rust extension."
         ),
     )
     parser.add_argument(
@@ -554,6 +556,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional Yomikomi prefetch buffer size when --dataloader-backend=yomikomi.",
+    )
+    parser.add_argument(
+        "--rust-prefetch-batches",
+        type=int,
+        default=2,
+        help="Number of ordered batches to prefetch when --dataloader-backend=rust-parquet.",
     )
     parser.add_argument("--seed", type=int, default=13)
     parser.add_argument("--val-fraction", type=float, default=0.1)

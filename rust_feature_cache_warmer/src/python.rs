@@ -4,6 +4,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 
+use crate::feature_loader::RustParquetFeatureCacheReader;
 use crate::{
     extract_audio_features_from_samples, extract_w2v_bert_features_from_samples,
     squeezeformer_frontend_config, w2v_bert_frontend_config, zipformer_frontend_config,
@@ -183,5 +184,6 @@ fn asr_features(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(extract_squeezeformer, m)?)?;
     m.add_function(wrap_pyfunction!(extract_zipformer, m)?)?;
     m.add_function(wrap_pyfunction!(extract_w2v_bert, m)?)?;
+    m.add_class::<RustParquetFeatureCacheReader>()?;
     Ok(())
 }

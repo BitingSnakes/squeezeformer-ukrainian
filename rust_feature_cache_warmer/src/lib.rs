@@ -4,6 +4,8 @@ mod cache;
 mod cli;
 mod dsp;
 mod feature_cache;
+#[cfg(feature = "python")]
+mod feature_loader;
 mod frontend;
 mod record_cache;
 mod util;

@@ -2164,6 +2164,105 @@ class YomikomiDataLoader:
         return len(self.batch_sampler)
 
 
+class RustParquetFeatureDataLoader:
+    def __init__(
+        self,
+        dataset: ASRDataset,
+        *,
+        batch_sampler: BatchSampler,
+        num_workers: int = 0,
+        prefetch_batches: int = 2,
+    ) -> None:
+        if dataset.feature_cache_dir is None:
+            raise ValueError("rust-parquet backend requires dataset.feature_cache_dir")
+        if dataset.feature_cache_format != "parquet":
+            raise ValueError("rust-parquet backend requires feature_cache_format='parquet'")
+        if dataset.return_waveforms:
+            raise ValueError("rust-parquet backend does not support return_waveforms=True")
+        if dataset.waveform_augment is not None and dataset.waveform_augment.is_enabled():
+            raise ValueError("rust-parquet backend cannot be used with waveform augmentation")
+        try:
+            from asr_features import RustParquetFeatureCacheReader
+        except ImportError as exc:
+            raise ImportError(
+                "rust-parquet DataLoader backend requested, but asr_features was not built "
+                "with RustParquetFeatureCacheReader."
+            ) from exc
+        self.dataset = dataset
+        self.batch_sampler = batch_sampler
+        self.sampler = getattr(batch_sampler, "sampler", None)
+        self.num_workers = max(0, int(num_workers))
+        self.prefetch_batches = max(1, int(prefetch_batches))
+        self.reader = RustParquetFeatureCacheReader(str(dataset.feature_cache_dir))
+
+    def __iter__(self):
+        iterator = iter(self.batch_sampler)
+        if self.num_workers <= 0:
+            for indices in iterator:
+                yield self._load_batch(list(indices))
+            return
+        with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+            futures = []
+            for _ in range(self.prefetch_batches):
+                try:
+                    indices = list(next(iterator))
+                except StopIteration:
+                    break
+                futures.append(executor.submit(self._load_batch, indices))
+            while futures:
+                future = futures.pop(0)
+                yield future.result()
+                try:
+                    indices = list(next(iterator))
+                except StopIteration:
+                    continue
+                futures.append(executor.submit(self._load_batch, indices))
+
+    def __len__(self) -> int:
+        return len(self.batch_sampler)
+
+    def _load_batch(self, indices: list[int]) -> dict[str, Any] | None:
+        records = [self.dataset.records[int(index)] for index in indices]
+        keys = [self.dataset.feature_cache._key(record.utterance_id, self.dataset.featurizer) for record in records]  # type: ignore[union-attr]
+        rust_features = self.reader.fetch_many(keys)
+        items: list[dict[str, Any] | None] = []
+        for index, record, features_array in zip(indices, records, rust_features, strict=True):
+            if features_array is None:
+                items.append(self.dataset[int(index)])
+                continue
+            features = torch.from_numpy(features_array).to(dtype=torch.float32)
+            features = normalize_feature_tensor(features, self.dataset.featurizer.n_mels)
+            if features is None or not feature_tensor_is_plausible(
+                record,
+                features,
+                expected_feature_bins=self.dataset.featurizer.n_mels,
+            ):
+                items.append(self.dataset[int(index)])
+                continue
+            if self.dataset.specaugment is not None:
+                features = self.dataset.specaugment(features)
+            target_ids = torch.tensor(
+                self.dataset.tokenizer.encode(record.transcript),
+                dtype=torch.long,
+            )
+            items.append(
+                {
+                    "features": features,
+                    "feature_length": features.size(0),
+                    "feature_padding_value": float(
+                        getattr(self.dataset.featurizer, "padding_value", 0.0)
+                    ),
+                    "targets": target_ids,
+                    "target_length": target_ids.numel(),
+                    "transcript": record.transcript,
+                    "utterance_id": record.utterance_id,
+                    "speaker_id": record.speaker_id,
+                    "has_speaker_id": record.has_speaker_id,
+                }
+            )
+        return collate_asr_batch(items)
+
+
 class _ThreadSafeIterator:
     def __init__(self, iterable) -> None:
         self._iterator = iter(iterable)
@@ -2376,9 +2475,10 @@ def create_dataloader(
     worker_threads: int | None = 1,
     backend: str = "torch",
     yomikomi_prefetch_buffer_size: int | None = None,
+    rust_prefetch_batches: int = 2,
     progress_logger: logging.Logger | None = None,
     progress_label: str = "dataloader",
-) -> DataLoader[dict[str, Any]] | YomikomiDataLoader:
+) -> DataLoader[dict[str, Any]] | YomikomiDataLoader | RustParquetFeatureDataLoader:
     stage_start_time = time.perf_counter()
     if progress_logger is not None:
         progress_logger.info(
@@ -2423,8 +2523,11 @@ def create_dataloader(
             progress_logger=progress_logger,
             progress_label=progress_label,
         )
-    if backend not in {"torch", "yomikomi"}:
-        raise ValueError(f"backend must be one of {{'torch', 'yomikomi'}}, got {backend!r}.")
+    if backend not in {"torch", "yomikomi", "rust-parquet"}:
+        raise ValueError(
+            "backend must be one of {'torch', 'yomikomi', 'rust-parquet'}, "
+            f"got {backend!r}."
+        )
 
     def make_loader(
         *,
@@ -2452,6 +2555,25 @@ def create_dataloader(
                 collate_fn=collate_asr_batch,
                 num_workers=num_workers,
                 prefetch_buffer_size=yomikomi_prefetch_buffer_size,
+            )
+        if backend == "rust-parquet":
+            if batch_sampler is None:
+                resolved_sampler = sampler
+                if resolved_sampler is None:
+                    resolved_sampler = EpochIndexSampler(
+                        len(dataset),
+                        shuffle=loader_shuffle,
+                        seed=seed,
+                    )
+                batch_sampler = IndexBatchSampler(
+                    resolved_sampler,
+                    batch_size=batch_size if loader_batch_size is None else loader_batch_size,
+                )
+            return RustParquetFeatureDataLoader(
+                dataset,
+                batch_sampler=batch_sampler,
+                num_workers=num_workers,
+                prefetch_batches=rust_prefetch_batches,
             )
         if batch_sampler is not None:
             return DataLoader(dataset, batch_sampler=batch_sampler, **dataloader_kwargs)

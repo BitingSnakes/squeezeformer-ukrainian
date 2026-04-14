@@ -154,9 +154,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument(
         "--dataloader-backend",
-        choices=["torch", "yomikomi"],
+        choices=["torch", "yomikomi", "rust-parquet"],
         default="torch",
-        help="Data loading backend. 'yomikomi' uses Yomikomi stream prefetch threads.",
+        help=(
+            "Data loading backend. 'yomikomi' uses Yomikomi stream prefetch threads; "
+            "'rust-parquet' reads parquet feature cache payloads through the Rust extension."
+        ),
     )
     parser.add_argument(
         "--dataloader-worker-threads",
@@ -172,6 +175,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional Yomikomi prefetch buffer size when --dataloader-backend=yomikomi.",
+    )
+    parser.add_argument(
+        "--rust-prefetch-batches",
+        type=int,
+        default=2,
+        help="Number of ordered batches to prefetch when --dataloader-backend=rust-parquet.",
     )
     parser.add_argument("--seed", type=int, default=13)
     parser.add_argument("--val-fraction", type=float, default=0.1)
@@ -275,6 +284,8 @@ def parse_args() -> argparse.Namespace:
             "--yomikomi-prefetch-buffer-size must be > 0, "
             f"got {args.yomikomi_prefetch_buffer_size}."
         )
+    if args.rust_prefetch_batches <= 0:
+        raise ValueError(f"--rust-prefetch-batches must be > 0, got {args.rust_prefetch_batches}.")
     if args.beam_length_bonus < 0:
         raise ValueError(f"--beam-length-bonus must be >= 0, got {args.beam_length_bonus}.")
     return args
@@ -427,6 +438,7 @@ def main() -> None:
         worker_threads=args.dataloader_worker_threads,
         backend=args.dataloader_backend,
         yomikomi_prefetch_buffer_size=args.yomikomi_prefetch_buffer_size,
+        rust_prefetch_batches=args.rust_prefetch_batches,
     )
     criterion = nn.CTCLoss(blank=tokenizer.blank_id, zero_infinity=True)
     lm_scorer = load_lm_scorer(args.lm_scorer)
