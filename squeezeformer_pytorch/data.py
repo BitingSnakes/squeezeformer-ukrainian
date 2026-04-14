@@ -11,6 +11,7 @@ import os
 import re
 import struct
 import sys
+import threading
 import time
 import wave
 from concurrent.futures import ThreadPoolExecutor
@@ -2138,7 +2139,7 @@ class YomikomiDataLoader:
         def load_batch(indices: list[int]):
             return self.collate_fn([self.dataset[int(index)] for index in indices])
 
-        stream = self._yomikomi.stream(iter(self.batch_sampler)).map(load_batch)
+        stream = self._yomikomi.stream(_ThreadSafeIterator(self.batch_sampler)).map(load_batch)
         if self.num_workers > 0:
             kwargs: dict[str, Any] = {"num_threads": self.num_workers}
             if self.prefetch_buffer_size is not None:
@@ -2148,6 +2149,19 @@ class YomikomiDataLoader:
 
     def __len__(self) -> int:
         return len(self.batch_sampler)
+
+
+class _ThreadSafeIterator:
+    def __init__(self, iterable) -> None:
+        self._iterator = iter(iterable)
+        self._lock = threading.Lock()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        with self._lock:
+            return next(self._iterator)
 
 
 def _record_is_valid(record: AudioRecord) -> bool:

@@ -5,6 +5,8 @@ import math
 import os
 import pickle
 import sys
+import threading
+import time
 import types
 from dataclasses import asdict
 from io import BytesIO
@@ -43,6 +45,7 @@ from squeezeformer_pytorch.data import (
     SpecAugment,
     WaveformAugment,
     YomikomiDataLoader,
+    _ThreadSafeIterator,
     collate_asr_batch,
     create_dataloader,
     iter_corpus_texts,
@@ -2849,6 +2852,41 @@ def test_create_dataloader_can_use_yomikomi_backend(
     batch = next(iter(loader))
     assert batch["features"].shape == (2, 2, 80)
     assert captured["stream"].prefetch_kwargs == {"num_threads": 3, "buffer_size": 7}
+
+
+def test_thread_safe_iterator_serializes_generator_access() -> None:
+    entered = False
+
+    def guarded_generator():
+        nonlocal entered
+        for index in range(50):
+            if entered:
+                raise RuntimeError("generator reentered")
+            entered = True
+            time.sleep(0.001)
+            entered = False
+            yield index
+
+    iterator = _ThreadSafeIterator(guarded_generator())
+    results: list[int] = []
+    result_lock = threading.Lock()
+
+    def consume() -> None:
+        while True:
+            try:
+                value = next(iterator)
+            except StopIteration:
+                return
+            with result_lock:
+                results.append(value)
+
+    threads = [threading.Thread(target=consume) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(results) == list(range(50))
 
 
 def test_create_dataloader_uses_spawn_context_when_distributed_initialized(
