@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 import wave
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -2197,6 +2197,7 @@ class RustParquetFeatureDataLoader:
         self.prefetch_batches = max(1, int(prefetch_batches))
         self.progress_logger = progress_logger
         self.progress_label = progress_label
+        self._logged_first_batch = False
         index_start_time = time.perf_counter()
         if self.progress_logger is not None:
             self.progress_logger.info(
@@ -2224,32 +2225,37 @@ class RustParquetFeatureDataLoader:
                 yield self._load_batch(list(indices))
             return
         with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
-            futures = []
+            futures = set()
             for _ in range(self.prefetch_batches):
                 try:
                     indices = list(next(iterator))
                 except StopIteration:
                     break
-                futures.append(executor.submit(self._load_batch, indices))
+                futures.add(executor.submit(self._load_batch, indices))
             while futures:
-                future = futures.pop(0)
-                yield future.result()
-                try:
-                    indices = list(next(iterator))
-                except StopIteration:
-                    continue
-                futures.append(executor.submit(self._load_batch, indices))
+                ready, futures = wait(futures, return_when=FIRST_COMPLETED)
+                for future in ready:
+                    yield future.result()
+                    try:
+                        indices = list(next(iterator))
+                    except StopIteration:
+                        continue
+                    futures.add(executor.submit(self._load_batch, indices))
 
     def __len__(self) -> int:
         return len(self.batch_sampler)
 
     def _load_batch(self, indices: list[int]) -> dict[str, Any] | None:
+        start_time = time.perf_counter()
         records = [self.dataset.records[int(index)] for index in indices]
         keys = [self.dataset.feature_cache._key(record.utterance_id, self.dataset.featurizer) for record in records]  # type: ignore[union-attr]
         rust_features = self.reader.fetch_many(keys)
         items: list[dict[str, Any] | None] = []
+        rust_hits = 0
+        fallbacks = 0
         for index, record, features_array in zip(indices, records, rust_features, strict=True):
             if features_array is None:
+                fallbacks += 1
                 items.append(self.dataset[int(index)])
                 continue
             features = torch.from_numpy(features_array).to(dtype=torch.float32)
@@ -2259,8 +2265,10 @@ class RustParquetFeatureDataLoader:
                 features,
                 expected_feature_bins=self.dataset.featurizer.n_mels,
             ):
+                fallbacks += 1
                 items.append(self.dataset[int(index)])
                 continue
+            rust_hits += 1
             if self.dataset.specaugment is not None:
                 features = self.dataset.specaugment(features)
             target_ids = torch.tensor(
@@ -2282,7 +2290,19 @@ class RustParquetFeatureDataLoader:
                     "has_speaker_id": record.has_speaker_id,
                 }
             )
-        return collate_asr_batch(items)
+        batch = collate_asr_batch(items)
+        if self.progress_logger is not None and not self._logged_first_batch:
+            self._logged_first_batch = True
+            self.progress_logger.info(
+                "%s rust-parquet first loaded batch size=%s rust_hits=%s fallbacks=%s "
+                "elapsed=%.1fs",
+                self.progress_label,
+                len(indices),
+                rust_hits,
+                fallbacks,
+                time.perf_counter() - start_time,
+            )
+        return batch
 
 
 class _ThreadSafeIterator:
