@@ -154,10 +154,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument(
         "--dataloader-backend",
-        choices=["torch", "yomikomi", "rust-parquet"],
+        choices=["torch", "rust-parquet"],
         default="torch",
         help=(
-            "Data loading backend. 'yomikomi' uses Yomikomi stream prefetch threads; "
+            "Data loading backend. 'torch' uses PyTorch DataLoader workers; "
             "'rust-parquet' reads parquet feature cache payloads through the Rust extension."
         ),
     )
@@ -169,12 +169,6 @@ def parse_args() -> argparse.Namespace:
             "CPU threads allowed inside each DataLoader worker process. Set 0 to leave "
             "worker thread pools unchanged."
         ),
-    )
-    parser.add_argument(
-        "--yomikomi-prefetch-buffer-size",
-        type=int,
-        default=None,
-        help="Optional Yomikomi prefetch buffer size when --dataloader-backend=yomikomi.",
     )
     parser.add_argument(
         "--rust-prefetch-batches",
@@ -278,11 +272,6 @@ def parse_args() -> argparse.Namespace:
     if args.dataloader_worker_threads < 0:
         raise ValueError(
             f"--dataloader-worker-threads must be >= 0, got {args.dataloader_worker_threads}."
-        )
-    if args.yomikomi_prefetch_buffer_size is not None and args.yomikomi_prefetch_buffer_size <= 0:
-        raise ValueError(
-            "--yomikomi-prefetch-buffer-size must be > 0, "
-            f"got {args.yomikomi_prefetch_buffer_size}."
         )
     if args.rust_prefetch_batches <= 0:
         raise ValueError(f"--rust-prefetch-batches must be > 0, got {args.rust_prefetch_batches}.")
@@ -437,7 +426,6 @@ def main() -> None:
         multiprocessing_context=getattr(args, "dataloader_mp_context", "auto"),
         worker_threads=args.dataloader_worker_threads,
         backend=args.dataloader_backend,
-        yomikomi_prefetch_buffer_size=args.yomikomi_prefetch_buffer_size,
         rust_prefetch_batches=args.rust_prefetch_batches,
     )
     criterion = nn.CTCLoss(blank=tokenizer.blank_id, zero_infinity=True)

@@ -1709,7 +1709,6 @@ def main() -> None:
         in_order=args.dataloader_in_order,
         worker_threads=args.dataloader_worker_threads,
         backend=args.dataloader_backend,
-        yomikomi_prefetch_buffer_size=args.yomikomi_prefetch_buffer_size,
         rust_prefetch_batches=args.rust_prefetch_batches,
         progress_logger=logger if is_main_process else None,
         progress_label="train dataloader",
@@ -1739,7 +1738,6 @@ def main() -> None:
         in_order=True,
         worker_threads=args.dataloader_worker_threads,
         backend=args.dataloader_backend,
-        yomikomi_prefetch_buffer_size=args.yomikomi_prefetch_buffer_size,
         rust_prefetch_batches=args.rust_prefetch_batches,
         progress_logger=logger if is_main_process else None,
         progress_label="validation dataloader",
@@ -2099,13 +2097,8 @@ def main() -> None:
             next_batch_index = batch_index + 1
             try:
                 loader_wait_details = (
-                    f"backend=yomikomi num_workers={args.num_workers} "
-                    f"prefetch_buffer_size={args.yomikomi_prefetch_buffer_size}"
-                    if args.dataloader_backend == "yomikomi"
-                    else (
-                        f"backend=rust-parquet num_workers={args.num_workers} "
-                        f"prefetch_batches={args.rust_prefetch_batches}"
-                    )
+                    f"backend=rust-parquet num_workers={args.num_workers} "
+                    f"prefetch_batches={args.rust_prefetch_batches}"
                     if args.dataloader_backend == "rust-parquet"
                     else (
                         f"backend=torch num_workers={args.num_workers} "

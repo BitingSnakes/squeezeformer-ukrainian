@@ -3247,7 +3247,6 @@ dependencies = [
     { name = "torchaudio", version = "2.11.0+cu130", source = { registry = "https://download.pytorch.org/whl/cu130" }, marker = "(extra == 'group-21-squeezeformer-pytorch-cu12' and extra == 'group-21-squeezeformer-pytorch-cu126') or (extra != 'group-21-squeezeformer-pytorch-cu126' and extra == 'group-21-squeezeformer-pytorch-cu13') or (extra != 'group-21-squeezeformer-pytorch-cu12' and extra == 'group-21-squeezeformer-pytorch-cu13')" },
     { name = "torchcodec", version = "0.10.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-21-squeezeformer-pytorch-cu126' or (extra == 'group-21-squeezeformer-pytorch-cu12' and extra == 'group-21-squeezeformer-pytorch-cu13')" },
     { name = "torchcodec", version = "0.11.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-21-squeezeformer-pytorch-cu12' or extra != 'group-21-squeezeformer-pytorch-cu126' or (extra == 'group-21-squeezeformer-pytorch-cu126' and extra == 'group-21-squeezeformer-pytorch-cu13')" },
-    { name = "yomikomi" },
 ]
 
 [package.optional-dependencies]
@@ -3319,7 +3318,6 @@ requires-dist = [
     { name = "trackio", marker = "extra == 'train'", specifier = ">=0.20.2" },
     { name = "transformer-engine", extras = ["pytorch"], marker = "extra == 'fp8'", specifier = ">=2.13.0" },
     { name = "transformers", marker = "extra == 'train'", specifier = ">=4.57.0" },
-    { name = "yomikomi", specifier = ">=0.3.5" },
 ]
 provides-extras = ["jax", "quantize", "fp8", "train"]
 
@@ -4038,26 +4036,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1e/67/cbae4bf7683a64755c2c1778c418fea96d00e34395bb91743f08bd951571/wadler_lindig-0.1.7.tar.gz", hash = "sha256:81d14d3fe77d441acf3ebd7f4aefac20c74128bf460e84b512806dccf7b2cd55", size = 15842, upload-time = "2025-06-18T07:00:42.843Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8d/96/04e7b441807b26b794da5b11e59ed7f83b2cf8af202bd7eba8ad2fa6046e/wadler_lindig-0.1.7-py3-none-any.whl", hash = "sha256:e3ec83835570fd0a9509f969162aeb9c65618f998b1f42918cfc8d45122fe953", size = 20516, upload-time = "2025-06-18T07:00:41.684Z" },
-]
-
-[[package]]
-name = "yomikomi"
-version = "0.3.5"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/52/8f/2e96b68dde65d7b572cc952465d2bcd1a0f331c1b150c67bfa005a5734d4/yomikomi-0.3.5.tar.gz", hash = "sha256:4cbbe8294817373cb2ae2b5719b77fb945b162c8f159b2a388fd072476731ff7", size = 44363, upload-time = "2026-02-20T18:03:13.355Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/e1/c00fbde2d78f835fd4fa591f50e6944098f982be125e60b2268fad13a3bc/yomikomi-0.3.5-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:d41d10856427461d17b07f1e2231a0caca88ec2c01f849429a838fef5b23c3ae", size = 2985296, upload-time = "2026-02-20T18:03:09.054Z" },
-    { url = "https://files.pythonhosted.org/packages/ca/40/b94269913a7e04a519d87d9ab973e713b0b63e2bcb7a52d1387d9e7e8c68/yomikomi-0.3.5-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:22aa6d225266427682a59081521d0096740ce81d9fe1c9ac279402e06f2da402", size = 2856173, upload-time = "2026-02-20T18:03:01.586Z" },
-    { url = "https://files.pythonhosted.org/packages/64/26/1b58d585b531cb6144d89125c9cc59e38039d6b1181a31a7452d172a27f3/yomikomi-0.3.5-cp312-cp312-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:f171b3bc99fe63f1b4f8187400abdfb8fcfceb427f99185616e634e8216c2476", size = 3505504, upload-time = "2026-02-20T18:02:37.071Z" },
-    { url = "https://files.pythonhosted.org/packages/72/6a/521ff4a1dce3c380ee9b32d5157270b2af35dbbff1af1778fde278ffb9ed/yomikomi-0.3.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3c0a2fcc45514bbb67ddf42dfa3e77ed769572f0b1dc147e2c6b7a26730e23e7", size = 3288621, upload-time = "2026-02-20T18:02:49.176Z" },
-    { url = "https://files.pythonhosted.org/packages/ee/a0/56523d921efa11a603f2ac932b3d9f033e91231941d3693d3f45fe6d6e83/yomikomi-0.3.5-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:4a0d33be90a51b1482944d87cdec4ac17a37e8e8ba30d8bbf0f04a917f8b86a4", size = 2984047, upload-time = "2026-02-20T18:03:10.507Z" },
-    { url = "https://files.pythonhosted.org/packages/b6/00/d38d7beb955548aba1cc50533ef38d76bfb849c8be7c5ee9c016cc6a8a7e/yomikomi-0.3.5-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:7dceeee53ac6b0a5df3a4070cdc127d7cefca8557a893e3957035eb3af94c880", size = 2855691, upload-time = "2026-02-20T18:03:02.908Z" },
-    { url = "https://files.pythonhosted.org/packages/eb/95/302d437091cb9ae4ef4701cac7e9d60da3feb2e1be3e614998c4b3b52a25/yomikomi-0.3.5-cp313-cp313-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:60b03eb0552fcd0d645b7bfcb5760a2286c89ecbd1f5da8ffd63151047ace0a3", size = 3505587, upload-time = "2026-02-20T18:02:38.692Z" },
-    { url = "https://files.pythonhosted.org/packages/59/7f/ea97a57472a624cbe6d9442d038fdf559119cb7d77cb8a092a58b94ffe2a/yomikomi-0.3.5-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:25848ce977e183a3bb0d373efa15e0245670785d09ce84ecb9a5f88aaddcd76f", size = 3288443, upload-time = "2026-02-20T18:02:50.621Z" },
-    { url = "https://files.pythonhosted.org/packages/c2/37/091ef2bdbf31f92eb2a0f6f51211059e90bd8b5b657008078c147ca83c44/yomikomi-0.3.5-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:ad943d70c1412df2680ed0282419ddc6c1d4b8573e27d20405dd8277f64d050a", size = 2985308, upload-time = "2026-02-20T18:03:11.843Z" },
-    { url = "https://files.pythonhosted.org/packages/ac/6b/3fc5b0c078edc2c250d11b30ed30dfdaeb54bfceaaa70f335664422117f5/yomikomi-0.3.5-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:18d4a1dc8cb497107d812f7e212f071d49d4607aa63b371d19e4e6bef5dc316c", size = 2858557, upload-time = "2026-02-20T18:03:04.279Z" },
-    { url = "https://files.pythonhosted.org/packages/84/7f/c36fd4153d846b8552bec63f67612be7bce1acd66cd3f473e17aab4b6fc6/yomikomi-0.3.5-cp314-cp314-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:c93c72e8644eea397909b3c1e74fc1a2919ecd4dc20d225067a7564642a5108a", size = 3506265, upload-time = "2026-02-20T18:02:40.317Z" },
-    { url = "https://files.pythonhosted.org/packages/43/b8/a936295819ab90861891dee80a00a9bbdc11699297b5f059dfe03249a743/yomikomi-0.3.5-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3105457b522b00786f54e8ad909788577f9d186a5aafcd627abe4885f83cffc1", size = 3289305, upload-time = "2026-02-20T18:02:52.114Z" },
 ]
 
 [[package]]

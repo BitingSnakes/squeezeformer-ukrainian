@@ -2121,52 +2121,6 @@ class EpochIndexSampler(Sampler[int]):
         self.epoch = int(epoch)
 
 
-class YomikomiDataLoader:
-    def __init__(
-        self,
-        dataset: ASRDataset,
-        *,
-        batch_sampler: BatchSampler,
-        collate_fn: Callable[[list[dict[str, Any] | None]], dict[str, Any] | None],
-        num_workers: int = 0,
-        prefetch_buffer_size: int | None = None,
-    ) -> None:
-        self.dataset = dataset
-        self.batch_sampler = batch_sampler
-        self.sampler = getattr(batch_sampler, "sampler", None)
-        self.collate_fn = collate_fn
-        self.num_workers = max(0, int(num_workers))
-        self.prefetch_buffer_size = prefetch_buffer_size
-        try:
-            import yomikomi
-        except ImportError as exc:
-            raise ImportError(
-                "Yomikomi DataLoader backend requested, but the 'yomikomi' package is not "
-                "installed. Install yomikomi or use --dataloader-backend torch."
-            ) from exc
-        self._yomikomi = yomikomi
-
-    def __iter__(self):
-        stream = self._yomikomi.stream(
-            _ThreadSafeIterator(self.batch_sampler),
-            field="indices",
-        )
-        if self.num_workers > 0:
-            kwargs: dict[str, Any] = {"num_threads": self.num_workers}
-            if self.prefetch_buffer_size is not None:
-                kwargs["buffer_size"] = self.prefetch_buffer_size
-            stream = stream.prefetch(**kwargs)
-        return self._iter_collated_batches(stream)
-
-    def _iter_collated_batches(self, stream):
-        for item in stream:
-            indices = item["indices"]
-            yield self.collate_fn([self.dataset[int(index)] for index in indices])
-
-    def __len__(self) -> int:
-        return len(self.batch_sampler)
-
-
 class RustParquetFeatureDataLoader:
     def __init__(
         self,
@@ -2330,19 +2284,6 @@ class RustParquetFeatureDataLoader:
             if default_key not in keys:
                 keys.append(default_key)
         return keys
-
-
-class _ThreadSafeIterator:
-    def __init__(self, iterable) -> None:
-        self._iterator = iter(iterable)
-        self._lock = threading.Lock()
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        with self._lock:
-            return next(self._iterator)
 
 
 def _record_is_valid(record: AudioRecord) -> bool:
@@ -2543,11 +2484,10 @@ def create_dataloader(
     in_order: bool = True,
     worker_threads: int | None = 1,
     backend: str = "torch",
-    yomikomi_prefetch_buffer_size: int | None = None,
     rust_prefetch_batches: int = 2,
     progress_logger: logging.Logger | None = None,
     progress_label: str = "dataloader",
-) -> DataLoader[dict[str, Any]] | YomikomiDataLoader | RustParquetFeatureDataLoader:
+) -> DataLoader[dict[str, Any]] | RustParquetFeatureDataLoader:
     stage_start_time = time.perf_counter()
     if progress_logger is not None:
         progress_logger.info(
@@ -2592,9 +2532,9 @@ def create_dataloader(
             progress_logger=progress_logger,
             progress_label=progress_label,
         )
-    if backend not in {"torch", "yomikomi", "rust-parquet"}:
+    if backend not in {"torch", "rust-parquet"}:
         raise ValueError(
-            "backend must be one of {'torch', 'yomikomi', 'rust-parquet'}, "
+            "backend must be one of {'torch', 'rust-parquet'}, "
             f"got {backend!r}."
         )
 
@@ -2605,26 +2545,6 @@ def create_dataloader(
         loader_batch_size: int | None = None,
         loader_shuffle: bool = False,
     ):
-        if backend == "yomikomi":
-            if batch_sampler is None:
-                resolved_sampler = sampler
-                if resolved_sampler is None:
-                    resolved_sampler = EpochIndexSampler(
-                        len(dataset),
-                        shuffle=loader_shuffle,
-                        seed=seed,
-                    )
-                batch_sampler = IndexBatchSampler(
-                    resolved_sampler,
-                    batch_size=batch_size if loader_batch_size is None else loader_batch_size,
-                )
-            return YomikomiDataLoader(
-                dataset,
-                batch_sampler=batch_sampler,
-                collate_fn=collate_asr_batch,
-                num_workers=num_workers,
-                prefetch_buffer_size=yomikomi_prefetch_buffer_size,
-            )
         if backend == "rust-parquet":
             if batch_sampler is None:
                 resolved_sampler = sampler

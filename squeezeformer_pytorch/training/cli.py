@@ -154,10 +154,6 @@ def _validate_startup_args(
     }
     if args.prefetch_factor is not None:
         positive_int_arguments["--prefetch-factor"] = args.prefetch_factor
-    if args.yomikomi_prefetch_buffer_size is not None:
-        positive_int_arguments["--yomikomi-prefetch-buffer-size"] = (
-            args.yomikomi_prefetch_buffer_size
-        )
     positive_int_arguments["--rust-prefetch-batches"] = args.rust_prefetch_batches
     if args.num_time_masks is not None:
         positive_int_arguments["--num-time-masks"] = args.num_time_masks
@@ -533,12 +529,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument(
         "--dataloader-backend",
-        choices=["torch", "yomikomi", "rust-parquet"],
+        choices=["torch", "rust-parquet"],
         default="torch",
         help=(
-            "Data loading backend. 'torch' uses PyTorch DataLoader workers; 'yomikomi' "
-            "uses Yomikomi stream prefetch threads; 'rust-parquet' reads parquet feature "
-            "cache payloads through the Rust extension."
+            "Data loading backend. 'torch' uses PyTorch DataLoader workers; "
+            "'rust-parquet' reads parquet feature cache payloads through the Rust extension."
         ),
     )
     parser.add_argument(
@@ -550,12 +545,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "multi-worker loading from multiplying PyTorch/OpenMP/BLAS thread pools. Set 0 "
             "to leave worker thread pools unchanged."
         ),
-    )
-    parser.add_argument(
-        "--yomikomi-prefetch-buffer-size",
-        type=int,
-        default=None,
-        help="Optional Yomikomi prefetch buffer size when --dataloader-backend=yomikomi.",
     )
     parser.add_argument(
         "--rust-prefetch-batches",

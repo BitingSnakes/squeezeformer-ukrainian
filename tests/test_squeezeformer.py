@@ -5,9 +5,6 @@ import math
 import os
 import pickle
 import sys
-import threading
-import time
-import types
 from dataclasses import asdict
 from io import BytesIO
 from pathlib import Path
@@ -44,8 +41,6 @@ from squeezeformer_pytorch.data import (
     MaxFramesBatchSampler,
     SpecAugment,
     WaveformAugment,
-    YomikomiDataLoader,
-    _ThreadSafeIterator,
     collate_asr_batch,
     create_dataloader,
     iter_corpus_texts,
@@ -2776,122 +2771,6 @@ def test_create_dataloader_can_disable_worker_thread_limit(
     )
 
     assert "worker_init_fn" not in captured["kwargs"]
-
-
-def test_create_dataloader_can_use_yomikomi_backend(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class DummyFeaturizer:
-        hop_length = 160
-
-    class FakeYomikomiStream:
-        def __init__(self, iterable, *, field=None) -> None:
-            self.iterable = iterable
-            self.field = field
-            self.mapper = None
-            self.prefetch_kwargs = None
-
-        def map(self, mapper):
-            self.mapper = mapper
-            return self
-
-        def prefetch(self, **kwargs):
-            self.prefetch_kwargs = kwargs
-            return self
-
-        def __iter__(self):
-            for item in self.iterable:
-                if self.field is not None:
-                    item = {self.field: item}
-                yield self.mapper(item) if self.mapper is not None else item
-
-    captured: dict[str, object] = {}
-
-    def fake_stream(iterable, *, field=None):
-        stream = FakeYomikomiStream(iterable, field=field)
-        captured["stream"] = stream
-        return stream
-
-    monkeypatch.setitem(sys.modules, "yomikomi", types.SimpleNamespace(stream=fake_stream))
-    monkeypatch.setattr(
-        "squeezeformer_pytorch.data.materialize_record_metadata", lambda *args, **kwargs: args[0]
-    )
-
-    class DummyDataset:
-        records = [
-            AudioRecord("dummy-0.wav", None, "а", "utt0", estimated_frames=2),
-            AudioRecord("dummy-1.wav", None, "б", "utt1", estimated_frames=2),
-        ]
-        featurizer = DummyFeaturizer()
-
-        def __len__(self) -> int:
-            return len(self.records)
-
-        def __getitem__(self, index: int):
-            return {
-                "features": torch.ones(2, 80) * (index + 1),
-                "feature_length": 2,
-                "feature_padding_value": 0.0,
-                "targets": torch.tensor([index + 1], dtype=torch.long),
-                "target_length": 1,
-                "transcript": str(index),
-                "utterance_id": f"utt{index}",
-                "speaker_id": None,
-                "has_speaker_id": False,
-            }
-
-    dataset = DummyDataset()
-    loader = create_dataloader(
-        dataset,
-        batch_size=2,
-        shuffle=False,
-        num_workers=3,
-        backend="yomikomi",
-        yomikomi_prefetch_buffer_size=7,
-    )
-
-    assert isinstance(loader, YomikomiDataLoader)
-    assert len(loader) == 1
-    batch = next(iter(loader))
-    assert batch["features"].shape == (2, 2, 80)
-    assert captured["stream"].field == "indices"
-    assert captured["stream"].mapper is None
-    assert captured["stream"].prefetch_kwargs == {"num_threads": 3, "buffer_size": 7}
-
-
-def test_thread_safe_iterator_serializes_generator_access() -> None:
-    entered = False
-
-    def guarded_generator():
-        nonlocal entered
-        for index in range(50):
-            if entered:
-                raise RuntimeError("generator reentered")
-            entered = True
-            time.sleep(0.001)
-            entered = False
-            yield index
-
-    iterator = _ThreadSafeIterator(guarded_generator())
-    results: list[int] = []
-    result_lock = threading.Lock()
-
-    def consume() -> None:
-        while True:
-            try:
-                value = next(iterator)
-            except StopIteration:
-                return
-            with result_lock:
-                results.append(value)
-
-    threads = [threading.Thread(target=consume) for _ in range(4)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-
-    assert sorted(results) == list(range(50))
 
 
 def test_create_dataloader_uses_spawn_context_when_distributed_initialized(
