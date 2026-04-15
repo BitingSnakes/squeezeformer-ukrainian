@@ -9,6 +9,7 @@ import logging
 import mmap
 import os
 import struct
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from logging import Logger
@@ -144,6 +145,7 @@ class DiskBackedRecordStore:
         self.count = count
         self._handle = None
         self._handle_pid: int | None = None
+        self._handle_lock = threading.Lock()
 
     def _global_index(self, index: int) -> int:
         if index < 0:
@@ -172,12 +174,14 @@ class DiskBackedRecordStore:
         state = self.__dict__.copy()
         state["_handle"] = None
         state["_handle_pid"] = None
+        state.pop("_handle_lock", None)
         return state
 
     def __setstate__(self, state: dict[str, object]) -> None:
         self.__dict__.update(state)
         self._handle = None
         self._handle_pid = None
+        self._handle_lock = threading.Lock()
 
     def __len__(self) -> int:
         total = len(self.offsets)
@@ -190,9 +194,10 @@ class DiskBackedRecordStore:
 
     def __getitem__(self, index: int) -> AudioRecord:
         global_index = self._global_index(index)
-        handle = self._open_handle()
-        handle.seek(self.offsets[global_index])
-        payload = json.loads(handle.readline().decode("utf-8"))
+        with self._handle_lock:
+            handle = self._open_handle()
+            handle.seek(self.offsets[global_index])
+            payload = json.loads(handle.readline().decode("utf-8"))
         return AudioRecord(
             audio_path=payload["audio_path"],
             audio_bytes=_load_cached_audio_bytes(payload, records_path=self.records_path),
